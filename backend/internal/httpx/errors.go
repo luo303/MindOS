@@ -151,9 +151,23 @@ var (
 	ErrPayloadTooLarge      = &Error{Code: "PAYLOAD_TOO_LARGE", Message: "payload too large", HTTPStatus: http.StatusRequestEntityTooLarge}
 	ErrUnsupportedMediaType = &Error{Code: "UNSUPPORTED_MEDIA_TYPE", Message: "unsupported media type", HTTPStatus: http.StatusUnsupportedMediaType}
 	ErrServiceUnavailable   = &Error{Code: "SERVICE_UNAVAILABLE", Message: "service unavailable", HTTPStatus: http.StatusServiceUnavailable}
-	// ErrModelNotConfigured 表示能力缺失而不是故障：向量模型三个配置项全空。
+	// ErrModelNotConfigured 表示能力缺失而不是故障：向量模型三个配置项全空，
+	// 或库里一条对话模型配置都没有。
 	// 用 503 而不是 400——请求本身没问题，是这台机器还没配好。
 	ErrModelNotConfigured = &Error{Code: "MODEL_NOT_CONFIGURED", Message: "model is not configured", HTTPStatus: http.StatusServiceUnavailable}
+	// ErrModelNotSelected 表示有多条对话模型配置，但没有任何一条被设为默认，
+	// 请求也没指定用哪条。
+	// 用 400 而不是 503：服务是好的，缺的是"用哪个"这个参数。
+	ErrModelNotSelected = &Error{Code: "MODEL_NOT_SELECTED", Message: "multiple chat models exist, none is the default", HTTPStatus: http.StatusBadRequest}
+	// ErrChatModelNotFound 表示指定的对话模型配置不存在。
+	ErrChatModelNotFound = &Error{Code: "CHAT_MODEL_NOT_FOUND", Message: "chat model does not exist", HTTPStatus: http.StatusNotFound}
+	// ErrChatModelNameConflict 表示配置重名。
+	ErrChatModelNameConflict = &Error{Code: "MODEL_NAME_CONFLICT", Message: "a chat model with this name already exists", HTTPStatus: http.StatusConflict}
+	// ErrMasterKeyMismatch 表示已存的 API Key 解不开（主密钥换了、文件被删）。
+	//
+	// 用 500 而不是 401：这不是"用户没权限"，是这台机器上的加密材料对不上，
+	// 只能重新填一次 Key，或者把备份的主密钥放回去。
+	ErrMasterKeyMismatch = &Error{Code: "MASTER_KEY_MISMATCH", Message: "stored credential cannot be decrypted; please re-enter the API key", HTTPStatus: http.StatusInternalServerError}
 	// ErrUpstreamFailed 表示外部模型服务返回了失败（凭据错、参数错、限流、超时）。
 	// 用 502：错误发生在我们之外，客户端重试可能有用也可能没用，
 	// 具体原因在 message 里，code 不再细分——细分留给任务表里的 error_code。

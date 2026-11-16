@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/config"
 	"github.com/luo303/mindos/backend/internal/dispatch"
 	"github.com/luo303/mindos/backend/internal/handler"
@@ -246,6 +247,24 @@ func run() error {
 	)
 	settings := handler.NewSettingsHandler(cfg, embeddingProbe(embedder))
 
+	// —— 对话模型配置（用户配置 + 加密落库）——
+	//
+	// 主密钥优先取 MINDOS_MASTER_KEY；没配就自动生成到 DataDir/master.key。
+	// 这一步放在启动阶段而不是第一次保存时：密钥不可用属于部署故障，
+	// 应该在启动时就失败，而不是等用户填完表单才报错。
+	masterKey, err := chatmodel.LoadMasterKey(cfg.Crypto.MasterKey, cfg.App.DataDir)
+	if err != nil {
+		return fmt.Errorf("load master key: %w", err)
+	}
+	modelCipher, err := chatmodel.NewCipher(masterKey)
+	if err != nil {
+		return fmt.Errorf("init model cipher: %w", err)
+	}
+	// prober 先留空：连通性测试需要 agent 层的模型构造能力，
+	// 由后面装配 agent 时注入。为 nil 时测试接口会明确报"暂不可用"。
+	chatModelSvc := chatmodel.NewService(chatmodel.NewRepository(db), modelCipher, nil)
+	log.Info("chat model config ready", zap.String("data_dir", cfg.App.DataDir))
+
 	// 任务表在业务层之前创建：knowledge 需要它判断"取消时任务排着队还是在跑"，
 	// 消费端需要它写进度，两者共用同一个对象。
 	taskRepo := task.NewRepository(db)
@@ -401,10 +420,11 @@ func run() error {
 
 	engine := newEngine(log, cfg.IsDev())
 	router.Register(engine, router.Deps{
-		Health:    health,
-		System:    system,
-		Settings:  settings,
-		Knowledge: knowledge.NewHandler(knowledgeSvc),
+		Health:     health,
+		System:     system,
+		Settings:   settings,
+		Knowledge:  knowledge.NewHandler(knowledgeSvc),
+		ChatModels: chatmodel.NewHandler(chatModelSvc),
 	})
 
 	// 【为什么不用 router.Run()】

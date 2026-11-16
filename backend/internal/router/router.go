@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/handler"
 	"github.com/luo303/mindos/backend/internal/httpx"
 	"github.com/luo303/mindos/backend/internal/knowledge"
@@ -23,6 +24,9 @@ type Deps struct {
 
 	// Knowledge 是知识模块（文档入库与分块）。
 	Knowledge *knowledge.Handler
+
+	// ChatModels 是用户配置的对话模型（存库、加密、可切换）。
+	ChatModels *chatmodel.Handler
 
 	// 后续模块在这里扩展，例如：
 	//   Chat *chat.Handler
@@ -75,4 +79,13 @@ func Register(e *gin.Engine, deps Deps) {
 	v1.POST("/documents/:id/reindex", deps.Knowledge.Reindex)
 	v1.POST("/documents/:id/embed", deps.Knowledge.Embed)
 	v1.POST("/documents/:id/cancel", deps.Knowledge.Cancel)
+
+	// 对话模型：由用户配置并落库。设默认是独立动作——它要先清掉旧默认，
+	// 一次有副作用的原子操作，不适合塞进"整体替换字段"的 PATCH。
+	v1.GET("/chat-models", deps.ChatModels.List)
+	v1.POST("/chat-models", deps.ChatModels.Create)
+	v1.PATCH("/chat-models/:id", deps.ChatModels.Update)
+	v1.DELETE("/chat-models/:id", deps.ChatModels.Delete)
+	v1.POST("/chat-models/:id/default", deps.ChatModels.SetDefault)
+	v1.POST("/chat-models/:id/test", deps.ChatModels.Test)
 }

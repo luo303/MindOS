@@ -8,6 +8,8 @@
 # --- build output ---
 /backend/bin/
 /backend/tmp/
+# 运行期生成的本地数据（主密钥等），绝不能入库
+/backend/.data/
 # go build ./cmd/server 不带 -o 时会把二进制写到当前目录
 /backend/server
 /frontend/dist/

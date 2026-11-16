@@ -115,7 +115,9 @@ type settingsView struct {
 		Bucket         string `json:"bucket"`
 		MaxUploadBytes int64  `json:"max_upload_bytes"`
 	} `json:"storage"`
-	LLM       modelSettingsView `json:"llm"`
+	// 对话模型不在这里：它由用户配置并落库（/chat-models），
+	// 环境变量里已经没有这一组配置了。这里返回一个空对象只会让人以为
+	// "配了但读不到"，不如干脆不出现。
 	Embedding modelSettingsView `json:"embedding"`
 	Agent     struct {
 		MaxSteps         int   `json:"max_steps"`
@@ -145,7 +147,6 @@ func (h *SettingsHandler) Get(c *gin.Context) {
 	view.Storage.Endpoint = cfg.Storage.MinIO.Endpoint
 	view.Storage.Bucket = cfg.Storage.MinIO.Bucket
 	view.Storage.MaxUploadBytes = cfg.Storage.MaxUploadBytes
-	view.LLM = modelView(cfg.LLM.APIBase, cfg.LLM.APIKey, cfg.LLM.Model)
 	view.Embedding = modelView(cfg.Embedding.APIBase, cfg.Embedding.APIKey, cfg.Embedding.Model)
 	view.Agent.MaxSteps = cfg.Agent.MaxSteps
 	view.Agent.TokenBudget = cfg.Agent.TokenBudget

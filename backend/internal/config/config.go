@@ -28,7 +28,7 @@ type Config struct {
 	DB        DBConfig
 	Redis     RedisConfig
 	Storage   StorageConfig
-	LLM       LLMConfig
+	Crypto    CryptoConfig
 	Embedding EmbeddingConfig
 	Agent     AgentConfig
 	Job       JobConfig
@@ -41,6 +41,9 @@ type AppConfig struct {
 	Env             string        // dev | prod
 	HTTPAddr        string        // 例如 ":8080"
 	ShutdownTimeout time.Duration // 优雅关闭的最长等待时间
+	// DataDir 是本进程可写的本地目录，存放运行期生成的密钥等文件。
+	// 相对路径按启动目录解析（所有命令都在 backend/ 下执行）。
+	DataDir string
 }
 
 // LogConfig 控制日志输出。
@@ -83,13 +86,6 @@ type RedisConfig struct {
 	PoolSize int
 }
 
-// IsLLMConfigured 报告 LLM 是否已配置到"可用"程度。
-// 真正调用模型时会用到；这里只回答"配了没有"，供 /settings 与 /system/status 展示，
-// 未配置是合法状态（用户可能还没填 Key），不算启动错误。
-func (c *Config) IsLLMConfigured() bool {
-	return c.LLM.APIBase != "" && c.LLM.APIKey != "" && c.LLM.Model != ""
-}
-
 // StorageConfig 描述"原始文档存到哪"以及单次导入的大小上限。
 //
 // 只有一个目的地：MinIO。它不是可选项——原文是"重索引/重算 embedding"的唯一依据，
@@ -115,12 +111,14 @@ type MinIOConfig struct {
 	UseSSL    bool
 }
 
-// LLMConfig 描述对话模型接入参数（OpenAI 兼容接口）。
-// 三个字段要么全配、要么全空；这里只做读取与校验，调用尚未接入。
-type LLMConfig struct {
-	APIBase string // 例如 https://api.openai.com/v1
-	APIKey  string // 只从环境变量读，禁止入库、禁止进日志
-	Model   string // 例如 gpt-4o-mini
+// CryptoConfig 描述本地加密材料。
+//
+// MasterKey 是 base64 的 32 字节 AES 密钥，用于加密落库的模型 API Key。
+// 留空时由 chatmodel.LoadMasterKey 在 DataDir 下自动生成 master.key：
+// 强制用户先准备一个密钥是自托管团队的门槛，不是本地单用户该有的负担。
+// 代价写在 docs/design/rag.md 的已知限制里——文件丢了就再也解不开已存的 Key。
+type CryptoConfig struct {
+	MasterKey string
 }
 
 // EmbeddingConfig 描述向量模型接入参数。维度写死在 knowledge.EmbeddingDimensions（1024），
@@ -228,6 +226,7 @@ func Load() (*Config, error) {
 			Env:             env,
 			HTTPAddr:        reader.text("HTTP_ADDR", ":8080"),
 			ShutdownTimeout: reader.duration("SHUTDOWN_TIMEOUT", 10*time.Second),
+			DataDir:         reader.text("MINDOS_DATA_DIR", ".data"),
 		},
 		Log: LogConfig{
 			Level:  strings.ToLower(reader.text("LOG_LEVEL", "debug")),
@@ -262,10 +261,8 @@ func Load() (*Config, error) {
 				UseSSL:    reader.boolean("MINIO_USE_SSL", false),
 			},
 		},
-		LLM: LLMConfig{
-			APIBase: strings.TrimRight(reader.text("LLM_API_BASE", ""), "/"),
-			APIKey:  reader.text("LLM_API_KEY", ""),
-			Model:   reader.text("LLM_MODEL", ""),
+		Crypto: CryptoConfig{
+			MasterKey: reader.text("MINDOS_MASTER_KEY", ""),
 		},
 		Embedding: EmbeddingConfig{
 			APIBase: strings.TrimRight(reader.text("EMBEDDING_API_BASE", ""), "/"),
@@ -369,7 +366,6 @@ func (c *Config) validate() error {
 	if strings.TrimSpace(c.Storage.MinIO.Bucket) == "" {
 		errs = append(errs, errors.New("MINIO_BUCKET is required"))
 	}
-	errs = append(errs, validateModelConfig("LLM", c.LLM.APIBase, c.LLM.APIKey, c.LLM.Model)...)
 	errs = append(errs, validateModelConfig("EMBEDDING", c.Embedding.APIBase, c.Embedding.APIKey, c.Embedding.Model)...)
 	// 向量化的两个运行参数即使未配置模型也要合法：它们有默认值，
 	// 配错了说明用户在本子上写错了，不该带病启动。

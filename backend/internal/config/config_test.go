@@ -220,9 +220,6 @@ func TestLoadNewPhase2Defaults(t *testing.T) {
 	if cfg.Storage.MinIO.Endpoint != "localhost:9000" || cfg.Storage.MinIO.Bucket != "mindos" {
 		t.Fatalf("Storage.MinIO = %+v, want localhost:9000/mindos", cfg.Storage.MinIO)
 	}
-	if cfg.IsLLMConfigured() {
-		t.Fatal("LLM should be unconfigured by default")
-	}
 	if cfg.Embedding.APIBase != "" || cfg.Embedding.APIKey != "" || cfg.Embedding.Model != "" {
 		t.Fatalf("Embedding should be empty by default, got %+v", cfg.Embedding)
 	}
@@ -239,9 +236,9 @@ func TestLoadReadsModelAndBudgetConfig(t *testing.T) {
 	t.Setenv("MINIO_ACCESS_KEY", "mindos")
 	t.Setenv("MINIO_SECRET_KEY", "test-secret")
 	t.Setenv("MINIO_BUCKET", "mindos-test")
-	t.Setenv("LLM_API_BASE", "https://api.example.com/v1/")
-	t.Setenv("LLM_API_KEY", "sk-1234567890abcdef")
-	t.Setenv("LLM_MODEL", "gpt-4o-mini")
+	t.Setenv("EMBEDDING_API_BASE", "https://api.example.com/v1/")
+	t.Setenv("EMBEDDING_API_KEY", "sk-1234567890abcdef")
+	t.Setenv("EMBEDDING_MODEL", "bge-m3")
 	t.Setenv("AGENT_MAX_STEPS", "15")
 	t.Setenv("AGENT_TOKEN_BUDGET", "50000")
 	t.Setenv("AGENT_RUN_TIMEOUT", "2m")
@@ -251,11 +248,11 @@ func TestLoadReadsModelAndBudgetConfig(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	// 结尾斜杠被归一化掉，避免拼 URL 时出现双斜杠。
-	if cfg.LLM.APIBase != "https://api.example.com/v1" {
-		t.Fatalf("LLM.APIBase = %q, want trailing slash trimmed", cfg.LLM.APIBase)
+	if cfg.Embedding.APIBase != "https://api.example.com/v1" {
+		t.Fatalf("Embedding.APIBase = %q, want trailing slash trimmed", cfg.Embedding.APIBase)
 	}
-	if !cfg.IsLLMConfigured() {
-		t.Fatal("LLM should be configured when all three fields are set")
+	if !cfg.IsEmbeddingConfigured() {
+		t.Fatal("Embedding should be configured when all three fields are set")
 	}
 	if cfg.Storage.MinIO.Bucket != "mindos-test" {
 		t.Fatalf("Storage.MinIO.Bucket = %q", cfg.Storage.MinIO.Bucket)
@@ -265,17 +262,19 @@ func TestLoadReadsModelAndBudgetConfig(t *testing.T) {
 	}
 }
 
-// TestLoadRejectsPartialModelConfig 确认模型配置只配一半时启动报错并指出缺哪几项。
-func TestLoadRejectsPartialModelConfig(t *testing.T) {
+// TestLoadRejectsPartialEmbeddingConfig 确认向量模型配置只配一半时启动报错并指出缺哪几项。
+//
+// 对话模型已不在这里：它由用户配置并存库，服务端不再读 LLM_* 环境变量。
+func TestLoadRejectsPartialEmbeddingConfig(t *testing.T) {
 	t.Chdir(t.TempDir())
 	setRequiredEnv(t)
-	t.Setenv("LLM_API_KEY", "sk-only-key")
+	t.Setenv("EMBEDDING_API_KEY", "sk-only-key")
 
 	_, err := Load()
 	if err == nil {
-		t.Fatal("expected Load to reject partial LLM config")
+		t.Fatal("expected Load to reject partial embedding config")
 	}
-	for _, key := range []string{"LLM_API_BASE", "LLM_MODEL"} {
+	for _, key := range []string{"EMBEDDING_API_BASE", "EMBEDDING_MODEL"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error %q does not include missing key %s", err, key)
 		}
@@ -338,9 +337,6 @@ func TestValidate(t *testing.T) {
 		{name: "agent max steps", mutate: func(c *Config) { c.Agent.MaxSteps = 0 }, want: "AGENT_MAX_STEPS"},
 		{name: "agent token budget", mutate: func(c *Config) { c.Agent.TokenBudget = 0 }, want: "AGENT_TOKEN_BUDGET"},
 		{name: "agent run timeout", mutate: func(c *Config) { c.Agent.RunTimeout = 0 }, want: "AGENT_RUN_TIMEOUT"},
-		{name: "llm partial", mutate: func(c *Config) {
-			c.LLM.APIKey = "sk-test"
-		}, want: "LLM_API_BASE"},
 		{name: "embedding partial", mutate: func(c *Config) {
 			c.Embedding.APIBase = "https://x"
 			c.Embedding.APIKey = "k"
