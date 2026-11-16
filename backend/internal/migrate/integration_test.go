@@ -2,16 +2,11 @@ package migrate
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib" // 具名导入：既注册 "pgx" 驱动，也用 RegisterConnConfig
-
+	"github.com/luo303/mindos/backend/internal/testsupport"
 	"github.com/luo303/mindos/backend/migrations"
 )
 
@@ -26,47 +21,12 @@ import (
 // 未设置该变量时全部跳过（CI 之外不强制有数据库），但迁移验收必须实测通过。
 // 测试会创建 mindos_migrate_test_<随机> 数据库并在结束时 DROP，不碰开发库。
 
-const testDSNEnv = "MINDOS_TEST_DSN"
-
 // setupTestDB 创建独立测试库并返回指向它的 Runner。
 // 用独立库而不是共享开发库：集成测试要执行 down（删扩展），
 // 跑在开发库上会把别人正在用的环境拆掉。
 func setupTestDB(t *testing.T) *Runner {
 	t.Helper()
-	adminDSN := os.Getenv(testDSNEnv)
-	if adminDSN == "" {
-		t.Skipf("%s not set; skipping integration test", testDSNEnv)
-	}
-
-	admin, err := sql.Open("pgx", adminDSN)
-	if err != nil {
-		t.Fatalf("open admin db: %v", err)
-	}
-	defer admin.Close()
-
-	testDB := fmt.Sprintf("mindos_migrate_test_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(
-		fmt.Sprintf("CREATE DATABASE %s", testDB)); err != nil {
-		t.Fatalf("create test database: %v", err)
-	}
-	t.Cleanup(func() {
-		// WITH (FORCE) 断开残留连接再删，避免测试失败时留下孤儿库。
-		_, _ = admin.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", testDB))
-	})
-
-	// 用 pgx 解析连接串再改库名，而不是字符串替换——
-	// key=value 和 URI 两种形式都能正确处理；stdlib.RegisterConnConfig
-	// 会把这个配置注册成一个内部 DSN，凭它打开的连接完全等价。
-	pgCfg, err := pgx.ParseConfig(adminDSN)
-	if err != nil {
-		t.Fatalf("parse %s: %v", testDSNEnv, err)
-	}
-	pgCfg.Database = testDB
-	db, err := sql.Open("pgx", stdlib.RegisterConnConfig(pgCfg))
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := testsupport.NewDatabase(t, "migrate")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

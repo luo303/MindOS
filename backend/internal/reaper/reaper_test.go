@@ -2,20 +2,15 @@ package reaper
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
 	"github.com/luo303/mindos/backend/internal/migrate"
 	"github.com/luo303/mindos/backend/internal/outbox"
 	"github.com/luo303/mindos/backend/internal/task"
+	"github.com/luo303/mindos/backend/internal/testsupport"
 	"github.com/luo303/mindos/backend/migrations"
 )
 
@@ -26,55 +21,16 @@ import (
 //
 //	MINDOS_TEST_DSN="host=localhost port=5432 user=mindos password=mindos_dev_password dbname=postgres sslmode=disable" \
 //	go test -count=1 -run Integration ./internal/reaper/
-const testDSNEnv = "MINDOS_TEST_DSN"
-
 func setupDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	adminDSN := os.Getenv(testDSNEnv)
-	if adminDSN == "" {
-		t.Skipf("%s not set; skipping integration test", testDSNEnv)
-	}
+	db := testsupport.NewDatabase(t, "reaper")
 
-	admin, err := sql.Open("pgx", adminDSN)
-	if err != nil {
-		t.Fatalf("open admin db: %v", err)
-	}
-	defer admin.Close()
-
-	testDB := fmt.Sprintf("mindos_reaper_test_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(fmt.Sprintf("CREATE DATABASE %s", testDB)); err != nil {
-		t.Fatalf("create test database: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", testDB))
-	})
-
-	pgCfg, err := pgx.ParseConfig(adminDSN)
-	if err != nil {
-		t.Fatalf("parse %s: %v", testDSNEnv, err)
-	}
-	pgCfg.Database = testDB
-	db, err := sql.Open("pgx", stdlib.RegisterConnConfig(pgCfg))
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := migrate.New(db, migrations.FS).Up(ctx); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
-
-	gdb, err := gorm.Open(postgres.New(postgres.Config{Conn: db}), &gorm.Config{
-		SkipDefaultTransaction: true,
-		TranslateError:         true,
-		NowFunc:                func() time.Time { return time.Now().UTC() },
-	})
-	if err != nil {
-		t.Fatalf("open gorm: %v", err)
-	}
-	return gdb
+	return testsupport.NewGorm(t, db)
 }
 
 // newReaper 用很短的扫描参数构造，避免测试里 sleep 太久。
