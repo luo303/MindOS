@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/luo303/mindos/backend/internal/agent"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/config"
 	"github.com/luo303/mindos/backend/internal/dispatch"
@@ -260,9 +261,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init model cipher: %w", err)
 	}
-	// prober 先留空：连通性测试需要 agent 层的模型构造能力，
-	// 由后面装配 agent 时注入。为 nil 时测试接口会明确报"暂不可用"。
-	chatModelSvc := chatmodel.NewService(chatmodel.NewRepository(db), modelCipher, nil)
+	// prober 用 agent.Probe：连通性测试必须走问答用的同一个客户端，
+	// "探针能过、真实调用失败"是最没用的测试结果。
+	chatModelSvc := chatmodel.NewService(chatmodel.NewRepository(db), modelCipher, agent.Probe)
 	log.Info("chat model config ready", zap.String("data_dir", cfg.App.DataDir))
 
 	// 任务表在业务层之前创建：knowledge 需要它判断"取消时任务排着队还是在跑"，
