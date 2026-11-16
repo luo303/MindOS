@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/luo303/mindos/backend/internal/agent"
+	"github.com/luo303/mindos/backend/internal/chat"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/config"
 	"github.com/luo303/mindos/backend/internal/dispatch"
@@ -266,6 +267,32 @@ func run() error {
 	chatModelSvc := chatmodel.NewService(chatmodel.NewRepository(db), modelCipher, agent.Probe)
 	log.Info("chat model config ready", zap.String("data_dir", cfg.App.DataDir))
 
+	// —— 检索与问答 ——
+	//
+	// 一个 Searcher 两处用：宿主预检索用它判断阈值（不调模型就能说"没有依据"），
+	// agent 的 search_knowledge 工具用它做二次检索。
+	// embedding 为 nil 时 Search 直接报"未配置"，不会悄悄退化成全文检索。
+	searcher := knowledge.NewSearcher(knowledge.NewRepository(db), embedding)
+
+	agentBuilder := agent.NewBuilder(
+		knowledgeRetriever{searcher: searcher},
+		agent.DefaultLimits(),
+		log.Named("agent"),
+	)
+
+	chatSvc := chat.NewService(
+		searcher,
+		chatModelSvc,
+		chat.NewRepository(db),
+		agentBuilder,
+		chat.Settings{
+			TopK:          cfg.Rag.TopK,
+			MinSimilarity: cfg.Rag.MinSimilarity,
+			Timeout:       cfg.Rag.Timeout,
+		},
+		log.Named("chat"),
+	)
+
 	// 任务表在业务层之前创建：knowledge 需要它判断"取消时任务排着队还是在跑"，
 	// 消费端需要它写进度，两者共用同一个对象。
 	taskRepo := task.NewRepository(db)
@@ -426,6 +453,7 @@ func run() error {
 		Settings:   settings,
 		Knowledge:  knowledge.NewHandler(knowledgeSvc),
 		ChatModels: chatmodel.NewHandler(chatModelSvc),
+		Ask:        chat.NewHandler(chatSvc),
 	})
 
 	// 【为什么不用 router.Run()】
@@ -531,4 +559,33 @@ func (p relayPublisher) Publish(ctx context.Context, m outbox.Message) error {
 		return fmt.Errorf("%w: %v", outbox.ErrQueueUnavailable, err)
 	}
 	return err
+}
+
+// knowledgeRetriever 把 knowledge.Searcher 适配成 agent.Retriever。
+//
+// 适配放在 main 而不是任一包里：agent 不该为了一个方法认识 knowledge 的类型，
+// knowledge 也不该知道有人要拿它喂模型。这层转换只有一行循环，
+// 却让 agent 包可以脱离数据库测试。
+type knowledgeRetriever struct{ searcher *knowledge.Searcher }
+
+func (r knowledgeRetriever) Search(ctx context.Context, query string, limit int) ([]agent.Hit, error) {
+	result, err := r.searcher.Search(ctx, query, limit, knowledge.DocumentFilter{})
+	if err != nil {
+		return nil, err
+	}
+	hits := make([]agent.Hit, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		hits = append(hits, agent.Hit{
+			DocumentID:  hit.DocumentID,
+			ChunkID:     hit.ChunkID,
+			Seq:         hit.Seq,
+			Title:       hit.Title,
+			Heading:     hit.Heading,
+			Content:     hit.Content,
+			StartOffset: hit.StartOffset,
+			EndOffset:   hit.EndOffset,
+			Similarity:  hit.Similarity,
+		})
+	}
+	return hits, nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/luo303/mindos/backend/internal/chat"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/handler"
 	"github.com/luo303/mindos/backend/internal/httpx"
@@ -27,6 +28,9 @@ type Deps struct {
 
 	// ChatModels 是用户配置的对话模型（存库、加密、可切换）。
 	ChatModels *chatmodel.Handler
+
+	// Ask 是单轮流式问答。
+	Ask *chat.Handler
 
 	// 后续模块在这里扩展，例如：
 	//   Chat *chat.Handler
@@ -88,4 +92,8 @@ func Register(e *gin.Engine, deps Deps) {
 	v1.DELETE("/chat-models/:id", deps.ChatModels.Delete)
 	v1.POST("/chat-models/:id/default", deps.ChatModels.SetDefault)
 	v1.POST("/chat-models/:id/test", deps.ChatModels.Test)
+
+	// 问答：SSE 流式。用 POST 而不是 GET，因为问题在 body 里，
+	// 而且它不该被浏览器或代理缓存。
+	v1.POST("/ask", deps.Ask.Ask)
 }

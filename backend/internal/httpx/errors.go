@@ -155,6 +155,11 @@ var (
 	// 或库里一条对话模型配置都没有。
 	// 用 503 而不是 400——请求本身没问题，是这台机器还没配好。
 	ErrModelNotConfigured = &Error{Code: "MODEL_NOT_CONFIGURED", Message: "model is not configured", HTTPStatus: http.StatusServiceUnavailable}
+	// ErrEmbeddingNotConfigured 表示向量模型没配。
+	//
+	// 问答不因此退化成纯全文检索：中文全文在 simple 配置下基本召回不了东西，
+	// 退化只会给用户"能答但不准"的假象，比直接说"还不能用"更糟。
+	ErrEmbeddingNotConfigured = &Error{Code: "EMBEDDING_NOT_CONFIGURED", Message: "embedding model is not configured", HTTPStatus: http.StatusServiceUnavailable}
 	// ErrModelNotSelected 表示有多条对话模型配置，但没有任何一条被设为默认，
 	// 请求也没指定用哪条。
 	// 用 400 而不是 503：服务是好的，缺的是"用哪个"这个参数。

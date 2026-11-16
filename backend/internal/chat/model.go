@@ -20,6 +20,10 @@ const (
 	VerdictAnswered   = "answered"
 	VerdictRefused    = "refused"
 	VerdictUngrounded = "ungrounded"
+	// VerdictFailed 表示这次没有产出结果：模型 429/超时、客户端中途断开、
+	// token 超预算。它单独成一类而不是塞进 refused——拒答率是核心质量指标，
+	// 把"上游挂了"算成"库里没有依据"会让那个数字彻底失去意义。
+	VerdictFailed = "failed"
 )
 
 // 裁决原因。写进 verdict_reason，用来区分"哪一道闸拦下的"。
@@ -28,6 +32,12 @@ const (
 	ReasonNoCitation      = "no_citation"      // 模型输出里一个 [n] 都没有
 	ReasonUnknownCitation = "unknown_citation" // 引用了 registry 里不存在的编号
 	ReasonModelRefused    = "model_refused"    // 模型自己说无法回答
+
+	// 下面四个与 VerdictFailed 配套：verdict 说"没有结果"，这里说"为什么"。
+	ReasonUpstreamError = "upstream_error"
+	ReasonCancelled     = "cancelled"
+	ReasonTimeout       = "timeout"
+	ReasonBudget        = "budget_exceeded"
 )
 
 // Run 对应 qa_runs 表的一行，也就是"一次问答"。

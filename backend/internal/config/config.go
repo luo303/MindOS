@@ -30,10 +30,12 @@ type Config struct {
 	Storage   StorageConfig
 	Crypto    CryptoConfig
 	Embedding EmbeddingConfig
-	Agent     AgentConfig
-	Job       JobConfig
-	Reaper    ReaperConfig
-	Rabbit    RabbitConfig
+	// Rag 是问答的三项参数：进上下文的片段数、拒答阈值、整体超时。
+	Rag    RagConfig
+	Agent  AgentConfig
+	Job    JobConfig
+	Reaper ReaperConfig
+	Rabbit RabbitConfig
 }
 
 // AppConfig 控制 HTTP 服务本身。
@@ -138,6 +140,29 @@ type EmbeddingConfig struct {
 // 文档照常导入与检索（全文），只是不做语义检索。
 func (c *Config) IsEmbeddingConfigured() bool {
 	return c.Embedding.APIBase != "" && c.Embedding.APIKey != "" && c.Embedding.Model != ""
+}
+
+// RagConfig 是 RAG 问答的运行参数。
+//
+// 三项都是"部署差异"而不是产品约束：片段数取决于模型上下文有多大，
+// 阈值取决于语料与向量模型，超时取决于模型快慢。所以它们进 .env，
+// 而工具调用次数与 token 预算留在代码常量里（那两条放开只会烧钱）。
+type RagConfig struct {
+	// TopK 是进上下文的片段数。
+	TopK int
+	// MinSimilarity 是拒答阈值：向量路最高相似度低于它就不调模型。
+	//
+	// 只能用余弦相似度来比，不能用 RRF 分数——后者只跟名次有关，
+	// 没有绝对含义，拿它比阈值会得到一个恒真或恒假的条件。
+	//
+	// 0.46 是按当前语料实测出来的分界，不是照搬的经验值：bge-m3 对完全
+	// 不相关的中文问题也有 0.4+ 的相似度（实测 8 个问题：库里有答案的四个
+	// 落在 0.492~0.647，库里没有的四个落在 0.422~0.452）。取 0.46 落在
+	// 两簇之间，且偏向"不误拒"一侧——误拒是用户直接感知的失败，漏过一次
+	// 只是多花一次模型调用，后面还有引用校验兜底。语料变杂后要重测。
+	MinSimilarity float64
+	// Timeout 覆盖检索 + 模型 + 工具调用的整段时间。
+	Timeout time.Duration
 }
 
 // AgentConfig 是 Agent 运行的三重预算（AGENTS.md 硬性约束 #10）。
@@ -264,6 +289,11 @@ func Load() (*Config, error) {
 		Crypto: CryptoConfig{
 			MasterKey: reader.text("MINDOS_MASTER_KEY", ""),
 		},
+		Rag: RagConfig{
+			TopK:          reader.integer("RAG_TOP_K", 8),
+			MinSimilarity: reader.decimal("RAG_MIN_SIMILARITY", 0.46),
+			Timeout:       reader.duration("RAG_TIMEOUT", 60*time.Second),
+		},
 		Embedding: EmbeddingConfig{
 			APIBase: strings.TrimRight(reader.text("EMBEDDING_API_BASE", ""), "/"),
 			APIKey:  reader.text("EMBEDDING_API_KEY", ""),
@@ -376,6 +406,16 @@ func (c *Config) validate() error {
 	if c.Embedding.BatchSize < 1 || c.Embedding.BatchSize > 64 {
 		errs = append(errs, fmt.Errorf(
 			"EMBEDDING_BATCH_SIZE must be between 1 and 64, got %d", c.Embedding.BatchSize))
+	}
+	if c.Rag.TopK < 1 || c.Rag.TopK > 20 {
+		errs = append(errs, fmt.Errorf("RAG_TOP_K must be between 1 and 20, got %d", c.Rag.TopK))
+	}
+	// 0 是合法值（永不拒答），越界说明写错了：相似度只有 0~1 这一个区间。
+	if c.Rag.MinSimilarity < 0 || c.Rag.MinSimilarity > 1 {
+		errs = append(errs, fmt.Errorf("RAG_MIN_SIMILARITY must be between 0 and 1, got %v", c.Rag.MinSimilarity))
+	}
+	if c.Rag.Timeout <= 0 {
+		errs = append(errs, errors.New("RAG_TIMEOUT must be greater than 0"))
 	}
 	if c.Agent.MaxSteps < 1 {
 		errs = append(errs, fmt.Errorf("AGENT_MAX_STEPS must be at least 1, got %d", c.Agent.MaxSteps))
@@ -552,6 +592,23 @@ func (r *envReader) integer64(key string, fallback int64) int64 {
 		return fallback
 	}
 	return n
+}
+
+// decimal 读取浮点数（相似度阈值是 0~1 的小数）。
+// 与 integer 一样：只有"没填"才回退，填了但不合法会阻止启动——
+// 把写错的阈值静默当成默认值，会让"为什么总是拒答"变成一件查不出原因的事。
+func (r *envReader) decimal(key string, fallback float64) float64 {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	v = strings.TrimSpace(v)
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		r.errs = append(r.errs, fmt.Errorf("invalid %s: must be a number, got %q", key, v))
+		return fallback
+	}
+	return f
 }
 
 // boolean 只接受常见标准写法，不把 "maybe" 之类静默当成 false。
