@@ -22,7 +22,7 @@
 
 技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
 
-**当前状态（2026-11-16）：文档入库、异步任务链路与分块向量化已完成并验证，尚无检索。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md` 与 `docs/design/embedding.md`。
+**当前状态（2026-11-16）：文档入库、异步任务链路、分块向量化与单轮 RAG 问答已完成并验证。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`；`POST /ask` 走混合检索（RRF）+ 阈值闸门 + Eino ADK Agent + SSE 流式回答 + 引用校验，对话模型配置存库（密钥 AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md` 与 `docs/design/rag.md`。
 
 ## 2. 仓库结构与命令
 
@@ -153,7 +153,8 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 - 预定义错误集中在 `internal/httpx/errors.go`，新增错误码必须加在这里。
 - `*httpx.Error` 是模板：`WithMessage` / `Wrap` **必须返回副本**，不得修改包级变量。
 - `request_id` 由中间件写入三处：`gin.Context`、标准库 `context`、响应头，缺一不可。
-- SSE 接口不走信封：事件体统一 `{"type":"...","seq":n,"payload":{}}`，客户端按 `seq` 断点续传。
+- SSE 接口不走信封：事件体统一 `{"type":"...","seq":n,"payload":{}}`；`seq` 只用于客户端排序校验，断线即结束、暂不续传。
+- SSE 接口的存活不受 `http.Server.WriteTimeout` 限制：流开始后用 `http.NewResponseController().SetWriteDeadline(零值)` 清掉本请求的写截止，超时由业务自己的超时配置兜底（普通接口仍受全局 WriteTimeout 保护）。
 
 ## 8. 新增一个接口 / 一个工具的固定流程
 

@@ -373,6 +373,28 @@ npm run build
 
 ---
 
+### RAG 问答与对话模型配置（2026-11-16）
+
+**目标**：单轮问答——答案带能点回原文的引用，没有依据明确拒答；对话模型由用户在界面上配置、加密落库。方案与验收细节见 `docs/design/rag.md`。
+
+**链路**：宿主预检索（向量+全文 RRF，非 tool）→ 阈值闸门（maxSimilarity < `RAG_MIN_SIMILARITY` 直接拒答，不调模型）→ 编号注入 prompt → Eino ADK `ChatModelAgent + Runner`（`search_knowledge` 工具供二次检索）→ 流式 delta → verdict → citation → done → 落 `qa_runs`。引用编号由宿主分配，越界引用判 `ungrounded` 并把已流出的正文撤回。
+
+**关键决定**
+
+1. **检索不做成 tool 的"第一次"**：首检是必答题，放进 prompt 的命中率与成本都可控；tool 只留给模型主动做的二次检索。
+2. **引用可信度在代码层兜底，不靠模型自觉**：citation 事件只发校验通过的编号映射，未通过（无引用/越界）则 verdict `ungrounded`、前端整段替换为撤回文案。这是"流式 + 末尾裁决"的代价，也是唯一代价。
+3. **对话模型配置存库不存 .env**：改完立即生效、不需要重启；Key 用 AES-256-GCM 加密（`MINDOS_MASTER_KEY` 未配则自动生成到 `backend/.data/master.key`），接口只回末四位。`LLM_*` 环境变量整体删除。
+4. **阈值 0.46**：方案初值 0.35，用真实语料校准后上调——库内问题 max similarity ≈ 0.64–0.68，库外问题被拒答时 max < 0.46。
+5. **SSE 不用 EventSource**：它只支持 GET，`/ask` 要 POST JSON body；前端用 fetch + ReadableStream 手写解析（按空行切事件、去 `\r`、坏行跳过）。
+
+**验证**：假模型端到端（正常/两类 ungrounded/model_refused/阈值拒答/qa_runs 落库）+ 真实模型冒烟（讯飞 spark-x2.6：库内问题 46 个 delta 带真实引用 34.5s 完成；库外问题 0 token 125ms 拒答）。后端 `build/vet/test -race`（含真库集成）与前端 `tsc/eslint/56 用例/build` 全绿。
+
+**踩过的坑**：`http.Server.WriteTimeout`（20s）对 SSE 是硬伤——它是整条响应的硬上限，真实模型回答在 24.5s 时被砍断，客户端只收到 retrieval 事件。假模型冒烟没暴露是因为假模型秒回。**教训：流式接口的故障演练必须用接近真实的时延跑一遍**。修复是 `/ask` 用 `http.NewResponseController().SetWriteDeadline(零值)` 清掉本请求的写截止（Go 1.20+ 官方写法），流的存活交给 `RAG_TIMEOUT` 与客户端断开。
+
+**已知限制**：见 `docs/design/rag.md` §13（中文全文弱、引用粒度是分块、无 rerank、单轮、无评测基线、思维链丢弃等 11 条）。
+
+---
+
 ## 4. 未做的事与结论
 
 暂不实现、但已经有判断的能力。写清触发条件，避免"想起来就做"或"重新调研一遍"。

@@ -105,6 +105,8 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
 
 下图是完整形态。Phase 13 先实现无工具对话与事件流，Phase 14 接工具与自动记忆提炼，Phase 15 接审批恢复，Phase 19 才收口完整的上下文组装。
 
+**当前已实现（2026-11-16）**：单轮 RAG 问答 `POST /ask`——宿主预检索 → 阈值闸门 → Eino ADK Agent（带 `search_knowledge` 工具）→ SSE 流式回答 → 引用校验与裁决 → 落 `qa_runs`。对话模型由用户在设置页配置（`chat_models` 表，密钥 AES-256-GCM 加密）。多轮会话（`conversations` / `messages`）、审批恢复、记忆提炼仍未做，链路设计与验收见 `docs/design/rag.md`。
+
 ```text
 用户发消息（POST /conversations/:id/messages，SSE 响应）
   → chat/service 落库 user message，创建 agent_runs(status=running)
@@ -223,6 +225,12 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
 
 ### 5.3 agent 与 chat
 
+**chat_models**（已实现，迁移 0009）：`id / name unique / base_url / model / api_key_cipher bytea / api_key_hint / temperature / max_tokens / is_default / last_used_at / created_at / updated_at`。
+对话模型配置由用户管理；`api_key` 用 AES-256-GCM 加密入库，接口只回末四位；`is_default` 有部分唯一索引兜底（最多一条默认）。
+
+**qa_runs**（已实现，迁移 0010）：`id / question / answer / raw_answer / verdict(answered|refused|ungrounded|failed) / verdict_reason / citations jsonb / retrieved jsonb / chat_model_id FK / model / prompt_tokens / completion_tokens / latency_ms / error_code / created_at`。
+每次问答落一行，拒答与失败也落——拒答率与可复盘是这套系统的核心指标。
+
 **conversations**：`id / title / mode(chat|plan) / status / last_message_at / created_at`
 **messages**：`id / conversation_id / role(user|assistant|tool|system) / content / parts jsonb / citations jsonb / tokens / created_at`
 **conversation_summaries**：`id / conversation_id / up_to_message_id / summary / tokens / created_at`——压缩后的历史，原文仍保留。
@@ -316,11 +324,12 @@ Eino 的 `CheckPointStore` 接口就是 `Set/Get(ctx, key, []byte)`，状态用 
 
 排序之外还有一道**过滤**：`documents.status = 'ready'`，并可按 `collection` / `tags` 收窄。检索结果永远带 `document_id + seq + offset`，供前端高亮与引用跳转。
 
-### 6.3 RAG 回答
+### 6.3 RAG 回答（已实现）
 
-- 取 top 5–8 块进上下文，按文档聚合后按相关度排序，避免同一篇文档的碎片挤满窗口。
-- 回答必须带引用编号，格式 `[1]`，前端可点开查看原文片段。
-- **检索不到就直说检索不到**：在 system prompt 里明确"没有依据时不要编造"，并在代码层检查引用的 `document_id` 是否真的来自本次检索结果——模型编造引用是常见失败模式。
+- 取 top 5–8 块进上下文（`RAG_TOP_K`，默认 8），按文档聚合后按相关度排序，避免同一篇文档的碎片挤满窗口。
+- 回答必须带引用编号，格式 `[n]`，编号由宿主按检索顺序分配；前端把 `[n]` 渲染成跳回知识页对应分块的深链。
+- **检索不到就直说检索不到**：两道闸——检索层阈值闸门（max similarity < `RAG_MIN_SIMILARITY` 直接拒答、不调模型），输出层引用校验（无引用或编号越界判 `ungrounded`、正文撤回）。
+- 完整链路、事件契约与验收数据见 `docs/design/rag.md`。
 
 ## 7. 记忆设计（Memory）
 
