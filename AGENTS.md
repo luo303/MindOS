@@ -22,7 +22,7 @@
 
 技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
 
-**当前状态（2026-11-14）：文档入库与异步任务链路已完成并验证。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理，尚无向量与检索。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`。
+**当前状态（2026-11-16）：文档入库、异步任务链路与分块向量化已完成并验证，尚无检索。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md` 与 `docs/design/embedding.md`。
 
 ## 2. 仓库结构与命令
 

@@ -16,7 +16,7 @@ MindOS 是一个单用户、本地优先的 AI 个人工作空间：文档、网
 
 | 模块 | 做什么 | 状态 |
 |---|---|---|
-| Knowledge | 文档/笔记入库、解析、切分、管理、异步任务链路；向量化、混合检索、带引用问答待做 | 部分实现 |
+| Knowledge | 文档/笔记入库、解析、切分、分块向量化、管理、异步任务链路；混合检索与带引用问答待做 | 部分实现 |
 | Memory | 四类长期记忆（画像/事实/经历/项目）的提炼、去重合并、召回 | 未开始 |
 | Agent | Eino ADK 运行时、工具调用、预算闸门、checkpoint、人工审批、事件回放 | 未开始 |
 | Action | 目标 → 计划 → 任务三级结构，依赖与进度，Agent 拆解 + 人工确认 | 未开始 |
@@ -78,6 +78,8 @@ mindos/
 ```bash
 # 1. 准备配置（只需一次；.env 已被 gitignore）
 cp backend/.env.example backend/.env
+#    可选：填 EMBEDDING_* 启用语义向量（不填则文档只切分、不向量化）
+#    硅基流动免费模型：BASE=https://api.siliconflow.cn/v1  MODEL=BAAI/bge-m3  再填自己的 API_KEY
 
 # 2. 启动基础设施（在仓库根目录执行）
 docker compose --env-file backend/.env -f deployments/docker-compose.yml up -d
@@ -181,12 +183,15 @@ docker compose --env-file backend/.env -f deployments/docker-compose.yml down -v
 |---|---|
 | [AGENTS.md](AGENTS.md) | 开发准入约定：模块边界、硬约束、禁止事项、Git 规范 |
 | [docs/design/overview.md](docs/design/overview.md) | 领域模型、检索与记忆机制、Agent 运行时、API 清单 |
+| [docs/design/embedding.md](docs/design/embedding.md) | 向量化链路：两段任务、事务边界、错误分类、接口与已知限制 |
 | [docs/history.md](docs/history.md) | 开发记录：已完成的能力、设计取舍、故障演练结果、已知限制 |
 | [frontend/README.md](frontend/README.md) | 前端开发约定、目录结构、测试写法 |
 
 ## 当前状态
 
-已完成：工程基线（配置、日志、中间件、探针、优雅关闭）、数据库迁移与系统状态、前端骨架、文本文档入库（Markdown / TXT / 笔记）、文档管理（幂等导入、删除、重索引、分类与标签筛选）、异步任务链路（事务写 outbox → RabbitMQ → 消费端更新 tasks，含退避重试、取消、崩溃恢复与兜底对账）。
+已完成：工程基线（配置、日志、中间件、探针、优雅关闭）、数据库迁移与系统状态、前端骨架、文本文档入库（Markdown / TXT / 笔记）、文档管理（幂等导入、删除、重索引、分类与标签筛选）、异步任务链路（事务写 outbox → RabbitMQ → 消费端更新 tasks，含退避重试、取消、崩溃恢复与兜底对账）、分块向量化（切分后排 `document.embed` 任务，`vector(1024)` + HNSW，支持重建与批量回填）。
+
+向量模型是可选的：`EMBEDDING_*` 三项全空时导入照常，向量状态显示 `skipped`；配置后点「补齐向量」即可为已有文档补算。设计与取舍见 [docs/design/embedding.md](docs/design/embedding.md)。
 
 **不设路线图**：接下来做什么由使用者决定，不预先排期。已经做过的事、当时的设计取舍与已知限制记在 [docs/history.md](docs/history.md)。
 

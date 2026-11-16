@@ -92,9 +92,11 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
   → 同一事务写 jobs(type=document_ingest) + outbox_events
   → MQ 投递唤醒 worker
   → worker 领取 job（条件更新 + locked_until）
-  → 解析正文（按 mime 选 parser）→ 按标题/段落切分 → 批量 embedding
-  → 写 document_chunks，documents 置 ready
-  → 失败：attempts+1，未超限则 run_after 退避重投；超限置 failed 并保留错误码
+  → 解析正文（按 mime 选 parser）→ 按标题/段落切分 → 一个事务写 document_chunks，documents 置 ready
+  → 同一事务里排 document.embed 任务（未配置模型则标 skipped，不排）
+  → 消费 document.embed：读分块 → 批量 embedding → 一个事务写向量，embed_status=done
+  → 失败：消息重投（3 次，3s/6s 退避）；超限时写错误码——切分失败改 documents.status，
+     向量化失败只改 embed_*，文档仍是 ready
 ```
 
 取消：`documents` 置 `cancelling` 时，worker 通过 job 级 `context` 中断，已写入的分块回滚删除。
@@ -166,6 +168,11 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
 | status | text | `pending` / `parsing` / `indexing` / `ready` / `failed` / `cancelling` |
 | chunk_count | int | 分块数，便于核对 |
 | error_code / error_message | text | 对外只暴露错误码 |
+| embed_status | text | `pending` / `running` / `done` / `failed` / `skipped`（未配置模型） |
+| embed_model / embed_dimensions | text / int | 产生当前向量的模型与维度，判断"向量是否过期"的依据 |
+| embedded_chunks | int | 已有向量的分块数，done 时应等于 chunk_count |
+| embed_error_code / embed_error_message | text | 向量化失败原因，与上面两个 error_* 分开 |
+| embedded_at | timestamptz | 最近一次向量化完成时间 |
 | created_at / updated_at | timestamptz | UTC |
 
 **document_chunks**
@@ -179,11 +186,12 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
 | heading | text | 所在章节标题，检索结果展示用 |
 | start_offset / end_offset | int | 原始正文的**码点偏移**（Unicode code point，不是字节），**引用的定位依据** |
 | token_count | int | 供上下文预算计算 |
-| embedding | vector(1536) | HNSW 索引，`vector_cosine_ops` |
+| embedding | vector(1024) | HNSW 索引，`vector_cosine_ops`；1024 对齐 bge-m3，也在 HNSW 上限（2000）内 |
+| embed_model / embedded_at | text / timestamptz | 这条向量由哪个模型在什么时候产出 |
 | tsv | tsvector | 生成列，GIN 索引 |
 | created_at | timestamptz | UTC |
 
-**维度为什么写死 1536**：pgvector 的列维度在迁移时确定，换 provider 就意味着重建索引与全量重算。默认对齐 `text-embedding-3-small`；要换模型，走一次"新增列 → 双写 → 回填 → 切读 → 删旧列"的迁移，不是改个配置。
+**维度为什么写死 1024**：pgvector 的列维度在迁移时确定，换 provider 就意味着重建索引与全量重算。1024 对齐 `bge-m3`（本机 Ollama 与硅基流动都能免费跑），且低于 pgvector HNSW 的 2000 维上限。要换模型：维度不变时改 `.env` 后全量回填即可；维度变了必须改列类型并全量重算，不能混用。启动时会核对列维度与代码常量，不一致直接拒绝启动。
 
 ### 5.2 memory
 
@@ -512,7 +520,9 @@ draft ──用户确认──> approved ──开始执行──> active ──
 | GET | `/documents/:id` | 详情，含分块数量与状态 | P4 |
 | PATCH | `/documents/:id` | 更新 `collection` / `tags` 等元数据，不触发重切 | P5 |
 | DELETE | `/documents/:id` | 删除文档与分块；重复删除返回 404 | P5 |
-| POST | `/documents/:id/reindex` | 重建解析结果，P7 起同时重建向量 | P5 / P7 |
+| POST | `/documents/:id/reindex` | 重切分块并重新排队向量化（换分块 id） | 已有 |
+| POST | `/documents/:id/embed` | 重建向量，不重切（换模型/补配置/修失败） | 已有 |
+| POST | `/documents/embeddings/backfill` | 批量补齐向量，返回 enqueued/skipped/remaining | 已有 |
 | GET | `/documents/:id/chunks` | 分块列表（调试与引用展示） | P4 |
 | POST | `/search` | 混合检索，返回带引用的片段 | P8 |
 | POST | `/knowledge/ask` | 基于知识库回答并返回经校验的引用 | P9 |
@@ -563,7 +573,8 @@ draft ──用户确认──> approved ──开始执行──> active ──
 | GET | `/settings` | 读取配置（密钥脱敏） | P2 |
 | PUT | `/settings/llm` | LLM 配置 | P9 |
 | PUT | `/settings/embedding` | Embedding 配置 | P7 |
-| POST | `/settings/models/test` | 模型连通性测试 | P7 / P9 |
+| POST | `/settings/embedding/test` | 向量模型连通性测试（真调一次） | 已有 |
+| POST | `/settings/models/test` | 对话模型连通性测试 | P9 |
 | GET | `/settings/tools` | 工具开关与审批策略 | P14 |
 | GET | `/system/status` | 依赖健康与迁移版本，P16 增加队列状态 | P2 / P16 |
 | GET | `/healthz` `/readyz` | 探针 | 已有 |
