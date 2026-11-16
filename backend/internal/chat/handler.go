@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -131,6 +132,16 @@ func (w *sseWriter) send(eventType string, payload any) error {
 func (w *sseWriter) ensureStarted() {
 	if w.started {
 		return
+	}
+	// http.Server.WriteTimeout 是整条响应的硬上限（从读完请求头到响应写完）。
+	// 普通接口 20s 足够，但流式问答轻松超过它：到期后内核写缓冲直接报
+	// i/o timeout，现象就是"发了 retrieval 之后连接被砍"。
+	// SSE 的存活由 RAG_TIMEOUT 与客户端断开负责，所以把这个请求的写截止清掉——
+	// http.NewResponseController + SetWriteDeadline 是 Go 1.20 起官方支持的写法。
+	// 只有这一个接口需要，普通接口仍受全局 WriteTimeout 保护。
+	if err := http.NewResponseController(w.c.Writer).SetWriteDeadline(time.Time{}); err != nil {
+		// 清不掉只是回到"有写超时"的旧行为，不该因此让整个问答失败。
+		w.c.Error(fmt.Errorf("clear write deadline: %w", err))
 	}
 	header := w.c.Writer.Header()
 	header.Set("Content-Type", "text/event-stream; charset=utf-8")
