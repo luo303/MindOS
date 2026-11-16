@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 
-import { formatDate, PAGE_SIZE, sourceLabel } from './format'
+import { formatDate, embedMeta, PAGE_SIZE, sourceLabel } from './format'
 
 /**
  * 文档列表。
@@ -47,6 +47,11 @@ export function DocumentList({
                   <span>{sourceLabel[doc.source_type]}</span>
                   <span aria-hidden="true">·</span>
                   <span>{doc.chunk_count} 块</span>
+                  <span aria-hidden="true">·</span>
+                  {/* 向量状态单独一个徽标：它和"解析状态"是两条独立的进度线 */}
+                  <Badge variant="outline" className="font-normal">
+                    {embedMeta[doc.embedding.status].label}
+                  </Badge>
                   <span aria-hidden="true">·</span>
                   <span>{formatDate(doc.created_at)}</span>
                 </p>

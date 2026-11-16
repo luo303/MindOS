@@ -1,6 +1,7 @@
 import { apiRequest } from '@/api/client'
 import type {
   ChunkList,
+  DocumentEmbedding,
   DocumentList,
   DocumentPatch,
   DocumentQuery,
@@ -51,13 +52,37 @@ function buildListQuery(query: DocumentQuery): string {
  *
  * 兜底放在这一层而不是每个组件里，是因为页面只该关心 `DocumentView` 这一种形状。
  */
-type WireDocumentView = Omit<DocumentView, 'collection' | 'tags'> & {
+type WireDocumentView = Omit<DocumentView, 'collection' | 'tags' | 'embedding'> & {
   collection?: string | null
   tags?: string[] | null
+  embedding?: Partial<DocumentEmbedding> | null
+}
+
+/**
+ * embedding 的缺省值。
+ *
+ * 后端总会带这个对象，但旧进程没有：缺了按"待向量化"处理而不是崩掉，
+ * 页面最多显示一个不准确的徽标，下次刷新就对了。
+ */
+function normalizeEmbedding(raw?: Partial<DocumentEmbedding> | null): DocumentEmbedding {
+  return {
+    status: raw?.status ?? 'pending',
+    model: raw?.model ?? '',
+    dimensions: raw?.dimensions ?? 0,
+    chunks: raw?.chunks ?? 0,
+    embedded_at: raw?.embedded_at ?? null,
+    error_code: raw?.error_code,
+    error_message: raw?.error_message,
+  }
 }
 
 function normalizeDocument(raw: WireDocumentView): DocumentView {
-  return { ...raw, collection: raw.collection ?? '', tags: raw.tags ?? [] }
+  return {
+    ...raw,
+    collection: raw.collection ?? '',
+    tags: raw.tags ?? [],
+    embedding: normalizeEmbedding(raw.embedding),
+  }
 }
 
 /**
@@ -185,4 +210,38 @@ export async function reindexDocument(id: number): Promise<ImportedDocumentView>
       { method: 'POST' },
     ),
   )
+}
+
+/**
+ * 重建向量（不重新切分）。
+ *
+ * 与 reindex 的分工：reindex 换分块（偏移与 id 全变），这个只重算向量。
+ * 换模型、补配置、修一次向量化失败都走它。同样是异步受理（202 + message_id）。
+ */
+export async function embedDocument(id: number): Promise<ImportedDocumentView> {
+  return normalizeImported(
+    await apiRequest<WireDocumentView & { existed?: boolean; message_id?: string }>(
+      `/documents/${id}/embed`,
+      { method: 'POST' },
+    ),
+  )
+}
+
+/** 批量回填的响应：排了多少、跳过多少（已在排队）、还剩多少。 */
+export type BackfillResult = {
+  enqueued: number
+  skipped: number
+  remaining: number
+}
+
+/**
+ * 把所有"已就绪但没按当前模型向量化"的文档排进队列。
+ *
+ * limit 是"一次最多排多少条"；返回 remaining 让页面提示要不要再点一次。
+ */
+export function backfillEmbeddings(limit = 50): Promise<BackfillResult> {
+  return apiRequest<BackfillResult>('/documents/embeddings/backfill', {
+    method: 'POST',
+    body: { limit },
+  })
 }

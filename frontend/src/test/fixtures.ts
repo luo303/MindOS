@@ -1,4 +1,11 @@
-import type { ChunkView, DocumentList, DocumentView, SettingsView, SystemStatus } from '@/api/types'
+import type {
+  ChunkView,
+  DocumentEmbedding,
+  DocumentList,
+  DocumentView,
+  SettingsView,
+  SystemStatus,
+} from '@/api/types'
 
 /** 后端成功信封。字段与 httpx.Envelope 保持一致。 */
 export function envelope<T>(data: T, requestId = 'test-request-id') {
@@ -47,6 +54,18 @@ export function settingsFixture(overrides: Partial<SettingsView> = {}): Settings
   }
 }
 
+/** 向量化状态的默认值（已向量化）。单独抽出来是为了让用例只覆盖关心的字段。 */
+export function embeddingFixture(overrides: Partial<DocumentEmbedding> = {}): DocumentEmbedding {
+  return {
+    status: 'done',
+    model: 'bge-m3',
+    dimensions: 1024,
+    chunks: 2,
+    embedded_at: '2026-11-16T08:00:00Z',
+    ...overrides,
+  }
+}
+
 export function documentFixture(overrides: Partial<DocumentView> = {}): DocumentView {
   return {
     id: 1,
@@ -62,6 +81,9 @@ export function documentFixture(overrides: Partial<DocumentView> = {}): Document
     created_at: '2026-11-09T07:30:00Z',
     updated_at: '2026-11-09T07:30:00Z',
     ...overrides,
+    // embedding 放在 spread 之后重建：Partial<DocumentView> 允许调用方传
+    // `embedding: undefined`，直接 spread 会让类型变成可空，编译不过。
+    embedding: embeddingFixture(overrides.embedding),
   }
 }
 

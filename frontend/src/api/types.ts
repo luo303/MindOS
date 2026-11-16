@@ -63,6 +63,26 @@ export type SettingsView = {
 /** 文档状态。Phase 4 同步导入，成功即 ready。 */
 export type DocumentStatus = 'pending' | 'parsing' | 'indexing' | 'ready' | 'failed' | 'cancelling'
 
+/**
+ * 向量化状态。与文档状态是两件事：
+ * 一份文档可以 `ready`（内容可用）但 `failed`（语义检索用不了）。
+ */
+export type EmbedStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+
+/** 文档的向量化信息，后端嵌在文档视图里的 embedding 对象 */
+export type DocumentEmbedding = {
+  status: EmbedStatus
+  /** 产生当前向量的模型名；没算过时为空串 */
+  model: string
+  /** 向量维度；没算过时为 0 */
+  dimensions: number
+  /** 已经有向量的分块数，done 时应等于 chunk_count */
+  chunks: number
+  embedded_at: string | null
+  error_code?: string
+  error_message?: string
+}
+
 export type DocumentSourceType = 'file' | 'note' | 'web'
 
 /** GET /documents 与 /documents/:id 共用的文档视图 */
@@ -79,6 +99,8 @@ export type DocumentView = {
   tags: string[]
   status: DocumentStatus
   chunk_count: number
+  /** 向量化状态。旧后端可能不带这个键，前端在 api 层统一补默认值 */
+  embedding: DocumentEmbedding
   /** 处理最终失败时才有值；成功响应里这两个字段不出现 */
   error_code?: string
   error_message?: string

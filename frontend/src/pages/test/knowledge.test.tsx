@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +9,7 @@ import {
   documentListFixture,
   envelope,
   jsonResponse,
+  settingsFixture,
 } from '@/test/fixtures'
 import { renderApp } from '@/test/render-app'
 
@@ -65,8 +66,83 @@ describe('知识库页面', () => {
     expect(await screen.findByText('集成测试笔记')).toBeInTheDocument()
     // 分块内容原样渲染：保留 Markdown 标记与换行，不做美化。
     expect(await screen.findByText(/# 标题[\s\S]*第一段正文。/)).toBeInTheDocument()
-    expect(screen.getByText('尚未索引')).toBeInTheDocument()
+    // fixture 默认已向量化：详情里一枚 pill、列表里一枚徽标。
+    expect(screen.getAllByText('已向量化').length).toBeGreaterThan(0)
     expect(screen.getByText(/\[0, 12\)/)).toBeInTheDocument()
+  })
+
+  it('重建向量走 embed 接口，不触发重新切分', async () => {
+    const user = userEvent.setup()
+    const doc = documentFixture({ chunk_count: 1 })
+    const calls: string[] = []
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url === '/api/v1/documents?limit=20&offset=0') {
+        return jsonOk(envelope(documentListFixture([doc])))
+      }
+      if (url === `/api/v1/documents/${doc.id}`) {
+        return jsonOk(envelope(doc))
+      }
+      if (url === `/api/v1/documents/${doc.id}/chunks?limit=100&offset=0`) {
+        return jsonOk(envelope(chunkList([chunkFixture({})])))
+      }
+      if (url === `/api/v1/documents/${doc.id}/embed`) {
+        return jsonOk(envelope({ ...doc, message_id: 'msg-1' }), 202)
+      }
+      return jsonOk({ code: 'NOT_FOUND', message: 'unexpected url: ' + url }, 404)
+    })
+
+    renderApp('/knowledge')
+
+    // 已向量化时按钮文案是"重建向量"：换模型只该重算向量，不该重切分块。
+    await user.click(await screen.findByRole('button', { name: '重建向量' }))
+    await waitFor(() => {
+      expect(calls).toContain(`POST /api/v1/documents/${doc.id}/embed`)
+    })
+    expect(calls.some((call) => call.includes('/reindex'))).toBe(false)
+  })
+
+  it('未配置向量模型时如实显示状态并给出去处', async () => {
+    const doc = documentFixture({
+      embedding: {
+        status: 'skipped',
+        model: '',
+        dimensions: 0,
+        chunks: 0,
+        embedded_at: null,
+        error_code: 'not_configured',
+        error_message: '未配置向量模型，本次只做切分',
+      },
+    })
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/documents?limit=20&offset=0') {
+        return jsonOk(envelope(documentListFixture([doc])))
+      }
+      if (url === `/api/v1/documents/${doc.id}`) {
+        return jsonOk(envelope(doc))
+      }
+      if (url === `/api/v1/documents/${doc.id}/chunks?limit=100&offset=0`) {
+        return jsonOk(envelope(chunkList([])))
+      }
+      if (url === '/api/v1/settings') {
+        return jsonOk(
+          envelope(
+            settingsFixture({
+              embedding: { api_base: '', model: '', api_key_masked: '', api_key_configured: false },
+            }),
+          ),
+        )
+      }
+      return jsonOk({ code: 'NOT_FOUND', message: 'unexpected url: ' + url }, 404)
+    })
+
+    renderApp('/knowledge')
+
+    // 徽标说状态，页面提示说"去哪儿改"——只给状态，用户不知道下一步。
+    expect((await screen.findAllByText('未配置向量模型')).length).toBeGreaterThan(0)
+    expect(await screen.findByText(/只能按关键词检索/)).toBeInTheDocument()
   })
 
   it('空列表显示空态而不是空白面板', async () => {

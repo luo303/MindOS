@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BookOpen, Loader2, NotebookPen, Upload, X } from 'lucide-react'
+import { BookOpen, Loader2, NotebookPen, Sparkles, Upload, X } from 'lucide-react'
 import { useRef, useState, type ChangeEvent } from 'react'
 
 import {
+  backfillEmbeddings,
   cancelProcessing,
   createNote,
   deleteDocument,
   documentKeys,
+  embedDocument,
   fetchChunks,
   fetchDocument,
   fetchDocuments,
@@ -14,6 +16,8 @@ import {
   updateDocument,
   uploadDocument,
 } from '@/api/documents'
+
+import { fetchSettings, queryKeys } from '@/api/system'
 import { describeError } from '@/api/errors'
 import type { DocumentFilters, DocumentPatch, DocumentQuery, ImportedDocumentView } from '@/api/types'
 import { EmptyState } from '@/components/empty-state'
@@ -25,7 +29,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { DocumentDetail } from '@/pages/knowledge/document-detail'
 import { DocumentList } from '@/pages/knowledge/document-list'
 import { FilterBar } from '@/pages/knowledge/filter-bar'
-import { isInFlight, PAGE_SIZE, POLL_INTERVAL_MS } from '@/pages/knowledge/format'
+import { isEmbedInFlight, isInFlight, PAGE_SIZE, POLL_INTERVAL_MS } from '@/pages/knowledge/format'
 import { NoteComposer, type NoteDraft } from '@/pages/knowledge/note-composer'
 import { UploadComposer, type UploadDraft } from '@/pages/knowledge/upload-composer'
 
@@ -52,6 +56,7 @@ export function KnowledgePage() {
   const [uploadOpen, setUploadOpen] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [importNotice, setImportNotice] = useState<{ existed: boolean; title: string } | null>(null)
+  const [backfillNotice, setBackfillNotice] = useState<string | null>(null)
 
   const offset = (page - 1) * PAGE_SIZE
   const query: DocumentQuery = { limit: PAGE_SIZE, offset, ...filters }
@@ -61,7 +66,11 @@ export function KnowledgePage() {
     // 导入是异步的：只要列表里还有文档在处理中，就每秒重取一次，
     // 让"待处理 → 已解析"自然过渡。全部终态后自动停，不会一直空转。
     refetchInterval: (q) =>
-      q.state.data?.items.some((item) => isInFlight(item.status)) ? POLL_INTERVAL_MS : false,
+      q.state.data?.items.some(
+        (item) => isInFlight(item.status) || isEmbedInFlight(item.embedding.status),
+      )
+        ? POLL_INTERVAL_MS
+        : false,
   })
 
   const items = listQuery.data?.items ?? []
@@ -75,8 +84,13 @@ export function KnowledgePage() {
     enabled: activeId !== null,
     // 详情与列表各自轮询：详情是"当前这一篇"，列表是"有没有别的还在跑"，
     // 只看其中一个都会出现"列表变了但详情还显示处理中"。
+    // 两个条件都要看：向量化发生在文档 ready 之后，只看 status 的话
+    // 用户永远等不到"向量化中 → 已完成"那一次刷新。
     refetchInterval: (q) =>
-      q.state.data && isInFlight(q.state.data.status) ? POLL_INTERVAL_MS : false,
+      q.state.data &&
+      (isInFlight(q.state.data.status) || isEmbedInFlight(q.state.data.embedding.status))
+        ? POLL_INTERVAL_MS
+        : false,
   })
   const chunksQuery = useQuery({
     queryKey: documentKeys.chunks(activeId ?? 0),
@@ -99,6 +113,17 @@ export function KnowledgePage() {
       return loaded === doc.chunk_count ? false : POLL_INTERVAL_MS
     },
   })
+
+  // 只读一次配置：用它决定要不要显示"补齐向量"入口与顶部提示。
+  // 复用 Settings 页的 key，两个页面共享同一份缓存，不会各查一遍。
+  const settingsQuery = useQuery({
+    queryKey: queryKeys.settings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+    staleTime: 60_000,
+  })
+  // 用可选链读：旧后端的 /settings 里还没有 embedding 键，
+  // 缺了就当"没配置"处理，页面照常可用。
+  const embeddingConfigured = settingsQuery.data?.embedding?.api_key_configured ?? false
 
   const invalidateDocuments = () => {
     // 失效整个 documents 前缀：列表、详情、分块一起重取，
@@ -157,6 +182,27 @@ export function KnowledgePage() {
     // 本地再猜一次只会出现"页面说已取消、库里还是 cancelling"的短暂矛盾。
     onSuccess: invalidateDocuments,
   })
+  // 重建向量：只重算向量，不重切分块。受理后文档立刻变"待向量化"，
+  // 之后的进展靠轮询带回来，这里不猜状态。
+  const embedMutation = useMutation({
+    mutationFn: () => embedDocument(activeId as number),
+    onSuccess: () => {
+      setBackfillNotice(null)
+      invalidateDocuments()
+    },
+  })
+  // 批量补齐：配置好模型后，历史上那些 skipped / 旧模型算过的文档需要一个入口。
+  // 返回 remaining，让人知道要不要再点一次。
+  const backfillMutation = useMutation({
+    mutationFn: () => backfillEmbeddings(),
+    onSuccess: (res) => {
+      setBackfillNotice(
+        `已排队 ${res.enqueued} 篇，跳过 ${res.skipped} 篇（已在排队）` +
+          (res.remaining > 0 ? `，还剩 ${res.remaining} 篇待补齐，可再点一次。` : '，没有剩余待补齐的文档。'),
+      )
+      invalidateDocuments()
+    },
+  })
 
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -184,7 +230,12 @@ export function KnowledgePage() {
   }
 
   const actionError =
-    updateMutation.error ?? deleteMutation.error ?? reindexMutation.error ?? cancelMutation.error
+    updateMutation.error ??
+    deleteMutation.error ??
+    reindexMutation.error ??
+    cancelMutation.error ??
+    embedMutation.error ??
+    backfillMutation.error
   // 有筛选条件时的空结果与"一条文档都没有"是两种状态，文案要分开。
   const isFiltered = filters.collection !== '' || filters.tag !== '' || filters.status !== ''
 
@@ -192,7 +243,7 @@ export function KnowledgePage() {
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
       <PageHeader
         title="知识库"
-        description="导入 Markdown / 纯文本或直接写笔记，系统解析并切分成分块。向量与检索在 Phase 7–8 接入，当前只做切分。"
+        description="导入 Markdown / 纯文本或直接写笔记，系统解析、切分并向量化。配置了向量模型后，文档会先切分、再自动排队算向量。"
         actions={
           <>
             <input
@@ -203,6 +254,21 @@ export function KnowledgePage() {
               onChange={onFileChange}
               aria-label="选择要导入的文件"
             />
+            {embeddingConfigured ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => backfillMutation.mutate()}
+                disabled={backfillMutation.isPending}
+              >
+                {backfillMutation.isPending ? (
+                  <Loader2 className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <Sparkles aria-hidden="true" />
+                )}
+                补齐向量
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="sm"
@@ -235,6 +301,21 @@ export function KnowledgePage() {
       ) : null}
       {actionError ? <InlineError title="操作失败" description={describeError(actionError)} /> : null}
       {importNotice ? <ImportNotice notice={importNotice} onDismiss={() => setImportNotice(null)} /> : null}
+      {backfillNotice ? (
+        <div role="status" className="border-border bg-muted/50 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
+          <p className="text-sm">{backfillNotice}</p>
+          <Button variant="ghost" size="sm" onClick={() => setBackfillNotice(null)} aria-label="关闭提示">
+            <X aria-hidden="true" />
+          </Button>
+        </div>
+      ) : null}
+      {/* 未配置模型时给一条常驻提示：否则用户只会看到"未配置向量模型"的徽标，
+          不知道去哪儿改。 */}
+      {settingsQuery.isSuccess && !embeddingConfigured ? (
+        <p className="text-muted-foreground text-xs">
+          未配置向量模型，文档只能按关键词检索。在 Settings 页填好 EMBEDDING 配置后，点「补齐向量」为已有文档补算。
+        </p>
+      ) : null}
 
       {composerOpen ? (
         <NoteComposer
@@ -335,6 +416,7 @@ export function KnowledgePage() {
               chunksLoading={chunksQuery.isPending}
               savingMeta={updateMutation.isPending}
               reindexing={reindexMutation.isPending}
+              embedding={embedMutation.isPending}
               cancelling={cancelMutation.isPending}
               deleting={deleteMutation.isPending}
               editing={editingId === detailQuery.data.id}
@@ -342,6 +424,7 @@ export function KnowledgePage() {
               onCancelEdit={() => setEditingId(null)}
               onSaveMeta={(patch) => updateMutation.mutate(patch)}
               onReindex={() => reindexMutation.mutate()}
+              onEmbed={() => embedMutation.mutate()}
               onCancelProcessing={() => cancelMutation.mutate()}
               onDelete={() => deleteMutation.mutate()}
             />

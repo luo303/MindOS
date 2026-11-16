@@ -1,4 +1,4 @@
-import type { DocumentSourceType, DocumentStatus } from '@/api/types'
+import type { DocumentSourceType, DocumentStatus, EmbedStatus } from '@/api/types'
 
 /** 列表每页条数，与后端的默认值一致；改这里时后端默认值不用动，因为请求里显式带了 limit。 */
 export const PAGE_SIZE = 20
@@ -48,6 +48,30 @@ export function isInFlight(status: DocumentStatus): boolean {
 
 /** 轮询间隔：1s 能让"处理中 → 已解析"的过渡看得见，又不至于把接口打爆。 */
 export const POLL_INTERVAL_MS = 1000
+
+/**
+ * 向量化状态的展示文案。
+ *
+ * skipped 的文案刻意写成"未配置向量模型"而不是"未向量化"：
+ * 前者告诉用户下一步该做什么（去 Settings 填 Key），后者只说明现状。
+ */
+export const embedMeta: Record<EmbedStatus, { label: string; tone: Tone }> = {
+  pending: { label: '待向量化', tone: 'muted' },
+  running: { label: '向量化中', tone: 'warn' },
+  done: { label: '已向量化', tone: 'ok' },
+  failed: { label: '向量化失败', tone: 'danger' },
+  skipped: { label: '未配置向量模型', tone: 'muted' },
+}
+
+/**
+ * 向量化是否还在进行。
+ *
+ * 必须和 isInFlight 一起用于轮询判断：向量化发生在文档 ready *之后*，
+ * 只看 documents.status 的话，用户永远看不到"向量化中 → 已完成"。
+ */
+export function isEmbedInFlight(status: EmbedStatus): boolean {
+  return status === 'pending' || status === 'running'
+}
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`

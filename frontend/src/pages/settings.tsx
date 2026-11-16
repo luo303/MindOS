@@ -1,9 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
-import { RefreshCw } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { Loader2, PlugZap, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { describeError } from '@/api/errors'
-import { fetchSettings, fetchSystemStatus, queryKeys } from '@/api/system'
+import { fetchSettings, fetchSystemStatus, queryKeys, testEmbedding } from '@/api/system'
 import type {
   DependencyState,
   MigrationState,
@@ -146,6 +146,9 @@ function migrationDetail(migration: MigrationStatus): string {
 
 function SettingsCard({ settings }: { settings: SettingsView }) {
   const tokenBudget = settings.agent.token_budget.toLocaleString('zh-CN')
+  // 连通性测试：真发一条短文本给模型。配了不等于能用——Key 过期、
+  // 模型名拼错、代理没放行，都只有发一次请求才知道。
+  const probe = useMutation({ mutationFn: testEmbedding })
 
   return (
     <Card>
@@ -173,6 +176,30 @@ function SettingsCard({ settings }: { settings: SettingsView }) {
           <Field label="Agent token 预算" value={tokenBudget} />
           <Field label="单次运行超时" value={`${settings.agent.run_timeout_seconds}s`} />
         </dl>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => probe.mutate()}
+            disabled={!settings.embedding.api_key_configured || probe.isPending}
+          >
+            {probe.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <PlugZap aria-hidden="true" />}
+            {probe.isPending ? '测试中' : '测试向量模型'}
+          </Button>
+          {!settings.embedding.api_key_configured ? (
+            <p className="text-muted-foreground text-xs">未配置 EMBEDDING_*，测试不可用。</p>
+          ) : probe.data ? (
+            <p className="text-muted-foreground text-xs">
+              连通 · {probe.data.model} · {probe.data.dimensions} 维 · {probe.data.latency_ms} ms
+            </p>
+          ) : null}
+          {probe.error ? (
+            <p role="alert" className="text-destructive text-xs break-words">
+              失败：{describeError(probe.error)}
+            </p>
+          ) : null}
+        </div>
       </CardContent>
     </Card>
   )

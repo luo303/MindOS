@@ -1,7 +1,7 @@
-import { Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react'
+import { Loader2, Pencil, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
-import type { ChunkView, DocumentPatch, DocumentView } from '@/api/types'
+import type { ChunkView, DocumentPatch, DocumentView, EmbedStatus } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -11,8 +11,10 @@ import { StatusPill } from '@/components/status-pill'
 
 import {
   CHUNK_PAGE_SIZE,
+  embedMeta,
   formatBytes,
   formatDate,
+  isEmbedInFlight,
   isInFlight,
   sourceLabel,
   splitTags,
@@ -30,10 +32,13 @@ type DetailProps = {
   reindexing: boolean
   cancelling: boolean
   deleting: boolean
+  /** 向量化受理请求是否在飞行中（只影响按钮 loading，不影响状态展示） */
+  embedding: boolean
   onStartEdit: () => void
   onCancelEdit: () => void
   onSaveMeta: (patch: DocumentPatch) => void
   onReindex: () => void
+  onEmbed: () => void
   onCancelProcessing: () => void
   onDelete: () => void
 }
@@ -54,14 +59,21 @@ export function DocumentDetail({
   reindexing,
   cancelling,
   deleting,
+  embedding,
   onStartEdit,
   onCancelEdit,
   onSaveMeta,
   onReindex,
+  onEmbed,
   onCancelProcessing,
   onDelete,
 }: DetailProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const embed = doc.embedding
+  const embedLabel = embedMeta[embed.status]
+  // 忙碌 = 受理请求在飞，或后端已把它标成进行中（受理成功后立刻变 pending）。
+  // 两个条件都看，是为了避免"点了按钮、请求还没回来、按钮又变回可点"的闪烁。
+  const embedBusy = embedding || isEmbedInFlight(embed.status)
 
   return (
     <div className="space-y-4">
@@ -70,8 +82,8 @@ export function DocumentDetail({
           <CardTitle className="flex flex-wrap items-center gap-2 text-base">
             {doc.title}
             <StatusPill tone={statusMeta[doc.status].tone}>{statusMeta[doc.status].label}</StatusPill>
-            {/* 状态 ready 只代表"解析完成"；没有向量时检索用不了，必须说清楚。 */}
-            <StatusPill tone="muted">尚未索引</StatusPill>
+            {/* 两条独立的进度线：内容可用（上一枚）不等于可语义检索（这一枚）。 */}
+            <StatusPill tone={embedLabel.tone}>{embedLabel.label}</StatusPill>
           </CardTitle>
           <CardDescription>
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -85,6 +97,28 @@ export function DocumentDetail({
               <span>更新于 {formatDate(doc.updated_at)}</span>
             </span>
           </CardDescription>
+          {/* 向量化的细节就地可见：模型名决定"这批向量能不能和新查询比"，
+              维度不符是最常见的配置事故，都值得直接写出来。 */}
+          {embed.status === 'done' ? (
+            <CardDescription className="text-xs">
+              {embed.chunks} 块已向量化 · {embed.model} · {embed.dimensions} 维
+              {embed.embedded_at ? ` · ${formatDate(embed.embedded_at)}` : ''}
+            </CardDescription>
+          ) : null}
+          {embed.status === 'failed' && embed.error_message ? (
+            <p role="alert" className="text-destructive text-xs break-words">
+              向量化失败：{embed.error_message}
+              {embed.error_code ? `（${embed.error_code}）` : ''}
+              {/* 失败的是"最近一次重建"，不是已有的向量：上次成功的向量仍在，
+                  只是可能与当前配置的模型不一致。不写清楚，用户会以为检索彻底坏了。 */}
+              {embed.chunks > 0 ? ` 上次成功的 ${embed.chunks} 块向量仍可用。` : ''}
+            </p>
+          ) : null}
+          {embed.status === 'skipped' ? (
+            <CardDescription className="text-xs">
+              当前没有配置向量模型，文档只能按关键词检索；在 Settings 里填好 EMBEDDING 配置后可点「生成向量」补齐。
+            </CardDescription>
+          ) : null}
           <CardDescription className="font-mono text-xs break-all">sha256: {doc.content_hash}</CardDescription>
           {/* 失败原因必须就地可见：让用户为了一句"处理失败"去翻后端日志是不合理的。 */}
           {doc.status === 'failed' && doc.error_message ? (
@@ -114,6 +148,17 @@ export function DocumentDetail({
               <Button variant="outline" size="sm" onClick={onReindex} disabled={reindexing}>
                 {reindexing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
                 {reindexing ? '重新切分中' : '重新切分'}
+              </Button>
+              {/* 向量化与切分是两条独立动作：换模型只该重算向量，不该重切。
+                  文档还没 ready 时没有分块可算，直接禁用而不是让用户点出一个 409。 */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onEmbed}
+                disabled={embedBusy || doc.status !== 'ready'}
+              >
+                {embedBusy ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
+                {embedActionLabel(embed.status)}
               </Button>
               {/* 只在后台处理中才给取消入口：其他状态下按了也只会拿到 409。 */}
               {isInFlight(doc.status) ? (
@@ -163,8 +208,27 @@ export function DocumentDetail({
   )
 }
 
-function MetadataRow({ doc }: { doc: DocumentView }) {
-  return (
+/**
+ * 按钮文案随状态变：done 是"重建"（换模型时用），failed 是"重试"，
+ * 其余是"生成"。文案不同是因为用户的目的不同——同一个按钮，
+ * 三种意图用同一个词会让人不确定按下去会发生什么。
+ */
+function embedActionLabel(status: EmbedStatus): string {
+  switch (status) {
+    case 'done':
+      return '重建向量'
+    case 'failed':
+      return '重试向量化'
+    case 'running':
+      return '向量化中'
+    case 'pending':
+      return '已排队'
+    default:
+      return '生成向量'
+  }
+}
+
+function MetadataRow({ doc }: { doc: DocumentView }) {  return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className="text-muted-foreground">分类</span>
       {doc.collection === '' ? (
