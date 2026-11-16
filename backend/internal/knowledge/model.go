@@ -36,6 +36,38 @@ const (
 	StatusCancelling = "cancelling"
 )
 
+// EmbeddingDimensions 是向量列的维度。
+//
+// 它必须与迁移 0008 里的 vector(1024) 严格一致：pgvector 的列维度在 DDL 时定死，
+// 写入长度不符会直接报错。启动时 platform.VectorColumnType 会核对两者，
+// 不一致就拒绝启动——否则错误会在用户第一次导入时才冒出来，
+// 而且会被包成一句看不出原因的 "process_failed"。
+//
+// 为什么是 1024 而不是 1536：默认选 bge-m3（中文效果好、本机 Ollama 与
+// 硅基流动都能免费跑），它输出 1024 维；1024 也在 pgvector 的 HNSW 上限
+// （2000 维）之内，索引才建得起来。
+const EmbeddingDimensions = 1024
+
+// 向量化状态，对应 documents.embed_status 的 CHECK 约束。
+//
+// 与 documents.status 是两件事：一个文档可以 status=ready（内容可用）
+// 但 embed_status=failed（语义检索用不了）。合成一个字段就没法如实表达
+// "内容没问题，只是向量没做出来"。
+const (
+	// EmbedStatusPending 该做还没做。
+	EmbedStatusPending = "pending"
+	// EmbedStatusRunning 正在调模型。
+	EmbedStatusRunning = "running"
+	// EmbedStatusDone 已按 embed_model 记录的模型算完。
+	EmbedStatusDone = "done"
+	// EmbedStatusFailed 失败，原因在 embed_error_code / embed_error_message。
+	EmbedStatusFailed = "failed"
+	// EmbedStatusSkipped 未配置向量模型，本次跳过。
+	//
+	// 与 pending 分开：前者要用户去配 Key，后者只要等。
+	EmbedStatusSkipped = "skipped"
+)
+
 // Document 对应 documents 表。
 //
 // 只声明本阶段真正读写的列。表里还有 source_url / error_code / error_message，
@@ -65,10 +97,23 @@ type Document struct {
 	// ErrorCode / ErrorMessage 只在处理最终失败时写入（Phase 6 异步任务）。
 	// 分开存是因为前者给程序判断（例如 source_missing 可以引导用户重新上传），
 	// 后者给人看；混成一个字段就得靠字符串匹配来做判断。
-	ErrorCode    *string   `gorm:"column:error_code"`
-	ErrorMessage *string   `gorm:"column:error_message"`
-	CreatedAt    time.Time `gorm:"column:created_at"`
-	UpdatedAt    time.Time `gorm:"column:updated_at"`
+	ErrorCode    *string `gorm:"column:error_code"`
+	ErrorMessage *string `gorm:"column:error_message"`
+	// —— 向量化状态（迁移 0008）——
+	// 与上面的 error_* 分开：一份文档可能"内容处理成功、向量化失败"，
+	// 混用一套错误字段就分不清下一步该重切还是重算向量。
+	// default:pending 不是可有可无的装饰：GORM 插入时会把零值字段一起写进 SQL，
+	// 于是 embed_status 会变成空串 ''，撞上 CHECK 约束。
+	// 声明默认值后 GORM 会跳过零值字段，交给数据库用 DEFAULT 'pending'。
+	EmbedStatus       string     `gorm:"column:embed_status;default:pending"`
+	EmbedModel        *string    `gorm:"column:embed_model"`
+	EmbedDimensions   *int       `gorm:"column:embed_dimensions"`
+	EmbeddedChunks    int        `gorm:"column:embedded_chunks;default:0"`
+	EmbedErrorCode    *string    `gorm:"column:embed_error_code"`
+	EmbedErrorMessage *string    `gorm:"column:embed_error_message"`
+	EmbeddedAt        *time.Time `gorm:"column:embedded_at"`
+	CreatedAt         time.Time  `gorm:"column:created_at"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at"`
 }
 
 // TableName 显式声明表名。GORM 的默认复数化对 document 恰好正确，
@@ -81,8 +126,10 @@ func (Document) TableName() string { return "documents" }
 //
 //	runes := []rune(text); runes[c.StartOffset:c.EndOffset]
 //
-// 为什么不在结构体里放 Embedding：Phase 4 不写也不读向量，1536 维 float32
-// 每次查询都会白白多搬 6KB；等 Phase 7 需要时再加。
+// 为什么不在结构体里放 Embedding：向量只写不读（检索阶段才会读），
+// 1024 维 float32 每次查询会白白多搬 4KB/行。写入走 repository 里
+// 专门的逐行 UPDATE，既避免 GORM 把自定义类型当关联结构体解析，
+// 也让"哪一行没更新到"这个信号可以直接拿到（见 SaveEmbeddings 的新鲜度闸门）。
 type Chunk struct {
 	ID         int64  `gorm:"column:id;primaryKey"`
 	DocumentID int64  `gorm:"column:document_id"`

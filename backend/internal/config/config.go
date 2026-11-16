@@ -123,12 +123,23 @@ type LLMConfig struct {
 	Model   string // 例如 gpt-4o-mini
 }
 
-// EmbeddingConfig 描述向量模型接入参数。维度在 overview 中固定为 1536，
-// 换模型要走"新增列 → 回填 → 切换"的迁移流程，不是改配置。
+// EmbeddingConfig 描述向量模型接入参数。维度写死在 knowledge.EmbeddingDimensions（1024），
+// 与迁移里的 vector(1024) 必须一致：换模型意味着改列类型，不是改配置。
+//
+// Timeout 与 BatchSize 配在启动配置里而不是代码常量：它们取决于跑的是云端 API
+// 还是本机 CPU 上的 Ollama（后者一批可能要几十秒），属于部署差异。
 type EmbeddingConfig struct {
-	APIBase string
-	APIKey  string
-	Model   string
+	APIBase   string
+	APIKey    string
+	Model     string
+	Timeout   time.Duration // 单次 HTTP 请求超时
+	BatchSize int           // 每个请求最多几条文本（部分厂商上限为 10）
+}
+
+// IsEmbeddingConfigured 报告向量模型是否已配置。未配置是合法状态：
+// 文档照常导入与检索（全文），只是不做语义检索。
+func (c *Config) IsEmbeddingConfigured() bool {
+	return c.Embedding.APIBase != "" && c.Embedding.APIKey != "" && c.Embedding.Model != ""
 }
 
 // AgentConfig 是 Agent 运行的三重预算（AGENTS.md 硬性约束 #10）。
@@ -260,6 +271,10 @@ func Load() (*Config, error) {
 			APIBase: strings.TrimRight(reader.text("EMBEDDING_API_BASE", ""), "/"),
 			APIKey:  reader.text("EMBEDDING_API_KEY", ""),
 			Model:   reader.text("EMBEDDING_MODEL", ""),
+			// 60s 而不是 30s：本机 CPU 跑 Ollama 时一批十条文本可能就要几十秒，
+			// 卡得太紧会把"慢"误判成"坏"。
+			Timeout:   reader.duration("EMBEDDING_TIMEOUT", 60*time.Second),
+			BatchSize: reader.integer("EMBEDDING_BATCH_SIZE", 10),
 		},
 		Agent: AgentConfig{
 			MaxSteps:    reader.integer("AGENT_MAX_STEPS", 30),
@@ -356,6 +371,16 @@ func (c *Config) validate() error {
 	}
 	errs = append(errs, validateModelConfig("LLM", c.LLM.APIBase, c.LLM.APIKey, c.LLM.Model)...)
 	errs = append(errs, validateModelConfig("EMBEDDING", c.Embedding.APIBase, c.Embedding.APIKey, c.Embedding.Model)...)
+	// 向量化的两个运行参数即使未配置模型也要合法：它们有默认值，
+	// 配错了说明用户在本子上写错了，不该带病启动。
+	if c.Embedding.Timeout <= 0 {
+		errs = append(errs, errors.New("EMBEDDING_TIMEOUT must be greater than 0"))
+	}
+	// 上限 64：再大就接近单请求体积上限，且失败一次要重算的文本更多。
+	if c.Embedding.BatchSize < 1 || c.Embedding.BatchSize > 64 {
+		errs = append(errs, fmt.Errorf(
+			"EMBEDDING_BATCH_SIZE must be between 1 and 64, got %d", c.Embedding.BatchSize))
+	}
 	if c.Agent.MaxSteps < 1 {
 		errs = append(errs, fmt.Errorf("AGENT_MAX_STEPS must be at least 1, got %d", c.Agent.MaxSteps))
 	}

@@ -52,6 +52,23 @@ func (r *Repository) Active(ctx context.Context, targetType string, targetID int
 	return &t, nil
 }
 
+// ListActive 返回某个业务对象当前全部未完成的任务（pending 或 running）。
+//
+// 与 Active 的区别：一个文档可能同时有导入与向量化两条活跃任务
+// （tasks_active_uniq 按 type 分段，同类型只允许一条）。取消流程需要看到
+// 全部，而不是随手取最新那条——否则会漏掉另一条，文档状态就被写错。
+func (r *Repository) ListActive(ctx context.Context, targetType string, targetID int64) ([]Task, error) {
+	tasks := make([]Task, 0, 2)
+	err := r.db.WithContext(ctx).
+		Where("target_type = ? AND target_id = ? AND status IN ?",
+			targetType, targetID, []Status{StatusPending, StatusRunning}).
+		Order("id ASC").Find(&tasks).Error
+	if err != nil {
+		return nil, fmt.Errorf("list active tasks for %s %d: %w", targetType, targetID, err)
+	}
+	return tasks, nil
+}
+
 // MarkRunning 把任务从 pending 推进到 running，并返回是否推进成功。
 //
 // 用条件更新而不是先读后写：重复投递的消息会并发到达，

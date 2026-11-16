@@ -28,3 +28,32 @@ func VectorExtensionPresent(ctx context.Context, db *gorm.DB) (bool, error) {
 	}
 	return exists, nil
 }
+
+// VectorColumnType 返回某个向量列的声明类型，例如 "vector(1024)"。
+//
+// 用途是启动自检：代码里的维度常量与迁移里的列维度必须一致，
+// 不一致时每一次写入都会失败（"expected 1024 dimensions, not 1536"）。
+// 这种问题不该等用户第一次导入才暴露——那时错误信息还会被包成
+// "process_failed"，看不出是 schema 问题。
+//
+// 用 format_type 而不是读 atttypmod：typmod 的编码方式由类型自己决定
+// （varchar 要减 4，vector 直接存维度），直接比字符串更不容易踩坑。
+func VectorColumnType(ctx context.Context, db *gorm.DB, table, column string) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+	var typ *string
+	err := db.WithContext(ctx).
+		Raw(`SELECT format_type(atttypid, atttypmod)
+		     FROM pg_attribute
+		     WHERE attrelid = to_regclass(?) AND attname = ? AND NOT attisdropped`,
+			table, column).
+		Scan(&typ).Error
+	if err != nil {
+		return "", fmt.Errorf("read column type of %s.%s: %w", table, column, err)
+	}
+	if typ == nil {
+		return "", fmt.Errorf("column %s.%s does not exist", table, column)
+	}
+	return *typ, nil
+}
