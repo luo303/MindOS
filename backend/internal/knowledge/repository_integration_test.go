@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
 
 	"github.com/luo303/mindos/backend/internal/migrate"
@@ -143,5 +144,152 @@ func TestCreateWithChunksRollsBackIntegration(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("documents table should be empty after rollback, got %d rows", count)
+	}
+}
+
+// testVector 构造一条合法的 1024 维向量。
+//
+// 只让首元素有值：既省事，也能顺便验证 CAST(? AS vector) 走的是文本协议
+// 而不是某种"看起来能写、读回来是零向量"的路径。
+func testVector(seed float32) []float32 {
+	v := make([]float32, EmbeddingDimensions)
+	v[0] = seed
+	return v
+}
+
+// 向量写回与新鲜度闸门，都必须在真实 pgvector 上验证：
+// CAST(? AS vector) 的编码方式、vector(1024) 的维度校验、以及
+// "分块被替换后旧结果一律作废"这条判断，假仓储都演不出来。
+func TestEmbeddingsIntegration(t *testing.T) {
+	db := setupKnowledgeDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	hash := "1111111111111111111111111111111111111111111111111111111111111111"
+	doc := sampleDocument(hash)
+	if err := repo.CreateWithChunks(ctx, doc, chunkFixture(2)); err != nil {
+		t.Fatalf("CreateWithChunks: %v", err)
+	}
+	chunks, err := repo.ListChunks(ctx, doc.ID, 10, 0)
+	if err != nil || len(chunks) != 2 {
+		t.Fatalf("ListChunks = %d, %v", len(chunks), err)
+	}
+
+	if err := repo.MarkEmbedRunning(ctx, doc.ID); err != nil {
+		t.Fatalf("MarkEmbedRunning: %v", err)
+	}
+
+	vectors := []ChunkVector{
+		{ID: chunks[0].ID, Vector: testVector(0.5)},
+		{ID: chunks[1].ID, Vector: testVector(0.25)},
+	}
+	if err := repo.SaveEmbeddings(ctx, doc.ID, "bge-m3", EmbeddingDimensions, vectors); err != nil {
+		t.Fatalf("SaveEmbeddings: %v", err)
+	}
+
+	var stored int64
+	if err := db.WithContext(ctx).Model(&Chunk{}).
+		Where("document_id = ? AND embedding IS NOT NULL", doc.ID).
+		Count(&stored).Error; err != nil {
+		t.Fatalf("count embedded chunks: %v", err)
+	}
+	if stored != 2 {
+		t.Fatalf("embedded chunks = %d, want 2", stored)
+	}
+
+	done, err := repo.Get(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if done.EmbedStatus != EmbedStatusDone || done.EmbeddedChunks != 2 {
+		t.Fatalf("document embed state = %s/%d, want done/2", done.EmbedStatus, done.EmbeddedChunks)
+	}
+	if done.EmbedDimensions == nil || *done.EmbedDimensions != EmbeddingDimensions {
+		t.Fatalf("embed_dimensions = %v", done.EmbedDimensions)
+	}
+
+	// 距离算子可用：这是下一步检索的前提，也顺手证明向量真的进了列。
+	var distance float64
+	if err := db.WithContext(ctx).
+		Raw(`SELECT embedding <=> CAST(? AS vector) FROM document_chunks WHERE id = ?`,
+			pgvector.NewVector(testVector(0.5)).String(), chunks[0].ID).
+		Scan(&distance).Error; err != nil {
+		t.Fatalf("cosine distance query: %v", err)
+	}
+	if distance > 0.001 {
+		t.Errorf("distance to identical vector = %v, want ~0", distance)
+	}
+
+	// 重索引换掉全部分块后，旧 id 再也不能写：必须得到 ErrStaleChunks，
+	// 且文档状态不能被刷成 done（否则界面说"已完成"，检索却一条都没有）。
+	if err := repo.FinishImport(ctx, doc.ID, chunkFixture(3), true); err != nil {
+		t.Fatalf("FinishImport: %v", err)
+	}
+	if err := repo.SaveEmbeddings(ctx, doc.ID, "bge-m3", EmbeddingDimensions, vectors); !errors.Is(err, ErrStaleChunks) {
+		t.Fatalf("stale write err = %v, want ErrStaleChunks", err)
+	}
+	after, err := repo.Get(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if after.EmbedStatus == EmbedStatusDone || after.EmbeddedChunks != 0 {
+		t.Errorf("stale result must not mark done: %s/%d", after.EmbedStatus, after.EmbeddedChunks)
+	}
+}
+
+// 切分完成后必须在同一事务里排上向量化任务：
+// 少这一步就会出现"文档 ready、状态 pending，但没有任何东西会去做"。
+func TestFinishImportQueuesEmbedTaskIntegration(t *testing.T) {
+	db := setupKnowledgeDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	hash := "2222222222222222222222222222222222222222222222222222222222222222"
+	doc := sampleDocument(hash)
+	if err := repo.CreateWithChunks(ctx, doc, nil); err != nil {
+		t.Fatalf("CreateWithChunks: %v", err)
+	}
+	if err := repo.FinishImport(ctx, doc.ID, chunkFixture(2), true); err != nil {
+		t.Fatalf("FinishImport: %v", err)
+	}
+
+	var tasks []struct {
+		Type   string
+		Status string
+	}
+	if err := db.WithContext(ctx).
+		Raw(`SELECT type, status FROM tasks WHERE target_type = 'document' AND target_id = ?`, doc.ID).
+		Scan(&tasks).Error; err != nil {
+		t.Fatalf("query tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Type != KindDocumentEmbed || tasks[0].Status != "pending" {
+		t.Fatalf("tasks = %+v, want one pending %s", tasks, KindDocumentEmbed)
+	}
+
+	// 再跑一次（模拟重索引）：旧的 embed 任务被标成 superseded，新的顶上，
+	// 不会因为 tasks_active_uniq 让整笔事务失败。
+	if err := repo.FinishImport(ctx, doc.ID, chunkFixture(3), true); err != nil {
+		t.Fatalf("second FinishImport: %v", err)
+	}
+	var counts []struct {
+		Status string
+		Count  int64
+	}
+	if err := db.WithContext(ctx).
+		Raw(`SELECT status, count(*) AS count FROM tasks WHERE target_type = 'document' AND target_id = ? GROUP BY status`, doc.ID).
+		Scan(&counts).Error; err != nil {
+		t.Fatalf("query task counts: %v", err)
+	}
+	var cancelled, pending int64
+	for _, c := range counts {
+		switch c.Status {
+		case "cancelled":
+			cancelled = c.Count
+		case "pending":
+			pending = c.Count
+		}
+	}
+	if cancelled != 1 || pending != 1 {
+		t.Fatalf("task counts = %+v, want 1 cancelled + 1 pending", counts)
 	}
 }
