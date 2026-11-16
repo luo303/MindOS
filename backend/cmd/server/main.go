@@ -171,6 +171,52 @@ func run() error {
 		defer func() { _ = rabbit.Close() }()
 	}
 
+	// —— 向量模型 ——
+	//
+	// 两个独立判断：
+	//   1. 列维度自检——无论配没配模型都要做。schema 与代码常量不一致时，
+	//      每次写入都会失败，而且错误会被包成一句看不出原因的 process_failed。
+	//   2. 建客户端——三件配置齐全才建；未配置是合法状态，
+	//      导入照常、向量化跳过（状态 skipped），不影响现有功能。
+	columnType, err := platform.VectorColumnType(ctx, db, "document_chunks", "embedding")
+	if err != nil {
+		return err
+	}
+	wantType := fmt.Sprintf("vector(%d)", knowledge.EmbeddingDimensions)
+	if columnType != wantType {
+		return fmt.Errorf(
+			"vector column mismatch: document_chunks.embedding is %s, code expects %s; "+
+				"run `go run ./cmd/migrate up`, or change knowledge.EmbeddingDimensions together with a migration",
+			columnType, wantType)
+	}
+
+	var embedder *platform.Embedder
+	var embedding knowledge.Embedder
+	if cfg.IsEmbeddingConfigured() {
+		embedder, err = platform.NewEmbedder(platform.EmbeddingOptions{
+			APIBase:    cfg.Embedding.APIBase,
+			APIKey:     cfg.Embedding.APIKey,
+			Model:      cfg.Embedding.Model,
+			Dimensions: knowledge.EmbeddingDimensions,
+			Timeout:    cfg.Embedding.Timeout,
+			BatchSize:  cfg.Embedding.BatchSize,
+		})
+		if err != nil {
+			return err
+		}
+		// 只有确认非 nil 才装进接口：直接 `embedding = embedder` 在 embedder
+		// 为 nil 时会得到一个"非 nil 的接口"，之后 s.embedder == nil 判断失效。
+		embedding = embedder
+		log.Info("embedding model ready",
+			zap.String("model", cfg.Embedding.Model),
+			zap.Int("dimensions", knowledge.EmbeddingDimensions),
+			zap.Int("batch_size", cfg.Embedding.BatchSize),
+			zap.Duration("timeout", cfg.Embedding.Timeout),
+		)
+	} else {
+		log.Info("embedding model not configured, documents will be chunked without vectors")
+	}
+
 	system := handler.NewSystemHandler(
 		version,
 		func(ctx context.Context) error {
@@ -198,7 +244,7 @@ func run() error {
 		// 容器被 OOM、卷被卸载、网络分区都会让它中途变坏。
 		store.Health,
 	)
-	settings := handler.NewSettingsHandler(cfg)
+	settings := handler.NewSettingsHandler(cfg, embeddingProbe(embedder))
 
 	// 任务表在业务层之前创建：knowledge 需要它判断"取消时任务排着队还是在跑"，
 	// 消费端需要它写进度，两者共用同一个对象。
@@ -208,6 +254,7 @@ func run() error {
 		knowledge.NewRepository(db),
 		store,
 		taskRepo,
+		embedding,
 		cfg.Storage.MaxUploadBytes,
 		log.Named("knowledge"),
 	)
@@ -219,7 +266,7 @@ func run() error {
 	outboxRepo := outbox.NewRepository(db)
 
 	consumer := dispatch.NewConsumer(dispatch.NewSQLStore(outboxRepo), log.Named("dispatch"), dispatch.DefaultMaxAttempts)
-	handle := func(reindex bool) dispatch.Handler {
+	handle := func(kind string) dispatch.Handler {
 		return func(ctx context.Context, env platform.Envelope) error {
 			var p struct {
 				DocumentID int64 `json:"document_id"`
@@ -234,9 +281,10 @@ func run() error {
 				return err
 			}
 			// 用户已经点了取消：不执行，直接按取消收尾。
+			// 收尾方式取决于任务类型——取消向量化绝不能把一份 ready 的文档标成失败。
 			if doc.Status == knowledge.StatusCancelling {
 				_ = taskRepo.MarkCancelled(ctx, p.TaskID)
-				return knowledgeSvc.SettleCancelled(ctx, p.DocumentID, reindex)
+				return knowledgeSvc.SettleCancelled(ctx, p.DocumentID, kind)
 			}
 
 			// 条件更新是执行幂等闸门：重复投递时只有一个实例能推进到 running。
@@ -248,10 +296,15 @@ func run() error {
 				return nil
 			}
 
+			// 一个文档一条消息：导入与重索引都在这里把切分与向量化做完，
+			// 两者写库在同一个事务里，所以"返回 nil"等于"内容与向量都已落库"。
 			var runErr error
-			if reindex {
+			switch kind {
+			case knowledge.KindDocumentEmbed:
+				runErr = knowledgeSvc.ProcessEmbed(ctx, p.DocumentID)
+			case knowledge.KindDocumentReindex:
 				runErr = knowledgeSvc.ProcessReindex(ctx, p.DocumentID)
-			} else {
+			default:
 				runErr = knowledgeSvc.ProcessImport(ctx, p.DocumentID)
 			}
 			if runErr == nil {
@@ -265,12 +318,26 @@ func run() error {
 				return taskRepo.MarkSucceeded(ctx, p.TaskID)
 			}
 
+			// 结果作废不是失败：分块已被重索引整体替换，新任务正在算。
+			// 标成成功而不是失败，也不占重试次数——重试只会再算一遍同一个旧结果。
+			if errors.Is(runErr, knowledge.ErrStaleChunks) {
+				log.Info("embedding result discarded, chunks were replaced",
+					zap.Int64("document_id", p.DocumentID))
+				return taskRepo.MarkSucceeded(ctx, p.TaskID)
+			}
+
 			// 永久错误重试几次都是同一个结果，直接收尾；可恢复错误才跑满次数。
 			if knowledge.IsPermanent(runErr) || env.Attempt+1 >= dispatch.DefaultMaxAttempts {
 				// 两张表都写：task 留技术细节（第几次、原始错误），
 				// document 留用户看得见的原因。少写一处就会出现
 				// "消息放弃了但页面还在转圈"。
-				if err := knowledgeSvc.MarkProcessingFailed(ctx, p.DocumentID, runErr); err != nil {
+				if kind == knowledge.KindDocumentEmbed {
+					// 只写向量状态：分块是好的，文档不该变成"失败"。
+					if err := knowledgeSvc.MarkEmbedFailed(ctx, p.DocumentID, runErr); err != nil {
+						log.Warn("mark embedding failed",
+							zap.Int64("document_id", p.DocumentID), zap.Error(err))
+					}
+				} else if err := knowledgeSvc.MarkProcessingFailed(ctx, p.DocumentID, runErr); err != nil {
 					log.Warn("mark document failed",
 						zap.Int64("document_id", p.DocumentID), zap.Error(err))
 				}
@@ -282,8 +349,9 @@ func run() error {
 			return runErr
 		}
 	}
-	consumer.Register(string(knowledge.KindDocumentImport), handle(false))
-	consumer.Register(string(knowledge.KindDocumentReindex), handle(true))
+	consumer.Register(string(knowledge.KindDocumentImport), handle(knowledge.KindDocumentImport))
+	consumer.Register(string(knowledge.KindDocumentReindex), handle(knowledge.KindDocumentReindex))
+	consumer.Register(string(knowledge.KindDocumentEmbed), handle(knowledge.KindDocumentEmbed))
 
 	relay := outbox.NewRelay(outboxRepo, relayPublisher{rabbit: rabbit}, log.Named("relay"), outbox.RelayOptions{})
 
@@ -391,6 +459,28 @@ func run() error {
 
 	log.Info("mindos stopped")
 	return nil
+}
+
+// embeddingProbe 把 platform 的探针适配成 handler 需要的结果类型。
+//
+// 与下面的 relayPublisher 同一个理由：两边都不该认识对方的类型，
+// 装配层是唯一合理的转换位置。e 为 nil（未配置模型）时返回 nil，
+// handler 收到 nil 就回 MODEL_NOT_CONFIGURED，而不是发一次必然失败的请求。
+func embeddingProbe(e *platform.Embedder) handler.EmbeddingProbeFunc {
+	if e == nil {
+		return nil
+	}
+	return func(ctx context.Context) (handler.EmbeddingProbe, error) {
+		res, err := e.Probe(ctx)
+		if err != nil {
+			return handler.EmbeddingProbe{}, err
+		}
+		return handler.EmbeddingProbe{
+			Model:      res.Model,
+			Dimensions: res.Dimensions,
+			LatencyMS:  res.Latency.Milliseconds(),
+		}, nil
+	}
 }
 
 // relayPublisher 把 platform.Rabbit 适配成 outbox.Queue。

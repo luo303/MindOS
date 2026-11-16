@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
 
 	"github.com/luo303/mindos/backend/internal/outbox"
@@ -38,7 +39,12 @@ func NewRepository(db *gorm.DB) *Repository {
 var documentColumns = []string{
 	"id", "title", "source_type", "mime", "size_bytes", "content_hash",
 	"storage_path", "content", "collection", "tags", "status", "chunk_count",
-	"error_code", "error_message", "created_at", "updated_at",
+	"error_code", "error_message",
+	// 向量化状态：列表与详情都要显示"这份文档能不能语义检索"，
+	// 所以必须和文档一起读出来，不能让前端再查一次。
+	"embed_status", "embed_model", "embed_dimensions", "embedded_chunks",
+	"embed_error_code", "embed_error_message", "embedded_at",
+	"created_at", "updated_at",
 }
 
 // chunkColumns 跳过 embedding 与 tsv：前者 6KB/行且本阶段不用，
@@ -151,6 +157,9 @@ func (r *Repository) MarkIndexingWithTask(ctx context.Context, documentID int64,
 //
 // 只在"任务最终失败"时调用（不可恢复错误，或重试次数用尽）：
 // 一次失败就标红，会让还在重试的任务与界面上的"失败"互相矛盾。
+//
+// 切分阶段的失败与向量化阶段的失败分开写：向量化失败走 MarkEmbedFailed，
+// 它不动 documents.status。这里只处理"内容都没能落库"的情况。
 func (r *Repository) MarkFailed(ctx context.Context, documentID int64, code, message string) error {
 	err := r.db.WithContext(ctx).Model(&Document{}).Where("id = ?", documentID).
 		Updates(map[string]any{
@@ -362,25 +371,233 @@ func (r *Repository) ReplaceChunks(ctx context.Context, documentID int64, chunks
 	return translateError("replace chunks", err)
 }
 
-// FinishImport 替换分块并把文档置为 ready，两件事在同一事务里。
+// FinishImport 替换分块并把文档置为 ready；需要向量化时顺带排一条任务。
 //
 // 为什么必须同一个事务：分块写好了但状态还停在 parsing，界面会一直显示
 // "处理中"；反过来状态先变 ready、分块还没写完，用户点进去看到的是空文档。
-// 这两种都是"看起来成功但其实没成"，比直接失败更难排查。
-func (r *Repository) FinishImport(ctx context.Context, documentID int64, chunks []Chunk) error {
+//
+// 排任务也必须在同一事务里：否则会出现"分块已就绪，但没有任何东西会去算向量"
+// ——文档永远停在"待向量化"，用户只能靠手动点一下才发现。
+//
+// 注意这里**不调模型**：外部调用不进事务（一次调用可能几十秒，会占死连接）。
+// 切分与向量化因此分成两段任务，中间态由 embed_status 如实表达。
+func (r *Repository) FinishImport(ctx context.Context, documentID int64, chunks []Chunk, enqueueEmbed bool) error {
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := replaceChunks(tx, documentID, chunks); err != nil {
 			return err
 		}
-		return tx.Model(&Document{}).Where("id = ?", documentID).
-			Updates(map[string]any{
-				"status":        StatusReady,
-				"error_code":    nil,
-				"error_message": nil,
-				"updated_at":    time.Now().UTC(),
-			}).Error
+		now := time.Now().UTC()
+		updates := map[string]any{
+			"status":        StatusReady,
+			"error_code":    nil,
+			"error_message": nil,
+			"updated_at":    now,
+		}
+		if enqueueEmbed {
+			// 先把同文档未完成的向量化任务作废，再排新的。
+			// 不这样做，重索引完成时会撞 tasks_active_uniq，整笔事务回滚，
+			// 用户看到的却是"重新切分失败"——真正原因是一条旧任务还排着队。
+			if err := cancelEmbedTasks(tx, documentID); err != nil {
+				return err
+			}
+			updates["embed_status"] = EmbedStatusPending
+			updates["embed_model"] = nil
+			updates["embed_dimensions"] = nil
+			updates["embedded_chunks"] = 0
+			updates["embedded_at"] = nil
+			updates["embed_error_code"] = nil
+			updates["embed_error_message"] = nil
+			if _, err := appendTaskAndOutbox(ctx, tx, documentID, KindDocumentEmbed); err != nil {
+				return err
+			}
+		} else {
+			// 未配置模型：不排任务，如实标 skipped（与 pending 区分：
+			// 前者要用户去配 Key，后者只要等）。
+			updates["embed_status"] = EmbedStatusSkipped
+			updates["embed_model"] = nil
+			updates["embed_dimensions"] = nil
+			updates["embedded_chunks"] = 0
+			updates["embedded_at"] = nil
+			updates["embed_error_code"] = EmbedNotConfiguredCode
+			updates["embed_error_message"] = "未配置向量模型，本次只做切分"
+		}
+		return tx.Model(&Document{}).Where("id = ?", documentID).Updates(updates).Error
 	})
 	return translateError("finish import", err)
+}
+
+// cancelEmbedTasks 把该文档未完成的向量化任务标成"被取代"。
+//
+// 用 superseded 而不是 cancelled：它不是用户取消的，而是"分块换了，
+// 这次的结果已经没有意义"。两种语义分开，排查历史时才看得懂。
+func cancelEmbedTasks(tx *gorm.DB, documentID int64) error {
+	now := time.Now().UTC()
+	return tx.Exec(
+		`UPDATE tasks
+		    SET status = 'cancelled', error_code = 'superseded',
+		        error_message = '分块已更新，重新向量化',
+		        updated_at = ?, finished_at = ?
+		  WHERE type = ? AND target_type = ? AND target_id = ?
+		    AND status IN ('pending', 'running')`,
+		now, now, KindDocumentEmbed, "document", documentID).Error
+}
+
+// ChunkSource 是重算向量需要的最小信息：只要 id 与正文。
+type ChunkSource struct {
+	ID      int64  `gorm:"column:id"`
+	Seq     int    `gorm:"column:seq"`
+	Content string `gorm:"column:content"`
+}
+
+// ListChunkSources 按 seq 升序返回分块的 id 与正文，不读 embedding 与 tsv。
+func (r *Repository) ListChunkSources(ctx context.Context, documentID int64) ([]ChunkSource, error) {
+	rows := make([]ChunkSource, 0, 32)
+	err := r.db.WithContext(ctx).Model(&Chunk{}).
+		Select("id", "seq", "content").
+		Where("document_id = ?", documentID).
+		Order("seq ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, translateError("list chunk sources", err)
+	}
+	return rows, nil
+}
+
+// ChunkVector 是一条待写回的分块向量。
+type ChunkVector struct {
+	ID     int64
+	Vector []float32
+}
+
+// SaveEmbeddings 用一批向量重写某个文档的全部分块向量，并把文档置为 done。
+//
+// 新鲜度闸门：只要有一行没命中（`RowsAffected == 0`），说明读到的那批分块
+// 已经被重索引整体替换或文档被删了，整笔事务回滚并返回 ErrStaleChunks，
+// 绝不去写 documents.embed_status。
+//
+// 为什么"命中 0 行"就是可靠信号：分块 id 是 bigserial，重索引是
+// "删全部 + 插新的"，新旧 id 绝不复用。所以开始时读到的 id 集合，
+// 提交时要么全在、要么全不在，不存在"部分还在"。
+// 少了这道闸门就会出现最难查的一种脏数据：重索引刚写完新分块，
+// 上一轮向量化慢一拍收尾，把状态刷成 done，而新分块一条向量都没有。
+func (r *Repository) SaveEmbeddings(ctx context.Context, documentID int64, model string, dimensions int, vectors []ChunkVector) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		for _, v := range vectors {
+			if len(v.Vector) != EmbeddingDimensions {
+				return fmt.Errorf("knowledge: chunk %d has %d dimensions, expected %d",
+					v.ID, len(v.Vector), EmbeddingDimensions)
+			}
+			res := tx.Exec(
+				`UPDATE document_chunks
+				    SET embedding = CAST(? AS vector), embed_model = ?, embedded_at = ?
+				  WHERE id = ? AND document_id = ?`,
+				pgvector.NewVector(v.Vector).String(), model, now, v.ID, documentID)
+			if res.Error != nil {
+				return fmt.Errorf("update vector for chunk %d: %w", v.ID, res.Error)
+			}
+			if res.RowsAffected == 0 {
+				return ErrStaleChunks
+			}
+		}
+		return tx.Model(&Document{}).Where("id = ?", documentID).
+			Updates(map[string]any{
+				"embed_status":        EmbedStatusDone,
+				"embed_model":         model,
+				"embed_dimensions":    dimensions,
+				"embedded_chunks":     len(vectors),
+				"embedded_at":         now,
+				"embed_error_code":    nil,
+				"embed_error_message": nil,
+				"updated_at":          now,
+			}).Error
+	})
+	return translateError("save embeddings", err)
+}
+
+// MarkEmbedRunning 把文档的向量化状态置为进行中，并清掉上一次的错误。
+func (r *Repository) MarkEmbedRunning(ctx context.Context, documentID int64) error {
+	err := r.db.WithContext(ctx).Model(&Document{}).Where("id = ?", documentID).
+		Updates(map[string]any{
+			"embed_status":        EmbedStatusRunning,
+			"embed_error_code":    nil,
+			"embed_error_message": nil,
+			"updated_at":          time.Now().UTC(),
+		}).Error
+	return translateError("mark embed running", err)
+}
+
+// MarkEmbedFailed 只写向量化失败，不动 documents.status。
+//
+// 这是与 MarkFailed 的关键区别：分块是好的，文档照样能读、能按关键词检索，
+// 只是语义检索暂时用不了。把它标成整篇失败，会让用户以为内容坏了。
+func (r *Repository) MarkEmbedFailed(ctx context.Context, documentID int64, code, message string) error {
+	err := r.db.WithContext(ctx).Model(&Document{}).Where("id = ?", documentID).
+		Updates(map[string]any{
+			"embed_status":        EmbedStatusFailed,
+			"embed_error_code":    code,
+			"embed_error_message": message,
+			"updated_at":          time.Now().UTC(),
+		}).Error
+	return translateError("mark embed failed", err)
+}
+
+// MarkEmbedPendingWithTask 把文档置为"待向量化"并排一条任务，两件事同一事务。
+//
+// 单独一个事务的原因：只改状态不建任务，页面会永远停在"待向量化"；
+// 只建任务不改状态，用户看不出已经在排队。
+func (r *Repository) MarkEmbedPendingWithTask(ctx context.Context, documentID int64, kind string) (string, error) {
+	var messageID string
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&Document{}).Where("id = ?", documentID).
+			Updates(map[string]any{
+				"embed_status": EmbedStatusPending,
+				"updated_at":   time.Now().UTC(),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		var err error
+		messageID, err = appendTaskAndOutbox(ctx, tx, documentID, kind)
+		return err
+	})
+	return messageID, translateError("mark embed pending with task", err)
+}
+
+// embedCandidate 是"还没按当前模型向量化"的筛选条件，列表与计数共用，
+// 否则会出现"排了 50 条、remaining 却显示 49"这种对不上的账。
+func embedCandidate(db *gorm.DB, model string) *gorm.DB {
+	return db.Where("status = ?", StatusReady).
+		Where("chunk_count > 0").
+		// 已 done 但模型不同的也属于候选：换模型后那批向量属于旧模型，
+		// 与新查询向量不在同一个空间里，混着用检索结果没有意义。
+		Where("(embed_status <> ? OR embed_model IS DISTINCT FROM ?)", EmbedStatusDone, model)
+}
+
+// ListEmbedCandidates 返回最多 limit 个待向量化的文档 id，按 id 升序（先来先排）。
+func (r *Repository) ListEmbedCandidates(ctx context.Context, model string, limit int) ([]int64, error) {
+	ids := make([]int64, 0, limit)
+	err := embedCandidate(r.db.WithContext(ctx).Model(&Document{}), model).
+		Order("id ASC").
+		Limit(limit).
+		Pluck("id", &ids).Error
+	if err != nil {
+		return nil, translateError("list embed candidates", err)
+	}
+	return ids, nil
+}
+
+// CountEmbedCandidates 返回剩余候选数，供回填报告 remaining。
+func (r *Repository) CountEmbedCandidates(ctx context.Context, model string) (int64, error) {
+	var total int64
+	err := embedCandidate(r.db.WithContext(ctx).Model(&Document{}), model).Count(&total).Error
+	if err != nil {
+		return 0, translateError("count embed candidates", err)
+	}
+	return total, nil
 }
 
 // replaceChunks 是分块替换的实际实现，接受 tx 以便与状态更新共用事务。

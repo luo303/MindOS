@@ -6,6 +6,7 @@ package knowledge
 
 import (
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -43,10 +44,28 @@ type documentView struct {
 	ChunkCount  int      `json:"chunk_count"`
 	// 处理最终失败时才有值。omitempty 让成功响应保持干净，
 	// 前端也能用"有没有这个字段"直接判断要不要显示失败原因。
-	ErrorCode    string    `json:"error_code,omitempty"`
-	ErrorMessage string    `json:"error_message,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+	// Embedding 是向量化状态。嵌套一层而不是平铺 embed_*：
+	// 平铺后和上面那两个 error_* 撞语义，读的人分不清哪次失败是哪一步。
+	Embedding embeddingView `json:"embedding"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// embeddingView 是"这份文档的向量化到哪一步了"的对外形状。
+//
+// status 取值：pending（待做）/ running（进行中）/ done（已完成）/
+// failed（失败，看 error_code）/ skipped（未配置模型，跳过）。
+type embeddingView struct {
+	Status     string `json:"status"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
+	// Chunks 是已经有向量的分块数，done 时应等于 chunk_count。
+	Chunks       int        `json:"chunks"`
+	EmbeddedAt   *time.Time `json:"embedded_at"`
+	ErrorCode    string     `json:"error_code,omitempty"`
+	ErrorMessage string     `json:"error_message,omitempty"`
 }
 
 // acceptedDocumentView 是"已受理、结果稍后产生"这类响应的公共形状。
@@ -302,6 +321,63 @@ func (h *Handler) Reindex(c *gin.Context) {
 	})
 }
 
+// Embed 重建某个文档的向量（不重新切分）：POST /documents/:id/embed。
+//
+// 与 /reindex 的分工：reindex 换分块（偏移与 id 全变），embed 只重算向量。
+// 换模型、补配置、修一次向量化失败都该走这个接口。
+func (h *Handler) Embed(c *gin.Context) {
+	id, err := parseID(c.Param("id"))
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	res, err := h.svc.StartEmbed(c.Request.Context(), id)
+	if err != nil {
+		httpx.Fail(c, mapError(err))
+		return
+	}
+	httpx.Accepted(c, acceptedDocumentView{
+		documentView: newDocumentView(res.Document),
+		MessageID:    res.MessageID,
+	})
+}
+
+// backfillRequest 是批量回填的入参。空 body 合法（用默认条数）。
+type backfillRequest struct {
+	Limit int `json:"limit"`
+}
+
+// backfillView 回报"这次排了多少、跳过多少、还剩多少"。
+//
+// 三项都必要：只回报 enqueued，用户没法判断要不要再点一次；
+// 不回报 skipped，重复点击会看到"排了 0 条"却不知道是因为已经排着了。
+type backfillView struct {
+	Enqueued  int   `json:"enqueued"`
+	Skipped   int   `json:"skipped"`
+	Remaining int64 `json:"remaining"`
+}
+
+// EmbedBackfill 把所有"已就绪但没按当前模型向量化"的文档批量排进队列：
+// POST /documents/embeddings/backfill。
+func (h *Handler) EmbedBackfill(c *gin.Context) {
+	var req backfillRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage(
+			`request body must be JSON such as {"limit":50}, or empty`))
+		return
+	}
+	res, err := h.svc.StartEmbedBackfill(c.Request.Context(), req.Limit)
+	if err != nil {
+		httpx.Fail(c, mapError(err))
+		return
+	}
+	httpx.OK(c, backfillView{
+		Enqueued:  res.Enqueued,
+		Skipped:   res.Skipped,
+		Remaining: res.Remaining,
+	})
+}
+
 // Cancel 请求取消进行中的处理：POST /documents/:id/cancel。
 //
 // 返回 200 + 文档当前状态，而不是 202：取消这个动作本身已经生效
@@ -361,6 +437,7 @@ func newDocumentView(doc *Document) documentView {
 		Tags:        tags,
 		Status:      doc.Status,
 		ChunkCount:  doc.ChunkCount,
+		Embedding:   newEmbeddingView(doc),
 		CreatedAt:   doc.CreatedAt,
 		UpdatedAt:   doc.UpdatedAt,
 	}
@@ -373,6 +450,27 @@ func newDocumentView(doc *Document) documentView {
 	}
 	if doc.ErrorMessage != nil {
 		view.ErrorMessage = *doc.ErrorMessage
+	}
+	return view
+}
+
+func newEmbeddingView(doc *Document) embeddingView {
+	view := embeddingView{
+		Status:     doc.EmbedStatus,
+		Chunks:     doc.EmbeddedChunks,
+		EmbeddedAt: doc.EmbeddedAt,
+	}
+	if doc.EmbedModel != nil {
+		view.Model = *doc.EmbedModel
+	}
+	if doc.EmbedDimensions != nil {
+		view.Dimensions = *doc.EmbedDimensions
+	}
+	if doc.EmbedErrorCode != nil {
+		view.ErrorCode = *doc.EmbedErrorCode
+	}
+	if doc.EmbedErrorMessage != nil {
+		view.ErrorMessage = *doc.EmbedErrorMessage
 	}
 	return view
 }
@@ -494,6 +592,23 @@ func mapError(err error) error {
 	case errors.Is(err, ErrReindexRunning):
 		// 不是"参数错"，是"同一动作已经在进行中"——409 比 400 更准确。
 		return httpx.ErrConflict.WithMessage("reindex for this document is already running")
+	case errors.Is(err, ErrEmbedRunning):
+		return httpx.ErrConflict.WithMessage("embedding for this document is already running")
+	case errors.Is(err, ErrNotReady):
+		// 文档还在 pending/indexing：现在没有分块可以向量化，等它处理完。
+		return httpx.ErrConflict.WithMessage("%s", err.Error())
+	case errors.Is(err, ErrNoChunks):
+		return httpx.ErrConflict.WithMessage("document has no chunks to embed")
+	case errors.Is(err, ErrEmbeddingNotConfigured):
+		// 能力缺失而不是请求错：503 让前端据此引导用户去配置，而不是报"参数非法"。
+		return httpx.ErrModelNotConfigured.WithMessage(
+			"embedding model is not configured; set EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL")
+	case errors.Is(err, ErrEmbeddingAuth),
+		errors.Is(err, ErrEmbeddingBadRequest),
+		errors.Is(err, ErrEmbeddingDimensionMismatch),
+		errors.Is(err, ErrEmbeddingUnavailable):
+		// 外部模型服务的失败：502，具体原因在 message 里（不含密钥）。
+		return httpx.ErrUpstreamFailed.WithMessage("%s", err.Error())
 	case errors.Is(err, ErrUnsupportedType):
 		return httpx.ErrUnsupportedMediaType.WithMessage(
 			"only Markdown (.md, .markdown) and plain text (.txt) files are supported")

@@ -151,6 +151,13 @@ var (
 	ErrPayloadTooLarge      = &Error{Code: "PAYLOAD_TOO_LARGE", Message: "payload too large", HTTPStatus: http.StatusRequestEntityTooLarge}
 	ErrUnsupportedMediaType = &Error{Code: "UNSUPPORTED_MEDIA_TYPE", Message: "unsupported media type", HTTPStatus: http.StatusUnsupportedMediaType}
 	ErrServiceUnavailable   = &Error{Code: "SERVICE_UNAVAILABLE", Message: "service unavailable", HTTPStatus: http.StatusServiceUnavailable}
+	// ErrModelNotConfigured 表示能力缺失而不是故障：向量模型三个配置项全空。
+	// 用 503 而不是 400——请求本身没问题，是这台机器还没配好。
+	ErrModelNotConfigured = &Error{Code: "MODEL_NOT_CONFIGURED", Message: "model is not configured", HTTPStatus: http.StatusServiceUnavailable}
+	// ErrUpstreamFailed 表示外部模型服务返回了失败（凭据错、参数错、限流、超时）。
+	// 用 502：错误发生在我们之外，客户端重试可能有用也可能没用，
+	// 具体原因在 message 里，code 不再细分——细分留给任务表里的 error_code。
+	ErrUpstreamFailed = &Error{Code: "UPSTREAM_FAILED", Message: "upstream model service failed", HTTPStatus: http.StatusBadGateway}
 )
 
 // IsCode 判断 err 链上是否有指定错误码的 *Error。

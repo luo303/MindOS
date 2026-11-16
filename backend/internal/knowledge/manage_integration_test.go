@@ -215,7 +215,7 @@ func TestIdempotentImportIntegration(t *testing.T) {
 	store := newFakeStore()
 	repo := NewRepository(db)
 	// 取消能力来自 tasks 表：这个用例只验证幂等链路，传真仓储即可。
-	svc := NewService(repo, store, task.NewRepository(db), 1<<20, nil)
+	svc := NewService(repo, store, task.NewRepository(db), nil, 1<<20, nil)
 	ctx := context.Background()
 	text := "# 幂等\n\n同一份内容只应该入库一次。\n"
 
@@ -294,7 +294,7 @@ func TestReindexTaskIntegration(t *testing.T) {
 		t.Fatalf("second mark indexing error = %v, want ErrDuplicate", err)
 	}
 
-	if err := repo.FinishImport(ctx, doc.ID, chunkFixture(3)); err != nil {
+	if err := repo.FinishImport(ctx, doc.ID, chunkFixture(3), false); err != nil {
 		t.Fatalf("finish import: %v", err)
 	}
 	got, err := repo.Get(ctx, doc.ID)

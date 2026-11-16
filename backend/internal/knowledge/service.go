@@ -52,6 +52,29 @@ var (
 	// 与"重复导入"不同，重复导入返回既有文档（幂等），而重索引是"再排队一次"
 	// 的意图——已经排着队了就没必要再来一条，直接告诉调用方在跑。
 	ErrReindexRunning = errors.New("document reindex is already running")
+	// ErrEmbedRunning 表示同一文档已有未完成的向量化任务。
+	ErrEmbedRunning = errors.New("embedding for this document is already running")
+	// ErrNotReady 表示文档还没处理完（pending/indexing），现在没有分块可向量化。
+	ErrNotReady = errors.New("document is not ready for embedding")
+	// ErrNoChunks 表示文档已就绪但没有任何分块——没有可向量化的内容。
+	ErrNoChunks = errors.New("document has no chunks to embed")
+
+	// —— 向量化失败分类。前三类是"再试也没用"，最后一类可以重试。——
+	//
+	// ErrEmbeddingNotConfigured 表示三个配置项全空。它不该出现在任务里：
+	// 未配置时导入会直接跳过向量化（标 skipped），不会排任务。
+	ErrEmbeddingNotConfigured = errors.New("embedding model is not configured")
+	// ErrEmbeddingAuth 表示凭据被拒（401/403）：Key 错或过期。
+	ErrEmbeddingAuth = errors.New("embedding provider rejected the credentials")
+	// ErrEmbeddingBadRequest 表示请求被拒（模型名错、单条输入过长等）。
+	ErrEmbeddingBadRequest = errors.New("embedding provider rejected the input")
+	// ErrEmbeddingDimensionMismatch 表示返回维度与 vector(1024) 不符。
+	ErrEmbeddingDimensionMismatch = errors.New("embedding dimension mismatch")
+	// ErrEmbeddingUnavailable 表示限流、超时、5xx、连不上——等一会儿能好。
+	ErrEmbeddingUnavailable = errors.New("embedding provider is unavailable")
+	// ErrStaleChunks 表示这次向量化读到的分块已被重索引整体替换，结果作废。
+	// 它不是失败：既不该重试（新任务已经在跑），也不该写进文档的 embed_error。
+	ErrStaleChunks = errors.New("chunk set was replaced, embedding result discarded")
 )
 
 // 分页边界。上限 100 是"防止一次拉全库"的护栏，不是性能优化。
@@ -78,16 +101,31 @@ type documentRepository interface {
 	ReplaceChunks(ctx context.Context, documentID int64, chunks []Chunk) error
 	// CreateWithTask 在一个事务里写待处理文档、任务与消息，返回消息编号。
 	CreateWithTask(ctx context.Context, doc *Document, kind string) (string, error)
-	// FinishImport 在同一事务里替换分块并把文档置 ready（Phase 6）。
-	FinishImport(ctx context.Context, documentID int64, chunks []Chunk) error
+	// FinishImport 在同一事务里替换分块、置 ready，并按需排一条向量化任务。
+	FinishImport(ctx context.Context, documentID int64, chunks []Chunk, enqueueEmbed bool) error
 	// MarkIndexingWithTask 在同一事务里把文档置 indexing 并排一条重索引任务。
 	MarkIndexingWithTask(ctx context.Context, documentID int64, kind string) (string, error)
-	// MarkFailed 记录处理最终失败与原因（Phase 6）。
+	// MarkFailed 记录处理最终失败与原因。
 	MarkFailed(ctx context.Context, documentID int64, code, message string) error
 	// MarkCancelling 把文档置为"取消中"，等 worker 停下后写终态。
 	MarkCancelling(ctx context.Context, documentID int64) error
 	// MarkReady 把文档置回 ready（重索引被取消时用）。
 	MarkReady(ctx context.Context, documentID int64) error
+
+	// —— 向量化 ——
+	// ListChunkSources 返回分块的 id 与正文，供重算向量使用。
+	ListChunkSources(ctx context.Context, documentID int64) ([]ChunkSource, error)
+	// SaveEmbeddings 一个事务写回全部向量；分块已被替换时返回 ErrStaleChunks。
+	SaveEmbeddings(ctx context.Context, documentID int64, model string, dimensions int, vectors []ChunkVector) error
+	// MarkEmbedRunning / MarkEmbedFailed 只动向量化状态，不改 documents.status。
+	MarkEmbedRunning(ctx context.Context, documentID int64) error
+	MarkEmbedFailed(ctx context.Context, documentID int64, code, message string) error
+	// MarkEmbedPendingWithTask 置"待向量化"并排一条任务（同一事务）。
+	MarkEmbedPendingWithTask(ctx context.Context, documentID int64, kind string) (string, error)
+	// ListEmbedCandidates 找出还没按当前模型向量化的已就绪文档。
+	ListEmbedCandidates(ctx context.Context, model string, limit int) ([]int64, error)
+	// CountEmbedCandidates 返回还剩多少候选，供回填报告 remaining。
+	CountEmbedCandidates(ctx context.Context, model string) (int64, error)
 }
 
 // taskStore 是本模块需要任务表的能力：读活跃任务与写取消终态。
@@ -98,8 +136,8 @@ type documentRepository interface {
 // 注意这里没有"唤醒"：消息由 relay 每 200ms 扫 outbox 投递，
 // 业务侧落库即完成，不再需要主动叫醒任何人。
 type taskStore interface {
-	// Active 返回某文档当前未完成的任务。
-	Active(ctx context.Context, targetType string, targetID int64) (*task.Task, error)
+	// ListActive 返回某文档当前全部未完成的任务（可能同时有 import 与 embed 各一条）。
+	ListActive(ctx context.Context, targetType string, targetID int64) ([]task.Task, error)
 	// CancelPending 只在任务尚未被领走时取消，返回是否抢到了。
 	CancelPending(ctx context.Context, id int64) (bool, error)
 }
@@ -114,13 +152,18 @@ type fileStore interface {
 	Remove(ctx context.Context, relPath string) error
 }
 
-// Service 编排导入流程：校验 → 解析 → 切分 → 落盘 → 落库。
+// Service 编排导入流程：校验 → 解析 → 切分 → 向量化 → 落盘 → 落库。
 type Service struct {
 	repo documentRepository
 	// tasks 只用于"取消进行中的处理"：判断任务是排着队还是在跑。
 	// 建任务走 repository 的同事务方法——文档、任务、消息必须一起写。
-	tasks          taskStore
-	store          fileStore
+	tasks taskStore
+	store fileStore
+	// embedder 为 nil 表示没有配置向量模型：导入照常，向量化跳过。
+	//
+	// 用接口而不是具体类型：这里只用到三个方法，测试替身能少写两个空方法；
+	// platform.Embedder 什么都不用写就满足它。
+	embedder       Embedder
 	maxUploadBytes int64
 	log            *zap.Logger
 }
@@ -128,10 +171,14 @@ type Service struct {
 // NewService 组装业务层。maxUploadBytes 来自配置，<=0 时会被兜底成 10 MiB，
 // 避免调用方忘了传导致"任何文件都超限"。
 //
+// embedder 允许为 nil（未配置向量模型）。注意调用方传 nil 时要用"无类型 nil"：
+// 把一个值为 nil 的具体指针装进接口，接口本身并不等于 nil，
+// 那时 `s.embedder == nil` 会是 false，随后在被调用时 panic。
+//
 // log 允许为 nil（测试里常见）：此时退化成不记录。业务逻辑本身不依赖日志，
 // 但"删库成功、删文件失败"这种只能记一笔的情况需要它，所以不做成可选参数
 // 之外的另一套 API。
-func NewService(repo documentRepository, store fileStore, tasks taskStore, maxUploadBytes int64, log *zap.Logger) *Service {
+func NewService(repo documentRepository, store fileStore, tasks taskStore, embedder Embedder, maxUploadBytes int64, log *zap.Logger) *Service {
 	if maxUploadBytes <= 0 {
 		maxUploadBytes = 10 << 20
 	}
@@ -142,6 +189,7 @@ func NewService(repo documentRepository, store fileStore, tasks taskStore, maxUp
 		repo:           repo,
 		store:          store,
 		tasks:          tasks,
+		embedder:       embedder,
 		maxUploadBytes: maxUploadBytes,
 		log:            log,
 	}
@@ -181,6 +229,12 @@ type UpdateInput struct {
 const (
 	KindDocumentImport  = "document.import"
 	KindDocumentReindex = "document.reindex"
+	// KindDocumentEmbed 只重算向量，不重新切分。
+	//
+	// 为什么需要它：导入任务把切分与向量化绑在一起（一个事务、一条消息），
+	// 但"换模型""补配置"这两种情况不该重切——重切会换掉全部分块 id，
+	// 已经发生的引用与高亮会全部失效。所以另开一个只动向量的任务。
+	KindDocumentEmbed = "document.embed"
 )
 
 // ImportResult 是一次"导入受理"的结果。
@@ -282,9 +336,15 @@ func (s *Service) StartNoteImport(ctx context.Context, in NoteInput) (*ImportRes
 	return s.startImport(ctx, doc, nil)
 }
 
-// ProcessImport 是任务的执行段：读原文 → 切分 → 替换分块 → 置 ready。
+// ProcessImport 是导入任务的执行段：读原文 → 切分 → 落分块 → 排向量化任务。
 //
-// 三条约定（与 job.HandlerFunc 的契约一致）：
+// 【为什么切分与向量化分成两段任务】
+// 向量化要调外部模型，一次可能几十秒，绝不能放进数据库事务里（会占死连接）。
+// 而"分块落库"与"要去做向量化"这两件事必须同时成立，于是后者写成
+// 与分块同一个事务里的一行 outbox 记录——消息由 relay 异步搬运，MQ 不在
+// 一致性链条上。这样切分永远不会因为模型抖动而白跑，向量化失败也只需重算向量。
+//
+// 三条约定（与 dispatch.Handler 的契约一致）：
 //   - 响应 ctx：取消与停止靠它传播；
 //   - 可重跑：FinishImport 是"先删后插"的一个事务，重复执行结果不变；
 //   - 不碰任务状态：成功/失败由 worker 统一写回。
@@ -301,13 +361,17 @@ func (s *Service) ProcessImport(ctx context.Context, documentID int64) error {
 	if err != nil {
 		return err
 	}
-	return s.repo.FinishImport(ctx, documentID, chunks)
+	// 未配置模型时只落分块并标 skipped，导入照常成功。
+	return s.repo.FinishImport(ctx, documentID, chunks, s.embedder != nil)
 }
 
 // MarkProcessingFailed 写文档的失败终态与可读原因，由消费端在"确定不再重试"时调用。
 //
 // 拆成独立方法而不是塞进 ProcessImport：只有消费端知道"还剩几次机会"，
 // 业务层不该自己判断该不该收尾——那需要第二份重试配置，早晚两处不一致。
+//
+// 只用于切分/解析阶段的失败；向量化阶段的失败走 MarkEmbedFailed，
+// 那条路不动 documents.status。
 func (s *Service) MarkProcessingFailed(ctx context.Context, documentID int64, cause error) error {
 	return s.repo.MarkFailed(ctx, documentID, ErrorCode(cause), cause.Error())
 }
@@ -324,7 +388,16 @@ func IsPermanent(err error) bool {
 		errors.Is(err, ErrNotUTF8),
 		errors.Is(err, ErrInvalidMetadata),
 		errors.Is(err, ErrSourceMissing),
-		errors.Is(err, ErrNotFound):
+		errors.Is(err, ErrNotFound),
+		// 向量化里除了"暂时不可用"以外都是永久错误：Key 错、模型名错、
+		// 维度不符、没有分块，再试几次得到的结果完全一样。
+		// ErrStaleChunks 不在这里——它既不是永久失败，也不该重试，
+		// 消费端会把它当成"结果作废、任务成功"单独处理。
+		errors.Is(err, ErrEmbeddingNotConfigured),
+		errors.Is(err, ErrEmbeddingAuth),
+		errors.Is(err, ErrEmbeddingBadRequest),
+		errors.Is(err, ErrEmbeddingDimensionMismatch),
+		errors.Is(err, ErrNoChunks):
 		return true
 	default:
 		return false
@@ -336,6 +409,20 @@ func IsPermanent(err error) bool {
 // 文档表与任务表共用它：两处记的必须是同一个码，
 // 否则排查时要在两份分类之间猜。
 func ErrorCode(err error) string { return errorCode(err) }
+
+// 向量化相关的错误码。写进 documents.embed_error_code 与 tasks.error_code，
+// 两处必须是同一个字符串——排查时不要在两份分类之间猜。
+const (
+	// EmbedNotConfiguredCode 表示"没配模型所以没做"，是合法状态而非故障。
+	EmbedNotConfiguredCode = "not_configured"
+	EmbedAuthCode          = "embedding_auth_failed"
+	EmbedBadRequestCode    = "embedding_bad_request"
+	EmbedDimensionCode     = "embedding_dimension_mismatch"
+	EmbedUnavailableCode   = "embedding_unavailable"
+	NoChunksCode           = "no_chunks"
+	// EmbedStaleCode 只写进任务历史，不写文档：结果作废不是文档的错。
+	EmbedStaleCode = "stale_chunks"
+)
 
 // errorCode 把错误翻译成稳定的机器可读代码，写进 documents.error_code。
 //
@@ -356,6 +443,20 @@ func errorCode(err error) string {
 		// 与 source_missing 分开：这是"存储暂时连不上"，重试或恢复 MinIO 后能好；
 		// 前者是原文真的没了，需要用户重新导入。
 		return "storage_unavailable"
+	case errors.Is(err, ErrEmbeddingNotConfigured):
+		return EmbedNotConfiguredCode
+	case errors.Is(err, ErrEmbeddingAuth):
+		return EmbedAuthCode
+	case errors.Is(err, ErrEmbeddingBadRequest):
+		return EmbedBadRequestCode
+	case errors.Is(err, ErrEmbeddingDimensionMismatch):
+		return EmbedDimensionCode
+	case errors.Is(err, ErrEmbeddingUnavailable):
+		return EmbedUnavailableCode
+	case errors.Is(err, ErrNoChunks):
+		return NoChunksCode
+	case errors.Is(err, ErrStaleChunks):
+		return EmbedStaleCode
 	case errors.Is(err, ErrNotFound):
 		return "document_not_found"
 	default:
@@ -558,8 +659,8 @@ func (s *Service) ProcessReindex(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	// 与导入共用 FinishImport：换分块与置 ready 必须同进同退。
-	return s.repo.FinishImport(ctx, id, chunks)
+	// 与导入共用 FinishImport：换分块、置 ready、排向量化任务必须同进同退。
+	return s.repo.FinishImport(ctx, id, chunks, s.embedder != nil)
 }
 
 // CancelProcessing 请求取消某文档进行中的处理。
@@ -572,9 +673,11 @@ func (s *Service) ProcessReindex(ctx context.Context, id int64) error {
 //     这里抢先写 failed 会与"处理其实刚好完成"互相覆盖——实测出现过
 //     failed 但已有分块的半状态，所以收尾必须跟着任务状态的原子转移走。
 //
-// 终态本身取决于被取消的是哪种任务：
-//   - 导入取消 → 这份文档没成，标 failed 并写明原因；
-//   - 重索引取消 → 旧分块完好，退回 ready 才是事实，标失败会让人以为文档坏了。
+// 一个文档可能同时有两条活跃任务（导入与重索引用不同的 type，唯一索引按 type 分段），
+// 所以这里取消的是"全部可取消的任务"，而不是随手取最新那条。
+//
+// 向量化任务不在可取消之列：它只跑几秒，取消还要打断进行中的 HTTP 调用，
+// 而重新点一次就是重算——取消它没有用户可见的收益。
 func (s *Service) CancelProcessing(ctx context.Context, id int64) (*Document, error) {
 	if _, err := s.repo.Get(ctx, id); err != nil {
 		return nil, err
@@ -582,32 +685,43 @@ func (s *Service) CancelProcessing(ctx context.Context, id int64) (*Document, er
 	if s.tasks == nil {
 		return nil, ErrNoProcessing
 	}
-	t, err := s.tasks.Active(ctx, task.TargetDocument, id)
+	active, err := s.tasks.ListActive(ctx, task.TargetDocument, id)
 	if err != nil {
-		if errors.Is(err, task.ErrNotFound) {
-			// 没有进行中的任务：可能已经完成、已经被取消，或本来就没在处理。
-			// 三种情况对调用方是同一件事——没得取消。
-			return nil, ErrNoProcessing
-		}
 		return nil, err
+	}
+	cancellable := make([]task.Task, 0, len(active))
+	for _, t := range active {
+		if t.Type != KindDocumentEmbed {
+			cancellable = append(cancellable, t)
+		}
+	}
+	if len(cancellable) == 0 {
+		// 没有可取消的处理：可能已经完成、已经被取消，或只在上传向量。
+		// 三种情况对调用方是同一件事——没有"正在处理"这件事可撤回。
+		return nil, ErrNoProcessing
 	}
 
-	// 条件取消：只有仍然处于 pending 才抢得到。抢不到说明消费端刚领走，
-	// 这时不能再写终态，否则与正在执行的那一方互相覆盖。
-	cancelled, err := s.tasks.CancelPending(ctx, t.ID)
-	if err != nil {
-		return nil, err
-	}
-	if cancelled {
-		if err := s.SettleCancelled(ctx, id, t.Type == KindDocumentReindex); err != nil {
+	running := false
+	for _, t := range cancellable {
+		// 条件取消：只有仍然处于 pending 才抢得到。抢不到说明消费端刚领走。
+		cancelled, err := s.tasks.CancelPending(ctx, t.ID)
+		if err != nil {
 			return nil, err
 		}
-		return s.repo.Get(ctx, id)
+		if !cancelled {
+			running = true
+			continue
+		}
+		if err := s.SettleCancelled(ctx, id, t.Type); err != nil {
+			return nil, err
+		}
 	}
 
-	// 已经在跑：只能标记取消意图，消费端会在执行前与收尾时看到它。
-	if err := s.repo.MarkCancelling(ctx, id); err != nil {
-		return nil, err
+	// 已经在跑的：只能标记取消意图，消费端会在执行前与收尾时看到它。
+	if running {
+		if err := s.repo.MarkCancelling(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	return s.repo.Get(ctx, id)
 }
@@ -615,10 +729,15 @@ func (s *Service) CancelProcessing(ctx context.Context, id int64) (*Document, er
 // SettleCancelled 写取消之后的业务终态。由 worker 在任务真正停下后回调，
 // 也在"排队中直接取消"时被 CancelProcessing 调用。
 //
-// 重索引取消 → 退回 ready：旧分块完好，文档本身没问题；
-// 导入取消 → failed + cancelled：这份文档确实没有内容可用。
-func (s *Service) SettleCancelled(ctx context.Context, documentID int64, reindex bool) error {
-	if reindex {
+// 终态取决于被取消的是哪种任务：
+//   - 重索引取消 → 退回 ready：旧分块完好，文档本身没问题；
+//   - 向量化取消 → 文档仍是 ready，只把向量状态写成 failed/cancelled；
+//   - 导入取消 → 没有内容可用，标 failed。
+func (s *Service) SettleCancelled(ctx context.Context, documentID int64, kind string) error {
+	switch kind {
+	case KindDocumentEmbed:
+		return s.repo.MarkEmbedFailed(ctx, documentID, "cancelled", "向量化已取消")
+	case KindDocumentReindex:
 		return s.repo.MarkReady(ctx, documentID)
 	}
 	doc, err := s.repo.Get(ctx, documentID)

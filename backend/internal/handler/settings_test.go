@@ -41,7 +41,7 @@ func TestSettingsGetMasksSecrets(t *testing.T) {
 		LLM:   config.LLMConfig{APIBase: "https://api.example.com/v1", APIKey: apiKey, Model: "gpt-4o-mini"},
 		Agent: config.AgentConfig{MaxSteps: 30, TokenBudget: 200000, RunTimeout: 5 * time.Minute},
 	}
-	h := NewSettingsHandler(cfg)
+	h := NewSettingsHandler(cfg, nil)
 
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -97,7 +97,7 @@ func TestSettingsGetUnconfiguredModel(t *testing.T) {
 		Log: config.LogConfig{Level: "debug", Format: "console"},
 		DB:  config.DBConfig{Host: "localhost", Port: 5432, Name: "mindos", User: "mindos", Password: "pw"},
 	}
-	h := NewSettingsHandler(cfg)
+	h := NewSettingsHandler(cfg, nil)
 
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

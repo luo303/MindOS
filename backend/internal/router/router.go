@@ -56,16 +56,23 @@ func Register(e *gin.Engine, deps Deps) {
 	v1 := e.Group("/api/v1")
 	v1.GET("/system/status", deps.System.Status)
 	v1.GET("/settings", deps.Settings.Get)
+	// 连通性测试会真发一次模型请求，所以是 POST：它不是"读状态"，
+	// 有副作用（计费）且不该被浏览器或代理缓存。
+	v1.POST("/settings/embedding/test", deps.Settings.TestEmbedding)
 
 	// 知识：导入与重索引都是异步受理，返回 202 + message_id；
 	// 同内容重复导入返回 200 + existed=true。
 	v1.POST("/documents", deps.Knowledge.CreateFile)
 	v1.POST("/documents/note", deps.Knowledge.CreateNote)
+	// 静态段放在 :id 之前：gin 允许同一层同时有静态与参数路由，
+	// 顺序只影响可读性，不影响匹配（静态优先）。
+	v1.POST("/documents/embeddings/backfill", deps.Knowledge.EmbedBackfill)
 	v1.GET("/documents", deps.Knowledge.List)
 	v1.GET("/documents/:id", deps.Knowledge.Get)
 	v1.GET("/documents/:id/chunks", deps.Knowledge.ListChunks)
 	v1.PATCH("/documents/:id", deps.Knowledge.Update)
 	v1.DELETE("/documents/:id", deps.Knowledge.Delete)
 	v1.POST("/documents/:id/reindex", deps.Knowledge.Reindex)
+	v1.POST("/documents/:id/embed", deps.Knowledge.Embed)
 	v1.POST("/documents/:id/cancel", deps.Knowledge.Cancel)
 }

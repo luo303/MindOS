@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -10,19 +11,69 @@ import (
 	"github.com/luo303/mindos/backend/internal/httpx"
 )
 
-// SettingsHandler 提供只读的配置视图（GET /settings）。
+// EmbeddingProbe 是一次向量模型连通性测试的结果。
+type EmbeddingProbe struct {
+	Model      string
+	Dimensions int
+	LatencyMS  int64
+}
+
+// EmbeddingProbeFunc 由 cmd/server 注入：真发一条短文本给模型。
+//
+// 为 nil 表示未配置向量模型。这里不让 handler 直接持有模型客户端：
+// handler 只负责 HTTP 形状，能力从外面传进来，测试里塞一个假函数就够了。
+type EmbeddingProbeFunc func(ctx context.Context) (EmbeddingProbe, error)
+
+// SettingsHandler 提供只读的配置视图（GET /settings）与模型连通性测试。
 //
 // 安全边界：这个接口面向"本地单用户"也不返回完整密钥——
 // 浏览器、终端历史、日志抓取都有可能把响应内容带出去。
 // 只输出"是否已配置 + 脱敏片段"，足够人确认"配的是不是那把 Key"。
 type SettingsHandler struct {
-	cfg *config.Config
+	cfg   *config.Config
+	probe EmbeddingProbeFunc
 }
 
 // NewSettingsHandler 创建设置视图 handler。持有的是只读配置指针，
 // handler 不提供任何写接口，修改配置只能改 .env 后重启。
-func NewSettingsHandler(cfg *config.Config) *SettingsHandler {
-	return &SettingsHandler{cfg: cfg}
+//
+// probe 为 nil 时，测试接口返回 MODEL_NOT_CONFIGURED 而不是 500：
+// "没配"是已知状态，不是故障。
+func NewSettingsHandler(cfg *config.Config, probe EmbeddingProbeFunc) *SettingsHandler {
+	return &SettingsHandler{cfg: cfg, probe: probe}
+}
+
+// embeddingTestView 是连通性测试的响应体。
+type embeddingTestView struct {
+	OK         bool   `json:"ok"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
+	LatencyMS  int64  `json:"latency_ms"`
+}
+
+// TestEmbedding 真调一次向量模型：POST /settings/embedding/test。
+//
+// 为什么不复用 /system/status：状态接口要快、可频繁轮询，不能每次都打外部模型。
+// 而这个接口的唯一目的就是"配的到底能不能用"，不真调用等于没测。
+func (h *SettingsHandler) TestEmbedding(c *gin.Context) {
+	if h.probe == nil {
+		httpx.Fail(c, httpx.ErrModelNotConfigured.WithMessage(
+			"embedding model is not configured; set EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL"))
+		return
+	}
+	res, err := h.probe(c.Request.Context())
+	if err != nil {
+		// 原始错误里可能带厂商返回的 status 与短提示（我们截过 300 字节），
+		// 它不包含 Key，直接给调用方看比"upstream failed"有用得多。
+		httpx.Fail(c, httpx.ErrUpstreamFailed.WithMessage("%s", err.Error()))
+		return
+	}
+	httpx.OK(c, embeddingTestView{
+		OK:         true,
+		Model:      res.Model,
+		Dimensions: res.Dimensions,
+		LatencyMS:  res.LatencyMS,
+	})
 }
 
 // modelSettingsView 是单个模型配置的对外视图。

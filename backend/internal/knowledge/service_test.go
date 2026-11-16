@@ -26,14 +26,27 @@ type fakeRepo struct {
 	nextID     int64
 	createErr  error
 	replaceErr error
+	// nextChunkID 复刻 bigserial：分块 id 全局单调、绝不复用。
+	// 这是"新鲜度闸门"的前提——重索引换掉分块后，旧 id 一定对不上，
+	// 若替身按 documentID*1000+i 分配，重索引后前几块的 id 会重复，
+	// 于是竞态用例永远测不出问题。
+	nextChunkID int64
 	// tasks 与 service 共用同一份任务状态：受理时写入、取消时读取，
 	// 分成两个对象就会出现"仓储写了一条、taskStore 看不到"的假象。
 	tasks *fakeTasks
 }
 
+// assignChunkIDs 给分块分配新 id，模拟数据库自增。
+func (f *fakeRepo) assignChunkIDs(chunks []Chunk) {
+	for i := range chunks {
+		f.nextChunkID++
+		chunks[i].ID = f.nextChunkID
+	}
+}
+
 // fakeTasks 复刻 tasks 表里本模块用到的两个动作。
 //
-// 只实现 Active 与 CancelPending：service 对任务表只有这两处依赖，
+// 只实现 ListActive 与 CancelPending：service 对任务表只有这两处依赖，
 // 替身跟着窄接口走，多写的方法意味着接口可能比实际需要更宽。
 type fakeTasks struct {
 	items  []*task.Task
@@ -54,17 +67,17 @@ func (f *fakeTasks) add(kind string, documentID int64) *task.Task {
 	return t
 }
 
-func (f *fakeTasks) Active(_ context.Context, targetType string, targetID int64) (*task.Task, error) {
-	for i := len(f.items) - 1; i >= 0; i-- {
-		t := f.items[i]
+func (f *fakeTasks) ListActive(_ context.Context, targetType string, targetID int64) ([]task.Task, error) {
+	out := make([]task.Task, 0, 2)
+	for _, t := range f.items {
 		if t.TargetType != targetType || t.TargetID != targetID {
 			continue
 		}
 		if t.Status == task.StatusPending || t.Status == task.StatusRunning {
-			return t, nil
+			out = append(out, *t)
 		}
 	}
-	return nil, task.ErrNotFound
+	return out, nil
 }
 
 func (f *fakeTasks) CancelPending(_ context.Context, id int64) (bool, error) {
@@ -123,6 +136,7 @@ func (f *fakeRepo) CreateWithChunks(_ context.Context, doc *Document, chunks []C
 	stored := *doc
 	f.docs[doc.ID] = &stored
 	f.hashIndex[doc.ContentHash] = doc.ID
+	f.assignChunkIDs(chunks)
 	for i := range chunks {
 		chunks[i].DocumentID = doc.ID
 	}
@@ -141,8 +155,9 @@ func (f *fakeRepo) CreateWithTask(_ context.Context, doc *Document, kind string)
 	return "msg-" + strconv.FormatInt(doc.ID, 10), nil
 }
 
-// FinishImport 复刻"替换分块 + 置 ready"，两件事在真实实现里是同一事务。
-func (f *fakeRepo) FinishImport(_ context.Context, documentID int64, chunks []Chunk) error {
+// FinishImport 复刻"替换分块 + 置 ready（+ 视配置排向量化任务）"，
+// 三件事在真实实现里是同一事务。
+func (f *fakeRepo) FinishImport(_ context.Context, documentID int64, chunks []Chunk, enqueueEmbed bool) error {
 	if f.replaceErr != nil {
 		return f.replaceErr
 	}
@@ -150,12 +165,24 @@ func (f *fakeRepo) FinishImport(_ context.Context, documentID int64, chunks []Ch
 	if !ok {
 		return ErrNotFound
 	}
+	// 真实数据库会给分块分配自增 id，且新 id 绝不复用旧值；
+	// 新鲜度闸门就靠这一点判断"我读到的那批分块还在不在"。
+	f.assignChunkIDs(chunks)
 	for i := range chunks {
 		chunks[i].DocumentID = documentID
 	}
 	f.chunks[documentID] = append([]Chunk(nil), chunks...)
 	doc.ChunkCount = len(chunks)
 	doc.Status = StatusReady
+	doc.EmbeddedChunks = 0
+	if enqueueEmbed {
+		doc.EmbedStatus = EmbedStatusPending
+		f.tasks.add(KindDocumentEmbed, documentID)
+	} else {
+		doc.EmbedStatus = EmbedStatusSkipped
+		code := EmbedNotConfiguredCode
+		doc.EmbedErrorCode = &code
+	}
 	doc.UpdatedAt = time.Now().UTC()
 	// 任务的 succeeded 由消费端写，service 不碰——替身也不该替它收尾，
 	// 否则"执行段不写任务状态"这条契约在测试里就看不见了。
@@ -215,6 +242,115 @@ func (f *fakeRepo) MarkFailed(_ context.Context, documentID int64, code, message
 	doc.ErrorCode = &code
 	doc.ErrorMessage = &message
 	return nil
+}
+
+// MarkEmbedRunning 复刻"向量化进行中"。
+func (f *fakeRepo) MarkEmbedRunning(_ context.Context, documentID int64) error {
+	doc, ok := f.docs[documentID]
+	if !ok {
+		return ErrNotFound
+	}
+	doc.EmbedStatus = EmbedStatusRunning
+	return nil
+}
+
+// MarkEmbedFailed 复刻"只写向量状态，不动文档状态"——这是与 MarkFailed 的分界。
+func (f *fakeRepo) MarkEmbedFailed(_ context.Context, documentID int64, code, message string) error {
+	doc, ok := f.docs[documentID]
+	if !ok {
+		return ErrNotFound
+	}
+	doc.EmbedStatus = EmbedStatusFailed
+	doc.EmbedErrorCode = &code
+	doc.EmbedErrorMessage = &message
+	return nil
+}
+
+// MarkEmbedPendingWithTask 复刻"置 pending + 排任务"，并模拟唯一索引去重。
+func (f *fakeRepo) MarkEmbedPendingWithTask(_ context.Context, documentID int64, kind string) (string, error) {
+	doc, ok := f.docs[documentID]
+	if !ok {
+		return "", ErrNotFound
+	}
+	for _, t := range f.tasks.items {
+		if t.TargetID == documentID && t.Type == kind &&
+			(t.Status == task.StatusPending || t.Status == task.StatusRunning) {
+			return "", ErrDuplicate
+		}
+	}
+	doc.EmbedStatus = EmbedStatusPending
+	f.tasks.add(kind, documentID)
+	return "msg-embed-" + strconv.FormatInt(documentID, 10), nil
+}
+
+// ListChunkSources 返回 id 与正文，供重算向量使用。
+func (f *fakeRepo) ListChunkSources(_ context.Context, documentID int64) ([]ChunkSource, error) {
+	out := make([]ChunkSource, 0, len(f.chunks[documentID]))
+	for _, c := range f.chunks[documentID] {
+		out = append(out, ChunkSource{ID: c.ID, Seq: c.Seq, Content: c.Content})
+	}
+	return out, nil
+}
+
+// SaveEmbeddings 复刻新鲜度闸门：id 不在当前分块集合里就返回 ErrStaleChunks。
+func (f *fakeRepo) SaveEmbeddings(_ context.Context, documentID int64, model string, dimensions int, vectors []ChunkVector) error {
+	doc, ok := f.docs[documentID]
+	if !ok {
+		return ErrNotFound
+	}
+	existing := map[int64]bool{}
+	for _, c := range f.chunks[documentID] {
+		existing[c.ID] = true
+	}
+	for _, v := range vectors {
+		if !existing[v.ID] {
+			return ErrStaleChunks
+		}
+	}
+	doc.EmbedStatus = EmbedStatusDone
+	doc.EmbedModel = &model
+	doc.EmbedDimensions = &dimensions
+	doc.EmbeddedChunks = len(vectors)
+	return nil
+}
+
+// ListEmbedCandidates 复刻回填的候选条件（含"模型不同也算候选"）。
+func (f *fakeRepo) ListEmbedCandidates(_ context.Context, model string, limit int) ([]int64, error) {
+	out := make([]int64, 0, limit)
+	for id := int64(1); id <= f.nextID; id++ {
+		doc, ok := f.docs[id]
+		if !ok || !embedCandidateDoc(doc, model) {
+			continue
+		}
+		out = append(out, id)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// CountEmbedCandidates 与 ListEmbedCandidates 共用同一个判据。
+func (f *fakeRepo) CountEmbedCandidates(_ context.Context, model string) (int64, error) {
+	var total int64
+	for id := int64(1); id <= f.nextID; id++ {
+		if doc, ok := f.docs[id]; ok && embedCandidateDoc(doc, model) {
+			total++
+		}
+	}
+	return total, nil
+}
+
+// embedCandidateDoc 与真实仓储的 WHERE 条件一一对应：ready、有分块、
+// 且（未 done 或模型不一致）。
+func embedCandidateDoc(doc *Document, model string) bool {
+	if doc.Status != StatusReady || doc.ChunkCount == 0 {
+		return false
+	}
+	if doc.EmbedStatus != EmbedStatusDone {
+		return true
+	}
+	return doc.EmbedModel == nil || *doc.EmbedModel != model
 }
 
 func (f *fakeRepo) GetByContentHash(_ context.Context, hash string) (*Document, error) {
@@ -346,6 +482,7 @@ func (f *fakeRepo) ReplaceChunks(_ context.Context, documentID int64, chunks []C
 		// 真实仓储里这一步是单事务：失败时旧分块必须原封不动。
 		return f.replaceErr
 	}
+	f.assignChunkIDs(chunks)
 	for i := range chunks {
 		chunks[i].DocumentID = documentID
 	}
@@ -406,7 +543,7 @@ func newTestService(maxUploadBytes int64) (*Service, *fakeRepo, *fakeStore) {
 	repo, store := newFakeRepo(), newFakeStore()
 	// 任务状态由 repo.tasks 持有：受理时写入、取消时读取，
 	// 两个替身共享同一份数据，才能复刻"同一条任务"的真实关系。
-	return NewService(repo, store, repo.tasks, maxUploadBytes, nil), repo, store
+	return NewService(repo, store, repo.tasks, nil, maxUploadBytes, nil), repo, store
 }
 
 func TestImportFileMarkdown(t *testing.T) {
@@ -1327,7 +1464,7 @@ func TestCancelProcessingRunningMarksCancelling(t *testing.T) {
 	}
 
 	// 消费端停下后回调写终态。
-	if err := svc.SettleCancelled(ctx, res.Document.ID, false); err != nil {
+	if err := svc.SettleCancelled(ctx, res.Document.ID, KindDocumentImport); err != nil {
 		t.Fatalf("settle cancelled: %v", err)
 	}
 	settled, err := svc.Get(ctx, res.Document.ID)
@@ -1353,7 +1490,7 @@ func TestMarkProcessingFailedWritesCode(t *testing.T) {
 	repo.nextID = 3
 	store := newFakeStore()
 	store.readErr = errors.New("dial tcp: connection refused")
-	svc := NewService(repo, store, repo.tasks, 1<<20, nil)
+	svc := NewService(repo, store, repo.tasks, nil, 1<<20, nil)
 
 	// 真实路径是消费端跑 ProcessImport 失败后再调它，这里直接验证收尾效果。
 	runErr := svc.ProcessImport(ctx, 3)
