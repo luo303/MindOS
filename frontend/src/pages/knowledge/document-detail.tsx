@@ -1,5 +1,5 @@
 import { Loader2, Pencil, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 
 import type { ChunkView, DocumentPatch, DocumentView, EmbedStatus } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +34,13 @@ type DetailProps = {
   deleting: boolean
   /** 向量化受理请求是否在飞行中（只影响按钮 loading，不影响状态展示） */
   embedding: boolean
+  /**
+   * 从问答页跳进来时要高亮的分块序号（0 基）。
+   *
+   * 用序号而不是 chunk id：URL 里带 seq 更短，而且 seq 是人类看得懂的位置。
+   * 为 null 表示不是深链进入，不高亮也不滚动。
+   */
+  highlightSeq: number | null
   onStartEdit: () => void
   onCancelEdit: () => void
   onSaveMeta: (patch: DocumentPatch) => void
@@ -60,6 +67,7 @@ export function DocumentDetail({
   cancelling,
   deleting,
   embedding,
+  highlightSeq,
   onStartEdit,
   onCancelEdit,
   onSaveMeta,
@@ -68,6 +76,16 @@ export function DocumentDetail({
   onCancelProcessing,
   onDelete,
 }: DetailProps) {
+  // 深链进入（问答页的引用 chip 跳过来）：等目标分块真的渲染出来再滚动。
+  // 依赖 chunks.length 是因为首次渲染时还在加载，元素根本不存在。
+  useEffect(() => {
+    if (highlightSeq === null) {
+      return
+    }
+    const target = document.getElementById(`chunk-${highlightSeq}`)
+    target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [highlightSeq, chunks.length])
+
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const embed = doc.embedding
   const embedLabel = embedMeta[embed.status]
@@ -202,7 +220,12 @@ export function DocumentDetail({
           <Skeleton className="h-24 w-full" />
         </div>
       ) : (
-        <ChunkList chunks={chunks} total={chunkTotal} maxReturned={CHUNK_PAGE_SIZE} />
+        <ChunkList
+          chunks={chunks}
+          total={chunkTotal}
+          maxReturned={CHUNK_PAGE_SIZE}
+          highlightSeq={highlightSeq}
+        />
       )}
     </div>
   )
@@ -319,7 +342,17 @@ function MetadataForm({
   )
 }
 
-function ChunkList({ chunks, total, maxReturned }: { chunks: ChunkView[]; total: number; maxReturned: number }) {
+function ChunkList({
+  chunks,
+  total,
+  maxReturned,
+  highlightSeq,
+}: {
+  chunks: ChunkView[]
+  total: number
+  maxReturned: number
+  highlightSeq: number | null
+}) {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -336,7 +369,11 @@ function ChunkList({ chunks, total, maxReturned }: { chunks: ChunkView[]; total:
       ) : null}
 
       {chunks.map((chunk) => (
-        <Card key={chunk.id} className="gap-2">
+        <Card
+          key={chunk.id}
+          id={`chunk-${chunk.seq}`}
+          className={highlightSeq === chunk.seq ? 'ring-primary/40 gap-2 ring-2' : 'gap-2'}
+        >
           <CardHeader className="gap-1">
             <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
               <span className="text-muted-foreground font-mono">#{chunk.seq}</span>

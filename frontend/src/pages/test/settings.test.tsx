@@ -2,14 +2,14 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { envelope, jsonResponse, settingsFixture, systemStatusFixture } from '@/test/fixtures'
+import { envelope, jsonResponse, chatModelFixture, settingsFixture, systemStatusFixture } from '@/test/fixtures'
 import { renderApp } from '@/test/render-app'
 
 afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-/** 按路径分流两个接口，返回真实的成功响应。 */
+/** 按路径分流三个接口，返回真实的成功响应。 */
 function stubSuccessFetch() {
   const fetchMock = vi.fn(async (input: string) => {
     if (input.endsWith('/system/status')) {
@@ -17,6 +17,9 @@ function stubSuccessFetch() {
     }
     if (input.endsWith('/settings')) {
       return jsonResponse(envelope(settingsFixture()))
+    }
+    if (input.endsWith('/chat-models')) {
+      return jsonResponse(envelope({ items: [chatModelFixture()] }))
     }
     throw new Error(`unexpected url: ${input}`)
   })
@@ -45,9 +48,11 @@ describe('设置页', () => {
     expect(screen.getByText('对象存储 MinIO')).toBeInTheDocument()
     expect(screen.getByText('已是最新')).toBeInTheDocument()
     expect(screen.getByText(/当前版本 1 \/ 代码最新 1/)).toBeInTheDocument()
-    expect(screen.getByText('gpt-test · sk-1****wxyz')).toBeInTheDocument()
     expect(screen.getByText('未配置模型 · 未配置')).toBeInTheDocument()
     expect(screen.getByText('200,000')).toBeInTheDocument()
+    // 对话模型卡片独立请求 /chat-models，也要渲染出来
+    expect(await screen.findByText('讯飞 Spark')).toBeInTheDocument()
+    expect(screen.getByText('Key ****wxyz')).toBeInTheDocument()
   })
 
   it('对象存储故障时单独报出，不牵连其他依赖', async () => {
@@ -88,7 +93,9 @@ describe('设置页', () => {
 
     expect(await screen.findByText('读取系统状态失败')).toBeInTheDocument()
     expect(screen.getByText('读取配置失败')).toBeInTheDocument()
-    expect(screen.getAllByText(/无法连接后端服务/)).toHaveLength(2)
+    // 三块卡片（系统状态 / 运行配置 / 对话模型）各自报一次
+    expect(screen.getAllByText(/无法连接后端服务/)).toHaveLength(3)
+    // 对话模型卡片不提供重试按钮，重试入口仍只有两个
     expect(screen.getAllByRole('button', { name: '重试' })).toHaveLength(2)
   })
 
@@ -102,8 +109,8 @@ describe('设置页', () => {
 
     renderApp('/settings')
 
-    // 两个请求拿到同一份错误体，两块卡片都会展示（不是只报第一块）
-    expect(await screen.findAllByText(/internal server error（request_id: req-500）/)).toHaveLength(2)
+    // 三个请求拿到同一份错误体，三块卡片都会展示（不是只报第一块）
+    expect(await screen.findAllByText(/internal server error（request_id: req-500）/)).toHaveLength(3)
   })
 
   it('重试会重新请求并恢复正常展示', async () => {

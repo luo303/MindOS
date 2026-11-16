@@ -7,7 +7,13 @@ import { ApiError } from '@/api/errors'
  * 前端只在**这一处**解信封，页面拿到的永远是 data 本身，
  * 这样新增页面时不必重复写 `res.data.data` 这类容易写错的取值。
  */
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
+/**
+ * 后端 API 前缀。
+ *
+ * 导出的唯一原因：SSE 接口（/ask）不能用 apiRequest——它只接受信封响应，
+ * 而流是一串事件。那条路径需要自己拼 URL，但仍应跟这里保持同一个基址。
+ */
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const DEFAULT_TIMEOUT_MS = 15_000
 
 type Envelope<T> = {

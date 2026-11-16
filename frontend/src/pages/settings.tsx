@@ -18,6 +18,7 @@ import { StatusPill } from '@/components/status-pill'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ChatModelsCard } from '@/pages/settings/chat-models'
 
 type Tone = 'ok' | 'warn' | 'danger' | 'muted'
 type PillMeta = { label: string; tone: Tone }
@@ -98,8 +99,12 @@ export function SettingsPage() {
         <SettingsCard settings={settingsQuery.data} />
       )}
 
+      <ChatModelsCard />
+
       <p className="text-muted-foreground text-xs">
-        配置只读：修改需要编辑 backend/.env 后重启服务。密钥一律只显示脱敏值，完整内容不会出现在浏览器里。
+        运行配置来自 backend/.env，只读：修改需要编辑文件后重启服务。
+        对话模型是例外——它由上面的卡片管理，存在数据库里，改完立即生效。
+        密钥一律只显示脱敏值或"已配置"，完整内容不会出现在浏览器里。
       </p>
     </div>
   )
@@ -170,7 +175,6 @@ function SettingsCard({ settings }: { settings: SettingsView }) {
             label="单次导入上限"
             value={`${(settings.storage.max_upload_bytes / 1024 / 1024).toFixed(0)} MiB`}
           />
-          <ModelField label="LLM" model={settings.llm} />
           <ModelField label="Embedding" model={settings.embedding} />
           <Field label="Agent 步数上限" value={String(settings.agent.max_steps)} />
           <Field label="Agent token 预算" value={tokenBudget} />

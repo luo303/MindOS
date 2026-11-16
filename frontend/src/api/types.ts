@@ -55,7 +55,7 @@ export type SettingsView = {
     bucket: string
     max_upload_bytes: number
   }
-  llm: ModelSettings
+  // 对话模型不在 .env 里：它由用户配置并存库，接口在 /chat-models。
   embedding: ModelSettings
   agent: { max_steps: number; token_budget: number; run_timeout_seconds: number }
 }
@@ -169,3 +169,90 @@ export type ChunkList = {
   limit: number
   offset: number
 }
+
+/**
+ * 一条对话模型配置（GET /chat-models）。
+ *
+ * api_key 永远不会出现：后端只返回末四位与"是否已配置"。
+ * 前端在编辑态也不能把 hint 回填进密码框——那样一保存就把真 Key 覆盖成四个星号。
+ */
+export type ChatModel = {
+  id: number
+  name: string
+  base_url: string
+  model: string
+  /** 末四位；短密钥为空串 */
+  api_key_hint: string
+  api_key_configured: boolean
+  temperature: number | null
+  max_tokens: number | null
+  is_default: boolean
+  last_used_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** 新增/修改配置的请求体。api_key 缺省表示"不改"，空串表示"清除"。 */
+export type ChatModelInput = {
+  name: string
+  base_url: string
+  model: string
+  api_key?: string
+  temperature: number | null
+  max_tokens: number | null
+  is_default?: boolean
+}
+
+export type ChatModelProbe = {
+  ok: boolean
+  model: string
+  latency_ms: number
+  reply: string
+}
+
+/** 裁决结果。failed 表示没有产出结果（上游挂了、超时、用户断开）。 */
+export type AskVerdict = 'answered' | 'refused' | 'ungrounded' | 'failed'
+
+/** retrieval 事件里的片段：编号 + 相似度 + 前 120 字。 */
+export type AskRetrievalItem = {
+  n: number
+  document_id: number
+  chunk_id: number
+  title: string
+  seq: number
+  similarity: number
+  rrf_score: number
+  snippet: string
+}
+
+/** citation 事件里的条目：带偏移，够前端跳回原文并高亮。 */
+export type AskCitationItem = {
+  n: number
+  document_id: number
+  chunk_id: number
+  title: string
+  seq: number
+  start_offset: number
+  end_offset: number
+  similarity: number
+}
+
+export type AskDonePayload = {
+  run_id: number
+  chat_model_id: number
+  prompt_tokens: number
+  completion_tokens: number
+  latency_ms: number
+}
+
+/**
+ * SSE 事件。用可辨识联合而不是 any[]：新增一种事件时，
+ * 忘记处理的 switch 分支会让 TS 报错，而不是静默忽略。
+ */
+export type AskEvent =
+  | { type: 'retrieval'; seq: number; payload: { hits: AskRetrievalItem[] } }
+  | { type: 'delta'; seq: number; payload: { text: string } }
+  | { type: 'verdict'; seq: number; payload: { status: AskVerdict; reason: string } }
+  | { type: 'citation'; seq: number; payload: { items: AskCitationItem[] } }
+  | { type: 'error'; seq: number; payload: { code: string; message: string; retryable: boolean } }
+  | { type: 'done'; seq: number; payload: AskDonePayload }

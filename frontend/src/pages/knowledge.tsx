@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BookOpen, Loader2, NotebookPen, Sparkles, Upload, X } from 'lucide-react'
-import { useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useSearchParams } from 'react-router'
 
 import {
   backfillEmbeddings,
@@ -48,15 +49,35 @@ const emptyFilters: DocumentFilters = { collection: '', tag: '', status: '' }
 export function KnowledgePage() {
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // 问答页的引用 chip 会带 ?doc=&chunk= 跳进来。
+  // chunk 是 0 基的分块序号，只用于滚动与高亮；doc 决定打开哪篇文档。
+  const [searchParams] = useSearchParams()
+  const deepLinkDoc = Number(searchParams.get('doc'))
+  const hasDeepLink = Number.isFinite(deepLinkDoc) && deepLinkDoc > 0
+  const chunkParam = searchParams.get('chunk')
+  const deepLinkChunk = chunkParam === null ? null : Number(chunkParam)
+
   const [page, setPage] = useState(1)
   const [filters, setFilters] = useState<DocumentFilters>(emptyFilters)
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [selectedId, setSelectedId] = useState<number | null>(hasDeepLink ? deepLinkDoc : null)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [importNotice, setImportNotice] = useState<{ existed: boolean; title: string } | null>(null)
   const [backfillNotice, setBackfillNotice] = useState<string | null>(null)
+
+  // URL 里的 doc 变化时切换选中（例如在页面内又点了一次别的引用）。
+  // 用 ref 记住上次处理过的值：否则用户点列表换文档后，这个 effect 会因为
+  // selectedId 变了而再把它改回 URL 里那篇，形成"列表点不动"的假象。
+  const lastDeepLinkRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!hasDeepLink || lastDeepLinkRef.current === deepLinkDoc) {
+      return
+    }
+    lastDeepLinkRef.current = deepLinkDoc
+    setSelectedId(deepLinkDoc)
+  }, [hasDeepLink, deepLinkDoc])
 
   const offset = (page - 1) * PAGE_SIZE
   const query: DocumentQuery = { limit: PAGE_SIZE, offset, ...filters }
@@ -414,6 +435,9 @@ export function KnowledgePage() {
               chunks={chunksQuery.data?.items ?? []}
               chunkTotal={chunksQuery.data?.total ?? 0}
               chunksLoading={chunksQuery.isPending}
+              // 只有当前打开的就是 URL 指向的那篇时才高亮：用户切到别的文档后，
+              // 还按 URL 里的 chunk 去滚动会跳到不相干的段落。
+              highlightSeq={activeId === deepLinkDoc ? deepLinkChunk : null}
               savingMeta={updateMutation.isPending}
               reindexing={reindexMutation.isPending}
               embedding={embedMutation.isPending}

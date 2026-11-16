@@ -1,4 +1,5 @@
 import type {
+  ChatModel,
   ChunkView,
   DocumentEmbedding,
   DocumentList,
@@ -42,12 +43,7 @@ export function settingsFixture(overrides: Partial<SettingsView> = {}): Settings
       bucket: 'mindos',
       max_upload_bytes: 10485760,
     },
-    llm: {
-      api_base: 'https://api.example.com/v1',
-      model: 'gpt-test',
-      api_key_masked: 'sk-1****wxyz',
-      api_key_configured: true,
-    },
+    // 对话模型不在 /settings 里：它由用户配置并存库（/chat-models）。
     embedding: { api_base: '', model: '', api_key_masked: '', api_key_configured: false },
     agent: { max_steps: 12, token_budget: 200000, run_timeout_seconds: 300 },
     ...overrides,
@@ -102,4 +98,23 @@ export function chunkFixture(overrides: Partial<ChunkView> = {}): ChunkView {
 
 export function documentListFixture(docs: DocumentView[]): DocumentList {
   return { items: docs, total: docs.length, limit: 20, offset: 0 }
+}
+
+/** 一条对话模型配置。api_key 只给 hint，与后端"永不返回完整 Key"一致。 */
+export function chatModelFixture(overrides: Partial<ChatModel> = {}): ChatModel {
+  return {
+    id: 1,
+    name: '讯飞 Spark',
+    base_url: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
+    model: 'spark-x2.6',
+    api_key_hint: 'wxyz',
+    api_key_configured: true,
+    temperature: null,
+    max_tokens: null,
+    is_default: true,
+    last_used_at: null,
+    created_at: '2026-11-16T08:00:00Z',
+    updated_at: '2026-11-16T08:00:00Z',
+    ...overrides,
+  }
 }
