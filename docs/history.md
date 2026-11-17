@@ -422,6 +422,13 @@ npm run build
   knowledge 的越权矩阵（读/列表/改/删/分块/检索/回填候选）、chatmodel 的 AAD 搬家用例。
 - 门禁：后端 `build` / `vet` / `test -race`（含真库）全绿；前端 `lint` / 64 用例 / `build` 全绿。
 
+**上线验收中抓到并修复的缺陷**：本地开发从 `localhost:5173` 注册返回 403
+`AUTH_ORIGIN_MISMATCH`。原因是 Vite 代理开了 `changeOrigin: true`，后端看到的 `Host` 是
+`127.0.0.1:8080`，而浏览器的 `Origin` 是 `http://localhost:5173`，CSRF 的同源判断必然失败。
+修法：开发代理改为 `changeOrigin: false` 保留原始 Host；同时新增 `AUTH_ALLOWED_ORIGINS`
+（逗号分隔的可信来源），让任何改写 Host 的反向代理都有正当出路；拒绝提示改成可操作的中文，
+并在日志里打出 origin 与 host。没有用 `X-Forwarded-Host` 兜底——它同样由请求方提供、可被伪造。
+
 **踩坑**：`bytea` 不能直接 Scan 进 `[]byte`（要包一层结构体）；`set_config` 第二参是 text，
 传 int 会被 pgx 拒绝；`-race` 下 bcrypt 12 让 auth 包跑了一分多钟（测试用 `TestMain` 降成本，
 生产默认值单独断言）；handler 测试需要 `auth.SetPrincipal` 才能注入身份。

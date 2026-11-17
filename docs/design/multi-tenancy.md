@@ -101,8 +101,19 @@ D 不是永远不做：RLS 可以以后**叠加**在 A 之上（策略读会话 
 Cookie 认证必须处理 CSRF。三道一起上：
 
 1. `SameSite=Lax`：跨站 POST 不带 Cookie，天然挡住绝大多数场景。
-2. **Origin 校验**：非 GET/HEAD 请求若带 `Origin` 头且 host 与 `Host` 不一致 → 403。浏览器对同源和跨源的 POST 都会带 `Origin`，所以这条对浏览器有效；`curl` 不带 `Origin`，放行——这也是 `AGENTS.md` 要求的真实 curl 验证能继续跑的原因。
-3. 所有写操作都是 JSON 或 multipart（不是表单编码），跨站表单提交无法伪造 `Content-Type: application/json` 触发解析（配合前两条已足够）。
+2. **Origin 校验**：非 GET/HEAD 请求若带 `Origin` 头，必须满足其一——host 与请求 `Host` 相同，
+   或在 `AUTH_ALLOWED_ORIGINS` 里登记过。浏览器对同源和跨源的 POST 都会带 `Origin`，
+   所以这条对浏览器有效；`curl` 不带 `Origin`，放行——这也是 `AGENTS.md` 要求的真实 curl 验证能继续跑的原因。
+
+   **为什么需要白名单（实测缺陷）**：反向代理改写 Host 时（Vite 的 `changeOrigin: true`、
+   nginx 默认的 `proxy_set_header Host $proxy_host`），`Origin` 是前端地址、`Host` 是上游地址，
+   两者必然不等，注册/登录会被判成跨站。修法两条：开发代理改成 `changeOrigin: false` 保留原始 Host；
+   生产或任何改写 Host 的部署，把前端来源登记到 `AUTH_ALLOWED_ORIGINS`。
+   不读 `X-Forwarded-Host`——那个头由请求方提供，攻击者可随意伪造，拿它做 CSRF 判据等于没有判据。
+
+3. 拒绝时返回可操作的中文提示（而不是 "cross-site request rejected"），并在日志里打出
+   `origin` 与 `host` 两组地址，运维一眼能看出是代理改写还是真的跨站。
+4. 所有写操作都是 JSON 或 multipart（不是表单编码），跨站表单提交无法伪造 `Content-Type: application/json` 触发解析（配合前三条已足够）。
 
 不做 double-submit token：它要求前端额外取 token 并回填，收益在 `SameSite=Lax` 面前很小，却给每个写接口增加一个必填头。
 
@@ -468,6 +479,8 @@ B 访问 A 的文档 / 分块 / 问答记录 / 对话模型：返回 `404 NOT_FO
 |---|---|---|
 | `AUTH_SESSION_TTL` | `720h` | 会话绝对有效期（30 天） |
 | `AUTH_REGISTRATION` | `closed` | 是否允许自助注册（`open` / `closed`，无环境分支） |
+| `AUTH_ALLOWED_ORIGINS` | 空 | 可信前端来源，逗号分隔（如 `http://localhost:5173`）；只在代理改写 Host 时需要 |
+| `AUTH_ALLOWED_ORIGINS` | 空 | 可信前端来源，逗号分隔（`http://localhost:5173`）。只在代理改写 Host 时需要 |
 
 ## 11. 测试与验收
 
