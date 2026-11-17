@@ -1,3 +1,4 @@
+import type { AuthUser } from '@/api/auth'
 import type {
   ChatModel,
   ChunkView,
@@ -7,6 +8,15 @@ import type {
   SettingsView,
   SystemStatus,
 } from '@/api/types'
+
+/** 已登录用户：路由守卫与侧栏账号区都用它。 */
+export const authUserFixture: AuthUser = {
+  id: 1,
+  email: 'alice@example.com',
+  display_name: 'Alice',
+  created_at: '2026-11-17T00:00:00Z',
+  last_login_at: null,
+}
 
 /** 后端成功信封。字段与 httpx.Envelope 保持一致。 */
 export function envelope<T>(data: T, requestId = 'test-request-id') {

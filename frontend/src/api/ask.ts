@@ -46,6 +46,8 @@ export async function askStream(input: AskInput, handlers: AskHandlers, signal?:
   try {
     response = await fetch(`${API_BASE}/ask`, {
       method: 'POST',
+      // 与 apiRequest 一致：登录态在 Cookie 里，流式请求同样要带上。
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify({
         question: input.question,
@@ -65,6 +67,9 @@ export async function askStream(input: AskInput, handlers: AskHandlers, signal?:
   }
 
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('mindos:unauthorized'))
+    }
     throw await readEnvelopeError(response)
   }
   if (!response.body) {

@@ -47,6 +47,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
     response = await fetch(`${API_BASE}${path}`, {
       method,
+      // 登录态是 HttpOnly Cookie：同源请求默认会带，但显式写出来，
+      // 以后把 API_BASE 改成跨域地址时不会突然"登录失效"。
+      credentials: 'include',
       headers: body === undefined || isFormData ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : isFormData ? body : JSON.stringify(body),
       signal: controller.signal,
@@ -73,6 +76,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const envelope = isEnvelope(payload) ? payload : undefined
 
   if (!response.ok) {
+    // 会话过期/被撤销：广播一次，让守卫清掉身份并跳登录页。
+    // 用 window 事件而不是在这里直接 import 路由：api 层不该认识 React。
+    if (response.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('mindos:unauthorized'))
+    }
     throw new ApiError(envelope?.message || `服务返回 HTTP ${response.status}`, {
       kind: 'http',
       status: response.status,

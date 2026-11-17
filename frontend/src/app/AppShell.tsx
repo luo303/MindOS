@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router'
 
 import { modules } from '@/app/modules'
+import { useLogout, useMe } from '@/app/auth'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -93,7 +94,36 @@ function SideNav({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
-      <p className="text-muted-foreground px-5 pb-4 text-xs">本地单用户 · Phase 3</p>
+      <AccountPanel />
+    </div>
+  )
+}
+
+/**
+ * 侧栏底部的账号区。
+ *
+ * 退出登录不在这里导航：把缓存置为 null 后，路由守卫会跳登录页。
+ * 这样"主动登出"与"会话过期被动登出"走的是同一条路径，不会有两套逻辑。
+ */
+function AccountPanel() {
+  const { data } = useMe()
+  const logoutMutation = useLogout()
+
+  return (
+    <div className="border-sidebar-border space-y-2 border-t px-5 py-4">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium">{data?.display_name ?? '—'}</p>
+        <p className="text-muted-foreground truncate text-xs">{data?.email ?? ''}</p>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full"
+        disabled={logoutMutation.isPending}
+        onClick={() => logoutMutation.mutate()}
+      >
+        {logoutMutation.isPending ? '退出中…' : '退出登录'}
+      </Button>
     </div>
   )
 }
