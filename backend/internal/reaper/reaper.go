@@ -42,17 +42,26 @@ const (
 	defaultBatch      = 100
 )
 
-// Reaper 周期性地自愈与清理。
-type Reaper struct {
-	db     *gorm.DB
-	tasks  *task.Repository
-	outbox *outbox.Repository
-	log    *zap.Logger
-	opts   Options
+// SessionPurger 是过期会话的清理能力。*auth.Repository 满足它。
+//
+// 定义成接口而不是直接依赖 *auth.Repository：reaper 只需要一个 DELETE，
+// 不想为了它把整个 auth 包拖进来（测试也不想造一个账号）。
+type SessionPurger interface {
+	DeleteExpiredSessions(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
-// New 组装。零值参数按默认值处理。
-func New(db *gorm.DB, tasks *task.Repository, ob *outbox.Repository, log *zap.Logger, opts Options) *Reaper {
+// Reaper 周期性地自愈与清理。
+type Reaper struct {
+	db       *gorm.DB
+	tasks    *task.Repository
+	outbox   *outbox.Repository
+	sessions SessionPurger
+	log      *zap.Logger
+	opts     Options
+}
+
+// New 组装。零值参数按默认值处理；sessions 可以为 nil（测试里不关心会话清理）。
+func New(db *gorm.DB, tasks *task.Repository, ob *outbox.Repository, sessions SessionPurger, log *zap.Logger, opts Options) *Reaper {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -68,7 +77,7 @@ func New(db *gorm.DB, tasks *task.Repository, ob *outbox.Repository, log *zap.Lo
 	if opts.Batch <= 0 {
 		opts.Batch = defaultBatch
 	}
-	return &Reaper{db: db, tasks: tasks, outbox: ob, log: log, opts: opts}
+	return &Reaper{db: db, tasks: tasks, outbox: ob, sessions: sessions, log: log, opts: opts}
 }
 
 // Run 阻塞到 ctx 取消，期间按间隔执行。
@@ -175,6 +184,17 @@ func (r *Reaper) purge(ctx context.Context) {
 		r.log.Warn("purge consumed messages failed", zap.Error(err))
 	} else if consumed > 0 {
 		r.log.Info("purged consumed messages", zap.Int64("count", consumed))
+	}
+
+	// 过期会话不需要保留期：过期的那一刻它就没用了，留着只是占索引。
+	// 复用同一轮扫描，不另起一个后台协程。
+	if r.sessions != nil {
+		deleted, err := r.sessions.DeleteExpiredSessions(ctx, time.Now().UTC(), r.opts.Batch)
+		if err != nil {
+			r.log.Warn("purge expired sessions failed", zap.Error(err))
+		} else if deleted > 0 {
+			r.log.Info("purged expired sessions", zap.Int64("count", deleted))
+		}
 	}
 }
 

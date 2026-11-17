@@ -37,7 +37,7 @@ func NewRepository(db *gorm.DB) *Repository {
 // 缺了它详情页就读不到失败原因，用户只能去翻日志。
 // 列名集中在这里，避免多个方法各自写一份字符串。
 var documentColumns = []string{
-	"id", "title", "source_type", "mime", "size_bytes", "content_hash",
+	"id", "owner_id", "title", "source_type", "mime", "size_bytes", "content_hash",
 	"storage_path", "content", "collection", "tags", "status", "chunk_count",
 	"error_code", "error_message",
 	// 向量化状态：列表与详情都要显示"这份文档能不能语义检索"，
@@ -132,10 +132,10 @@ func appendTaskAndOutbox(ctx context.Context, tx *gorm.DB, documentID int64, kin
 //
 // 同一文档已有未完成的任务时，任务插入会撞部分唯一索引并返回 ErrDuplicate，
 // 整个事务回滚——状态也不会被动过，保持原样。
-func (r *Repository) MarkIndexingWithTask(ctx context.Context, documentID int64, kind string) (string, error) {
+func (r *Repository) MarkIndexingWithTask(ctx context.Context, ownerID, documentID int64, kind string) (string, error) {
 	var messageID string
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&Document{}).Where("id = ?", documentID).
+		result := tx.Model(&Document{}).Where("owner_id = ? AND id = ?", ownerID, documentID).
 			Updates(map[string]any{
 				"status":     StatusIndexing,
 				"updated_at": time.Now().UTC(),
@@ -196,14 +196,34 @@ func (r *Repository) MarkReady(ctx context.Context, documentID int64) error {
 	return translateError("mark document ready", err)
 }
 
-// Get 按主键读取文档，不存在时返回 ErrNotFound。
-func (r *Repository) Get(ctx context.Context, id int64) (*Document, error) {
+// Get 按"拥有者 + 主键"读取文档。
+//
+// owner 条件写死在 WHERE 里，不写成 `if ownerID > 0`：后者漏传时会退化成
+// 按 id 全库查，这正是越权的来源。ownerID 为 0 时查不到任何行，是安全的失败方向。
+func (r *Repository) Get(ctx context.Context, ownerID, id int64) (*Document, error) {
 	var doc Document
 	err := r.db.WithContext(ctx).
 		Select(documentColumns).
-		First(&doc, "id = ?", id).Error
+		Where("owner_id = ? AND id = ?", ownerID, id).
+		Take(&doc).Error
 	if err != nil {
 		return nil, translateError("get document", err)
+	}
+	return &doc, nil
+}
+
+// GetInternal 按主键读取文档，**不带 owner 条件**。
+//
+// 只允许异步链路调用：那里的 document_id 来自 outbox 消息（我们自己写的），
+// 不是客户端传进来的。HTTP handler 一律用 Get(ctx, ownerID, id)。
+func (r *Repository) GetInternal(ctx context.Context, id int64) (*Document, error) {
+	var doc Document
+	err := r.db.WithContext(ctx).
+		Select(documentColumns).
+		Where("id = ?", id).
+		Take(&doc).Error
+	if err != nil {
+		return nil, translateError("get document internal", err)
 	}
 	return &doc, nil
 }
@@ -213,11 +233,12 @@ func (r *Repository) Get(ctx context.Context, id int64) (*Document, error) {
 // 幂等导入靠它：写入撞上 content_hash 唯一索引后，用它把"已经存在的那一条"读回来。
 // 不用"先查再插"是因为那在并发下有竞态（两个请求同时查不到，随后一个必然插入失败）；
 // 而"先插、冲突再查"由数据库的唯一索引保证串行化——冲突方看到的必然是已提交的行。
-func (r *Repository) GetByContentHash(ctx context.Context, hash string) (*Document, error) {
+func (r *Repository) GetByContentHash(ctx context.Context, ownerID int64, hash string) (*Document, error) {
 	var doc Document
 	err := r.db.WithContext(ctx).
 		Select(documentColumns).
-		First(&doc, "content_hash = ?", hash).Error
+		Where("owner_id = ? AND content_hash = ?", ownerID, hash).
+		Take(&doc).Error
 	if err != nil {
 		return nil, translateError("get document by content hash", err)
 	}
@@ -234,9 +255,13 @@ type DocumentFilter struct {
 	Status     *string
 }
 
-// apply 把筛选条件挂到查询上。列表与计数必须共用它，
+// apply 把 owner 与筛选条件挂到查询上。列表与计数必须共用它，
 // 否则很容易出现"列表 3 条、总数 10"这种翻页错乱的 bug。
-func (f DocumentFilter) apply(db *gorm.DB) *gorm.DB {
+//
+// owner 条件放在最前面且**不参与任何 if**：它是隔离的唯一收口点，
+// 一旦写成可选的，漏传就会变成"查全库"，而不是查不到。
+func (f DocumentFilter) apply(ownerID int64, db *gorm.DB) *gorm.DB {
+	db = db.Where("owner_id = ?", ownerID)
 	if f.Collection != nil {
 		db = db.Where("collection = ?", *f.Collection)
 	}
@@ -250,10 +275,10 @@ func (f DocumentFilter) apply(db *gorm.DB) *gorm.DB {
 	return db
 }
 
-// List 按创建时间倒序分页。
-func (r *Repository) List(ctx context.Context, filter DocumentFilter, limit, offset int) ([]Document, error) {
+// List 按创建时间倒序分页，只返回该拥有者的文档。
+func (r *Repository) List(ctx context.Context, ownerID int64, filter DocumentFilter, limit, offset int) ([]Document, error) {
 	docs := make([]Document, 0, limit)
-	err := filter.apply(r.db.WithContext(ctx)).
+	err := filter.apply(ownerID, r.db.WithContext(ctx)).
 		Select(documentColumns).
 		Order("created_at DESC, id DESC").
 		Limit(limit).
@@ -266,9 +291,9 @@ func (r *Repository) List(ctx context.Context, filter DocumentFilter, limit, off
 }
 
 // Count 返回满足条件的文档总数，供分页使用。
-func (r *Repository) Count(ctx context.Context, filter DocumentFilter) (int64, error) {
+func (r *Repository) Count(ctx context.Context, ownerID int64, filter DocumentFilter) (int64, error) {
 	var total int64
-	if err := filter.apply(r.db.WithContext(ctx).Model(&Document{})).Count(&total).Error; err != nil {
+	if err := filter.apply(ownerID, r.db.WithContext(ctx).Model(&Document{})).Count(&total).Error; err != nil {
 		return 0, translateError("count documents", err)
 	}
 	return total, nil
@@ -288,7 +313,7 @@ type DocumentPatch struct {
 //
 // updated_at 显式写入：用 map 更新时 GORM 不会自动维护时间戳
 // （结构体更新才会），漏了它会出现"改了标签但排序没变"。
-func (r *Repository) Update(ctx context.Context, id int64, patch DocumentPatch) error {
+func (r *Repository) Update(ctx context.Context, ownerID, id int64, patch DocumentPatch) error {
 	updates := map[string]any{"updated_at": time.Now().UTC()}
 	if patch.Title != nil {
 		updates["title"] = *patch.Title
@@ -306,7 +331,8 @@ func (r *Repository) Update(ctx context.Context, id int64, patch DocumentPatch) 
 		updates["tags"] = *patch.Tags
 	}
 
-	res := r.db.WithContext(ctx).Model(&Document{}).Where("id = ?", id).Updates(updates)
+	res := r.db.WithContext(ctx).Model(&Document{}).
+		Where("owner_id = ? AND id = ?", ownerID, id).Updates(updates)
 	if res.Error != nil {
 		return translateError("update document", res.Error)
 	}
@@ -317,11 +343,12 @@ func (r *Repository) Update(ctx context.Context, id int64, patch DocumentPatch) 
 }
 
 // ListChunks 按 seq 升序返回某个文档的分块。
-func (r *Repository) ListChunks(ctx context.Context, documentID int64, limit, offset int) ([]Chunk, error) {
+func (r *Repository) ListChunks(ctx context.Context, ownerID, documentID int64, limit, offset int) ([]Chunk, error) {
 	chunks := make([]Chunk, 0, limit)
 	err := r.db.WithContext(ctx).
 		Select(chunkColumns).
 		Where("document_id = ?", documentID).
+		Where("EXISTS (SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id AND d.owner_id = ?)", ownerID).
 		Order("seq ASC").
 		Limit(limit).
 		Offset(offset).
@@ -333,10 +360,11 @@ func (r *Repository) ListChunks(ctx context.Context, documentID int64, limit, of
 }
 
 // CountChunks 返回某个文档的分块数。
-func (r *Repository) CountChunks(ctx context.Context, documentID int64) (int64, error) {
+func (r *Repository) CountChunks(ctx context.Context, ownerID, documentID int64) (int64, error) {
 	var total int64
 	err := r.db.WithContext(ctx).Model(&Chunk{}).
 		Where("document_id = ?", documentID).
+		Where("EXISTS (SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id AND d.owner_id = ?)", ownerID).
 		Count(&total).Error
 	if err != nil {
 		return 0, translateError("count chunks", err)
@@ -348,8 +376,8 @@ func (r *Repository) CountChunks(ctx context.Context, documentID int64) (int64, 
 //
 // 返回受影响行数是否为 0 来判断"本来就没有这条"：这样并发下两次删除里
 // 只有一次成功，另一次得到 ErrNotFound，而不是两边都以为删掉了。
-func (r *Repository) Delete(ctx context.Context, id int64) error {
-	res := r.db.WithContext(ctx).Delete(&Document{}, "id = ?", id)
+func (r *Repository) Delete(ctx context.Context, ownerID, id int64) error {
+	res := r.db.WithContext(ctx).Delete(&Document{}, "owner_id = ? AND id = ?", ownerID, id)
 	if res.Error != nil {
 		return translateError("delete document", res.Error)
 	}
@@ -357,6 +385,26 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// StoragePathRefs 返回还有多少条文档引用同一个原文对象。
+//
+// 原文按内容寻址、跨用户共享（同一份文件只存一个对象），所以删除文档时
+// 不能直接删对象：别人可能还在用。这里故意**不带 owner 条件**——
+// 要问的是"全库还有没有人引用"，只看自己那一份会把别人的原文删掉。
+//
+// 调用时机必须在"删除事务提交之后"：在事务里检查，并发删除时两个事务
+// 都可能看到对方尚未删除的行，结果是"都不删"（留下孤儿对象，安全）；
+// 反过来提前删对象则会让别人的文档永久失去原文（不安全）。
+func (r *Repository) StoragePathRefs(ctx context.Context, storagePath string) (int64, error) {
+	var total int64
+	err := r.db.WithContext(ctx).Model(&Document{}).
+		Where("storage_path = ?", storagePath).
+		Count(&total).Error
+	if err != nil {
+		return 0, translateError("count storage refs", err)
+	}
+	return total, nil
 }
 
 // ReplaceChunks 用新分块整体替换某个文档的分块，并同步 chunk_count。
@@ -546,10 +594,10 @@ func (r *Repository) MarkEmbedFailed(ctx context.Context, documentID int64, code
 //
 // 单独一个事务的原因：只改状态不建任务，页面会永远停在"待向量化"；
 // 只建任务不改状态，用户看不出已经在排队。
-func (r *Repository) MarkEmbedPendingWithTask(ctx context.Context, documentID int64, kind string) (string, error) {
+func (r *Repository) MarkEmbedPendingWithTask(ctx context.Context, ownerID, documentID int64, kind string) (string, error) {
 	var messageID string
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&Document{}).Where("id = ?", documentID).
+		result := tx.Model(&Document{}).Where("owner_id = ? AND id = ?", ownerID, documentID).
 			Updates(map[string]any{
 				"embed_status": EmbedStatusPending,
 				"updated_at":   time.Now().UTC(),
@@ -569,8 +617,9 @@ func (r *Repository) MarkEmbedPendingWithTask(ctx context.Context, documentID in
 
 // embedCandidate 是"还没按当前模型向量化"的筛选条件，列表与计数共用，
 // 否则会出现"排了 50 条、remaining 却显示 49"这种对不上的账。
-func embedCandidate(db *gorm.DB, model string) *gorm.DB {
-	return db.Where("status = ?", StatusReady).
+func embedCandidate(db *gorm.DB, ownerID int64, model string) *gorm.DB {
+	return db.Where("owner_id = ?", ownerID).
+		Where("status = ?", StatusReady).
 		Where("chunk_count > 0").
 		// 已 done 但模型不同的也属于候选：换模型后那批向量属于旧模型，
 		// 与新查询向量不在同一个空间里，混着用检索结果没有意义。
@@ -578,9 +627,9 @@ func embedCandidate(db *gorm.DB, model string) *gorm.DB {
 }
 
 // ListEmbedCandidates 返回最多 limit 个待向量化的文档 id，按 id 升序（先来先排）。
-func (r *Repository) ListEmbedCandidates(ctx context.Context, model string, limit int) ([]int64, error) {
+func (r *Repository) ListEmbedCandidates(ctx context.Context, ownerID int64, model string, limit int) ([]int64, error) {
 	ids := make([]int64, 0, limit)
-	err := embedCandidate(r.db.WithContext(ctx).Model(&Document{}), model).
+	err := embedCandidate(r.db.WithContext(ctx).Model(&Document{}), ownerID, model).
 		Order("id ASC").
 		Limit(limit).
 		Pluck("id", &ids).Error
@@ -591,9 +640,9 @@ func (r *Repository) ListEmbedCandidates(ctx context.Context, model string, limi
 }
 
 // CountEmbedCandidates 返回剩余候选数，供回填报告 remaining。
-func (r *Repository) CountEmbedCandidates(ctx context.Context, model string) (int64, error) {
+func (r *Repository) CountEmbedCandidates(ctx context.Context, ownerID int64, model string) (int64, error) {
 	var total int64
-	err := embedCandidate(r.db.WithContext(ctx).Model(&Document{}), model).Count(&total).Error
+	err := embedCandidate(r.db.WithContext(ctx).Model(&Document{}), ownerID, model).Count(&total).Error
 	if err != nil {
 		return 0, translateError("count embed candidates", err)
 	}

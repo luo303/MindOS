@@ -28,10 +28,10 @@ func (r *Repository) Create(ctx context.Context, run *Run) error {
 	return nil
 }
 
-// Get 按 id 读取一行，主要用于集成测试与事后复盘。
-func (r *Repository) Get(ctx context.Context, id int64) (*Run, error) {
+// Get 按"拥有者 + id"读取一行，主要用于集成测试与事后复盘。
+func (r *Repository) Get(ctx context.Context, ownerID, id int64) (*Run, error) {
 	var run Run
-	err := r.db.WithContext(ctx).Where("id = ?", id).Take(&run).Error
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ?", ownerID, id).Take(&run).Error
 	if err != nil {
 		return nil, fmt.Errorf("get qa run %d: %w", id, err)
 	}

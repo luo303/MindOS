@@ -75,7 +75,10 @@ const (
 // 现在加到结构体里只会得到"永远是零值"的字段，读代码的人还要多判断一次
 // "这个字段到底从哪来"。需要时再加，加字段不需要改表。
 type Document struct {
-	ID        int64  `gorm:"column:id;primaryKey"`
+	ID int64 `gorm:"column:id;primaryKey"`
+	// OwnerID 是文档归属的用户 id，隔离的唯一依据。
+	// 所有面向用户的查询都必须带它；异步链路可以按 id 直查（id 来自内部消息）。
+	OwnerID   int64  `gorm:"column:owner_id"`
 	Title     string `gorm:"column:title"`
 	MIME      string `gorm:"column:mime"`
 	SizeBytes int64  `gorm:"column:size_bytes"`

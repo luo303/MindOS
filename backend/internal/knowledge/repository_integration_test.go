@@ -24,7 +24,11 @@ import (
 //	go test -race -count=1 -run Integration ./internal/knowledge/
 //
 // 未设置变量时全部跳过；测试会建独立临时库并在结束时 DROP，不碰开发库。
-func setupKnowledgeDB(t *testing.T) *gorm.DB {
+// setupKnowledgeDB 建库、跑迁移，并造一个归属用户。
+//
+// 为什么连用户一起返回：documents.owner_id 是 NOT NULL 外键，
+// 每个用例本来就都要一个 owner；让调用方自己建只会重复十几次。
+func setupKnowledgeDB(t *testing.T) (*gorm.DB, int64) {
 	t.Helper()
 	db := testsupport.NewDatabase(t, "knowledge")
 
@@ -33,12 +37,15 @@ func setupKnowledgeDB(t *testing.T) *gorm.DB {
 	if err := migrate.New(db, migrations.FS).Up(ctx); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
-	return testsupport.NewGorm(t, db)
+	gdb := testsupport.NewGorm(t, db)
+	owner := testsupport.NewUser(t, gdb, fmt.Sprintf("knowledge-%d@test.local", time.Now().UnixNano()))
+	return gdb, owner
 }
 
-func sampleDocument(hash string) *Document {
+func sampleDocument(owner int64, hash string) *Document {
 	path := "documents/" + hash
 	return &Document{
+		OwnerID:     owner,
 		Title:       "集成测试文档",
 		MIME:        MIMEMarkdown,
 		SizeBytes:   12,
@@ -65,12 +72,12 @@ func chunkFixture(n int) []Chunk {
 }
 
 func TestRepositoryIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	doc := sampleDocument(hash)
+	doc := sampleDocument(owner, hash)
 	if err := repo.CreateWithChunks(ctx, doc, chunkFixture(3)); err != nil {
 		t.Fatalf("CreateWithChunks: %v", err)
 	}
@@ -78,7 +85,7 @@ func TestRepositoryIntegration(t *testing.T) {
 		t.Fatal("document id should be assigned by the database")
 	}
 
-	got, err := repo.Get(ctx, doc.ID)
+	got, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -89,7 +96,7 @@ func TestRepositoryIntegration(t *testing.T) {
 		t.Fatal("timestamps should be filled by the database")
 	}
 
-	chunks, err := repo.ListChunks(ctx, doc.ID, 10, 0)
+	chunks, err := repo.ListChunks(ctx, owner, doc.ID, 10, 0)
 	if err != nil {
 		t.Fatalf("ListChunks: %v", err)
 	}
@@ -100,13 +107,13 @@ func TestRepositoryIntegration(t *testing.T) {
 		t.Fatalf("chunk document_id = %d, want %d", chunks[0].DocumentID, doc.ID)
 	}
 
-	total, err := repo.CountChunks(ctx, doc.ID)
+	total, err := repo.CountChunks(ctx, owner, doc.ID)
 	if err != nil || total != 3 {
 		t.Fatalf("CountChunks = %d, %v", total, err)
 	}
 
 	// 重复内容必须被唯一索引挡住，并翻译成 ErrDuplicate。
-	dup := sampleDocument(hash)
+	dup := sampleDocument(owner, hash)
 	if err := repo.CreateWithChunks(ctx, dup, nil); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("duplicate hash err = %v, want ErrDuplicate", err)
 	}
@@ -115,18 +122,18 @@ func TestRepositoryIntegration(t *testing.T) {
 	if err := db.WithContext(ctx).Exec("DELETE FROM documents WHERE id = ?", doc.ID).Error; err != nil {
 		t.Fatalf("delete document: %v", err)
 	}
-	if total, err = repo.CountChunks(ctx, doc.ID); err != nil || total != 0 {
+	if total, err = repo.CountChunks(ctx, owner, doc.ID); err != nil || total != 0 {
 		t.Fatalf("chunks should be cascaded, got %d (%v)", total, err)
 	}
 }
 
 func TestCreateWithChunksRollsBackIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	hash := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-	doc := sampleDocument(hash)
+	doc := sampleDocument(owner, hash)
 
 	// 第二块 seq 为负，违反 document_chunks_seq_check。
 	// 它发生在文档插入之后、同一事务内，用来验证"要么都写、要么都不写"。
@@ -161,16 +168,16 @@ func testVector(seed float32) []float32 {
 // CAST(? AS vector) 的编码方式、vector(1024) 的维度校验、以及
 // "分块被替换后旧结果一律作废"这条判断，假仓储都演不出来。
 func TestEmbeddingsIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	hash := "1111111111111111111111111111111111111111111111111111111111111111"
-	doc := sampleDocument(hash)
+	doc := sampleDocument(owner, hash)
 	if err := repo.CreateWithChunks(ctx, doc, chunkFixture(2)); err != nil {
 		t.Fatalf("CreateWithChunks: %v", err)
 	}
-	chunks, err := repo.ListChunks(ctx, doc.ID, 10, 0)
+	chunks, err := repo.ListChunks(ctx, owner, doc.ID, 10, 0)
 	if err != nil || len(chunks) != 2 {
 		t.Fatalf("ListChunks = %d, %v", len(chunks), err)
 	}
@@ -197,7 +204,7 @@ func TestEmbeddingsIntegration(t *testing.T) {
 		t.Fatalf("embedded chunks = %d, want 2", stored)
 	}
 
-	done, err := repo.Get(ctx, doc.ID)
+	done, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -228,7 +235,7 @@ func TestEmbeddingsIntegration(t *testing.T) {
 	if err := repo.SaveEmbeddings(ctx, doc.ID, "bge-m3", EmbeddingDimensions, vectors); !errors.Is(err, ErrStaleChunks) {
 		t.Fatalf("stale write err = %v, want ErrStaleChunks", err)
 	}
-	after, err := repo.Get(ctx, doc.ID)
+	after, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -240,12 +247,12 @@ func TestEmbeddingsIntegration(t *testing.T) {
 // 切分完成后必须在同一事务里排上向量化任务：
 // 少这一步就会出现"文档 ready、状态 pending，但没有任何东西会去做"。
 func TestFinishImportQueuesEmbedTaskIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	hash := "2222222222222222222222222222222222222222222222222222222222222222"
-	doc := sampleDocument(hash)
+	doc := sampleDocument(owner, hash)
 	if err := repo.CreateWithChunks(ctx, doc, nil); err != nil {
 		t.Fatalf("CreateWithChunks: %v", err)
 	}

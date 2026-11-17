@@ -16,6 +16,8 @@ type fakeSearchStore struct {
 	vectorErr  error
 	textErr    error
 
+	// gotOwner 断言 owner 真的传到了两条 SQL 的参数里。
+	gotOwner      int64
 	gotModel      string
 	gotVectorLen  int
 	gotVectorTop  int
@@ -25,15 +27,16 @@ type fakeSearchStore struct {
 	textQueries   int
 }
 
-func (f *fakeSearchStore) SearchVector(_ context.Context, vector []float32, model string, limit int, _ DocumentFilter) ([]Hit, error) {
+func (f *fakeSearchStore) SearchVector(_ context.Context, ownerID int64, vector []float32, model string, limit int, _ DocumentFilter) ([]Hit, error) {
 	f.vectorQueries++
+	f.gotOwner = ownerID
 	f.gotModel = model
 	f.gotVectorLen = len(vector)
 	f.gotVectorTop = limit
 	return f.vectorHits, f.vectorErr
 }
 
-func (f *fakeSearchStore) SearchText(_ context.Context, query string, limit int, _ DocumentFilter) ([]Hit, error) {
+func (f *fakeSearchStore) SearchText(_ context.Context, ownerID int64, query string, limit int, _ DocumentFilter) ([]Hit, error) {
 	f.textQueries++
 	f.gotTextQuery = query
 	f.gotTextTop = limit
@@ -118,7 +121,7 @@ func TestFuseRRFEmptyInputs(t *testing.T) {
 
 func TestSearchRejectsEmptyQuery(t *testing.T) {
 	searcher := NewSearcher(&fakeSearchStore{}, newFakeEmbedder())
-	if _, err := searcher.Search(context.Background(), "   ", 8, DocumentFilter{}); !errors.Is(err, ErrEmptyQuery) {
+	if _, err := searcher.Search(context.Background(), testOwner, "   ", 8, DocumentFilter{}); !errors.Is(err, ErrEmptyQuery) {
 		t.Fatalf("err = %v, want ErrEmptyQuery", err)
 	}
 }
@@ -127,7 +130,7 @@ func TestSearchWithoutEmbedderFailsLoudly(t *testing.T) {
 	// 未配置向量模型时不能悄悄退化成全文检索：中文全文在 simple 配置下
 	// 基本召回不了东西，退化等于给用户"能答但不准"的假象。
 	searcher := NewSearcher(&fakeSearchStore{}, nil)
-	if _, err := searcher.Search(context.Background(), "怎么配置", 8, DocumentFilter{}); !errors.Is(err, ErrEmbeddingNotConfigured) {
+	if _, err := searcher.Search(context.Background(), testOwner, "怎么配置", 8, DocumentFilter{}); !errors.Is(err, ErrEmbeddingNotConfigured) {
 		t.Fatalf("err = %v, want ErrEmbeddingNotConfigured", err)
 	}
 }
@@ -140,7 +143,7 @@ func TestSearchReportsThresholdInputs(t *testing.T) {
 	embedder := newFakeEmbedder()
 	searcher := NewSearcher(store, embedder)
 
-	got, err := searcher.Search(context.Background(), "多端同步怎么实现", 8, DocumentFilter{})
+	got, err := searcher.Search(context.Background(), testOwner, "多端同步怎么实现", 8, DocumentFilter{})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -171,7 +174,7 @@ func TestSearchReportsThresholdInputs(t *testing.T) {
 
 func TestSearchMarksDegradedWhenVectorPathEmpty(t *testing.T) {
 	store := &fakeSearchStore{textHits: []Hit{hit(7, 0)}}
-	got, err := NewSearcher(store, newFakeEmbedder()).Search(context.Background(), "redis 集群", 8, DocumentFilter{})
+	got, err := NewSearcher(store, newFakeEmbedder()).Search(context.Background(), testOwner, "redis 集群", 8, DocumentFilter{})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -193,7 +196,7 @@ func TestSearchClampsLimit(t *testing.T) {
 	store := &fakeSearchStore{vectorHits: candidates}
 	searcher := NewSearcher(store, newFakeEmbedder())
 
-	got, err := searcher.Search(context.Background(), "q", 0, DocumentFilter{})
+	got, err := searcher.Search(context.Background(), testOwner, "q", 0, DocumentFilter{})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -201,7 +204,7 @@ func TestSearchClampsLimit(t *testing.T) {
 		t.Errorf("limit 0 -> %d hits, want the default %d", len(got.Hits), defaultSearchLimit)
 	}
 
-	got, err = searcher.Search(context.Background(), "q", 999, DocumentFilter{})
+	got, err = searcher.Search(context.Background(), testOwner, "q", 999, DocumentFilter{})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -213,7 +216,7 @@ func TestSearchClampsLimit(t *testing.T) {
 func TestSearchPropagatesStoreErrors(t *testing.T) {
 	wantErr := errors.New("db down")
 	store := &fakeSearchStore{vectorErr: wantErr}
-	if _, err := NewSearcher(store, newFakeEmbedder()).Search(context.Background(), "q", 8, DocumentFilter{}); !errors.Is(err, wantErr) {
+	if _, err := NewSearcher(store, newFakeEmbedder()).Search(context.Background(), testOwner, "q", 8, DocumentFilter{}); !errors.Is(err, wantErr) {
 		t.Fatalf("err = %v, want the store error", err)
 	}
 	// 向量路失败时不能继续跑全文路：那会返回一份看似正常但缺了一半的结果。

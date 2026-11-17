@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/luo303/mindos/backend/internal/auth"
 	"github.com/luo303/mindos/backend/internal/httpx"
 )
 
@@ -25,6 +26,13 @@ func newTestEngine(t *testing.T, maxUploadBytes int64) (*gin.Engine, *fakeRepo, 
 
 	e := gin.New()
 	v1 := e.Group("/api/v1")
+	// 这些用例验证的是参数与错误码，不关心会话怎么建立的：
+	// 直接写入一个 Principal，等价于"请求已经过了 RequireSession"。
+	// 会话本身的建立与校验由 auth 包的用例覆盖。
+	v1.Use(func(c *gin.Context) {
+		auth.SetPrincipal(c, auth.Principal{UserID: testOwner, Email: "test@example.com"})
+		c.Next()
+	})
 	v1.POST("/documents", h.CreateFile)
 	v1.POST("/documents/note", h.CreateNote)
 	v1.GET("/documents", h.List)

@@ -70,7 +70,7 @@ func (s *Service) ProcessEmbed(ctx context.Context, documentID int64) error {
 	if s.embedder == nil {
 		return ErrEmbeddingNotConfigured
 	}
-	if _, err := s.repo.Get(ctx, documentID); err != nil {
+	if _, err := s.repo.GetInternal(ctx, documentID); err != nil {
 		return err
 	}
 	sources, err := s.repo.ListChunkSources(ctx, documentID)
@@ -118,11 +118,11 @@ func (s *Service) ProcessEmbed(ctx context.Context, documentID int64) error {
 //   - 没配模型（503，让用户去配）；
 //   - 文档还没处理完（409，等导入跑完再说）；
 //   - 已经有向量化任务在排队或在跑（409，重复点击不该排两条）。
-func (s *Service) StartEmbed(ctx context.Context, id int64) (*EmbedResult, error) {
+func (s *Service) StartEmbed(ctx context.Context, ownerID, id int64) (*EmbedResult, error) {
 	if s.embedder == nil {
 		return nil, ErrEmbeddingNotConfigured
 	}
-	doc, err := s.repo.Get(ctx, id)
+	doc, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (s *Service) StartEmbed(ctx context.Context, id int64) (*EmbedResult, error
 		}
 	}
 
-	messageID, err := s.repo.MarkEmbedPendingWithTask(ctx, id, KindDocumentEmbed)
+	messageID, err := s.repo.MarkEmbedPendingWithTask(ctx, ownerID, id, KindDocumentEmbed)
 	if err != nil {
 		// 并发下两次点击可能同时通过上面的检查，由 tasks_active_uniq 兜底。
 		if errors.Is(err, ErrDuplicate) {
@@ -160,7 +160,7 @@ func (s *Service) StartEmbed(ctx context.Context, id int64) (*EmbedResult, error
 //
 // 候选条件包含 embed_model 与当前模型不一致的文档：换模型以后，
 // 状态虽然是 done，但那批向量属于旧模型，混在一起检索会得到无意义的结果。
-func (s *Service) StartEmbedBackfill(ctx context.Context, limit int) (BackfillResult, error) {
+func (s *Service) StartEmbedBackfill(ctx context.Context, ownerID int64, limit int) (BackfillResult, error) {
 	if s.embedder == nil {
 		return BackfillResult{}, ErrEmbeddingNotConfigured
 	}
@@ -171,13 +171,13 @@ func (s *Service) StartEmbedBackfill(ctx context.Context, limit int) (BackfillRe
 		limit = maxBackfillLimit
 	}
 
-	ids, err := s.repo.ListEmbedCandidates(ctx, s.embedder.Model(), limit)
+	ids, err := s.repo.ListEmbedCandidates(ctx, ownerID, s.embedder.Model(), limit)
 	if err != nil {
 		return BackfillResult{}, err
 	}
 	result := BackfillResult{}
 	for _, id := range ids {
-		if _, err := s.repo.MarkEmbedPendingWithTask(ctx, id, KindDocumentEmbed); err != nil {
+		if _, err := s.repo.MarkEmbedPendingWithTask(ctx, ownerID, id, KindDocumentEmbed); err != nil {
 			if errors.Is(err, ErrDuplicate) {
 				// 已经有活跃任务：批量操作里这不是异常，跳过即可。
 				result.Skipped++
@@ -187,7 +187,7 @@ func (s *Service) StartEmbedBackfill(ctx context.Context, limit int) (BackfillRe
 		}
 		result.Enqueued++
 	}
-	remaining, err := s.repo.CountEmbedCandidates(ctx, s.embedder.Model())
+	remaining, err := s.repo.CountEmbedCandidates(ctx, ownerID, s.embedder.Model())
 	if err != nil {
 		return result, err
 	}

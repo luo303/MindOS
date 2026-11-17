@@ -81,6 +81,25 @@ func NewDatabase(t *testing.T, prefix string) *sql.DB {
 	return db
 }
 
+// NewUser 插入一个最小用户并返回 id。
+//
+// 多租户下 documents / qa_runs / chat_models 都有 owner_id 外键，
+// 集成测试必须先造一个归属。password_hash 写一个不可用的固定值：
+// 测试不校验密码，真的算一次 bcrypt 只会让每个用例慢 200ms。
+func NewUser(t *testing.T, db *gorm.DB, email string) int64 {
+	t.Helper()
+
+	var id int64
+	err := db.Raw(
+		`INSERT INTO users (email, password_hash, display_name)
+		 VALUES (?, '!integration-test-only', 'test user')
+		 RETURNING id`, email).Scan(&id).Error
+	if err != nil {
+		t.Fatalf("create test user %s: %v", email, err)
+	}
+	return id
+}
+
 // NewGorm 把一个 *sql.DB 包成 gorm 连接，配置与生产保持一致。
 //
 // TranslateError 必须开：否则唯一冲突不会变成 gorm.ErrDuplicatedKey，

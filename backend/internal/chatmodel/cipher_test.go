@@ -12,6 +12,9 @@ import (
 
 func testKey(fill byte) []byte { return bytes.Repeat([]byte{fill}, masterKeySize) }
 
+// testAAD 是测试里用的归属上下文；加解密必须用同一个。
+var testAAD = AADForOwner(1)
+
 func TestCipherRoundTrip(t *testing.T) {
 	c, err := NewCipher(testKey(7))
 	if err != nil {
@@ -21,11 +24,11 @@ func TestCipherRoundTrip(t *testing.T) {
 	// 中文用来确认走的是字节而不是被某种字符集截断。
 	secrets := []string{"sk-1234567890abcdef", "", strings.Repeat("密钥", 500)}
 	for _, want := range secrets {
-		blob, err := c.Encrypt(want)
+		blob, err := c.Encrypt(want, testAAD)
 		if err != nil {
 			t.Fatalf("Encrypt(%d chars): %v", len(want), err)
 		}
-		got, err := c.Decrypt(blob)
+		got, err := c.Decrypt(blob, testAAD)
 		if err != nil {
 			t.Fatalf("Decrypt: %v", err)
 		}
@@ -40,11 +43,11 @@ func TestCipherUsesFreshNonce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	first, err := c.Encrypt("same-plaintext")
+	first, err := c.Encrypt("same-plaintext", testAAD)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
-	second, err := c.Encrypt("same-plaintext")
+	second, err := c.Encrypt("same-plaintext", testAAD)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -73,13 +76,13 @@ func TestDecryptFailsWithAnotherKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	blob, err := writer.Encrypt("sk-secret")
+	blob, err := writer.Encrypt("sk-secret", testAAD)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 	// 换主密钥后必须明确失败，不能返回空串——空串会让上层构造出一个
 	// "没有 Key 的请求"，厂商回 401，人去查 Key 过期，而真因是密钥不匹配。
-	if _, err := reader.Decrypt(blob); !errors.Is(err, ErrDecryptFailed) {
+	if _, err := reader.Decrypt(blob, testAAD); !errors.Is(err, ErrDecryptFailed) {
 		t.Fatalf("err = %v, want ErrDecryptFailed", err)
 	}
 }
@@ -90,7 +93,7 @@ func TestDecryptRejectsTruncatedBlob(t *testing.T) {
 		t.Fatalf("NewCipher: %v", err)
 	}
 	for _, blob := range [][]byte{nil, {}, {1, 2, 3}} {
-		if _, err := c.Decrypt(blob); !errors.Is(err, ErrDecryptFailed) {
+		if _, err := c.Decrypt(blob, testAAD); !errors.Is(err, ErrDecryptFailed) {
 			t.Errorf("Decrypt(%d bytes) err = %v, want ErrDecryptFailed", len(blob), err)
 		}
 	}

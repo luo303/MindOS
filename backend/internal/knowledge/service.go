@@ -89,22 +89,28 @@ const (
 // *Repository 什么都不用写就满足它；而测试可以塞一个内存实现，
 // 不需要数据库。这是本项目"接口按需定义"的常规做法。
 type documentRepository interface {
+	// —— 面向用户：全部带 ownerID ——
 	CreateWithChunks(ctx context.Context, doc *Document, chunks []Chunk) error
-	Get(ctx context.Context, id int64) (*Document, error)
-	GetByContentHash(ctx context.Context, hash string) (*Document, error)
-	List(ctx context.Context, filter DocumentFilter, limit, offset int) ([]Document, error)
-	Count(ctx context.Context, filter DocumentFilter) (int64, error)
-	ListChunks(ctx context.Context, documentID int64, limit, offset int) ([]Chunk, error)
-	CountChunks(ctx context.Context, documentID int64) (int64, error)
-	Update(ctx context.Context, id int64, patch DocumentPatch) error
-	Delete(ctx context.Context, id int64) error
+	Get(ctx context.Context, ownerID, id int64) (*Document, error)
+	GetByContentHash(ctx context.Context, ownerID int64, hash string) (*Document, error)
+	List(ctx context.Context, ownerID int64, filter DocumentFilter, limit, offset int) ([]Document, error)
+	Count(ctx context.Context, ownerID int64, filter DocumentFilter) (int64, error)
+	ListChunks(ctx context.Context, ownerID, documentID int64, limit, offset int) ([]Chunk, error)
+	CountChunks(ctx context.Context, ownerID, documentID int64) (int64, error)
+	Update(ctx context.Context, ownerID, id int64, patch DocumentPatch) error
+	Delete(ctx context.Context, ownerID, id int64) error
+	// StoragePathRefs 返回全库还有几条文档引用这份原文（决定了能不能删对象）。
+	StoragePathRefs(ctx context.Context, storagePath string) (int64, error)
 	ReplaceChunks(ctx context.Context, documentID int64, chunks []Chunk) error
 	// CreateWithTask 在一个事务里写待处理文档、任务与消息，返回消息编号。
 	CreateWithTask(ctx context.Context, doc *Document, kind string) (string, error)
 	// FinishImport 在同一事务里替换分块、置 ready，并按需排一条向量化任务。
 	FinishImport(ctx context.Context, documentID int64, chunks []Chunk, enqueueEmbed bool) error
 	// MarkIndexingWithTask 在同一事务里把文档置 indexing 并排一条重索引任务。
-	MarkIndexingWithTask(ctx context.Context, documentID int64, kind string) (string, error)
+	MarkIndexingWithTask(ctx context.Context, ownerID, documentID int64, kind string) (string, error)
+	// —— 异步链路：按 id 直操作，id 来自内部消息而不是客户端 ——
+	// GetInternal 不带 owner 条件，只允许消费端与取消收尾使用。
+	GetInternal(ctx context.Context, id int64) (*Document, error)
 	// MarkFailed 记录处理最终失败与原因。
 	MarkFailed(ctx context.Context, documentID int64, code, message string) error
 	// MarkCancelling 把文档置为"取消中"，等 worker 停下后写终态。
@@ -121,11 +127,11 @@ type documentRepository interface {
 	MarkEmbedRunning(ctx context.Context, documentID int64) error
 	MarkEmbedFailed(ctx context.Context, documentID int64, code, message string) error
 	// MarkEmbedPendingWithTask 置"待向量化"并排一条任务（同一事务）。
-	MarkEmbedPendingWithTask(ctx context.Context, documentID int64, kind string) (string, error)
-	// ListEmbedCandidates 找出还没按当前模型向量化的已就绪文档。
-	ListEmbedCandidates(ctx context.Context, model string, limit int) ([]int64, error)
-	// CountEmbedCandidates 返回还剩多少候选，供回填报告 remaining。
-	CountEmbedCandidates(ctx context.Context, model string) (int64, error)
+	MarkEmbedPendingWithTask(ctx context.Context, ownerID, documentID int64, kind string) (string, error)
+	// ListEmbedCandidates 找出该用户还没按当前模型向量化的已就绪文档。
+	ListEmbedCandidates(ctx context.Context, ownerID int64, model string, limit int) ([]int64, error)
+	// CountEmbedCandidates 返回该用户还剩多少候选，供回填报告 remaining。
+	CountEmbedCandidates(ctx context.Context, ownerID int64, model string) (int64, error)
 }
 
 // taskStore 是本模块需要任务表的能力：读活跃任务与写取消终态。
@@ -260,7 +266,7 @@ type ImportResult struct {
 //
 // 注意这里仍然会做一次 normalizeText：类型与编码错误属于"用户传错了"，
 // 必须在请求里就报给用户，不能收了 202 再在后台失败。
-func (s *Service) StartFileImport(ctx context.Context, in FileInput) (*ImportResult, error) {
+func (s *Service) StartFileImport(ctx context.Context, ownerID int64, in FileInput) (*ImportResult, error) {
 	mime, ok := MIMEByFilename(in.Filename)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedType, filepath.Ext(in.Filename))
@@ -288,6 +294,7 @@ func (s *Service) StartFileImport(ctx context.Context, in FileInput) (*ImportRes
 	}
 
 	doc := &Document{
+		OwnerID:     ownerID,
 		Title:       titleFromFilename(in.Filename),
 		MIME:        mime,
 		SizeBytes:   int64(len(data)),
@@ -299,7 +306,7 @@ func (s *Service) StartFileImport(ctx context.Context, in FileInput) (*ImportRes
 		// 状态由 worker 推进：pending → ready / failed。
 		Status: StatusPending,
 	}
-	return s.startImport(ctx, doc, &saved)
+	return s.startImport(ctx, ownerID, doc, &saved)
 }
 
 // StartNoteImport 受理一条笔记。
@@ -309,7 +316,7 @@ func (s *Service) StartFileImport(ctx context.Context, in FileInput) (*ImportRes
 //
 // 笔记一律按 Markdown 解析：用户自己写的东西里出现 "# 小节" 是常见用法，
 // 而纯文本文件里以 # 开头的行更可能是日志，所以两者规则不同。
-func (s *Service) StartNoteImport(ctx context.Context, in NoteInput) (*ImportResult, error) {
+func (s *Service) StartNoteImport(ctx context.Context, ownerID int64, in NoteInput) (*ImportResult, error) {
 	if int64(len(in.Content)) > s.maxUploadBytes {
 		return nil, ErrTooLarge
 	}
@@ -323,6 +330,7 @@ func (s *Service) StartNoteImport(ctx context.Context, in NoteInput) (*ImportRes
 	}
 
 	doc := &Document{
+		OwnerID:     ownerID,
 		Title:       titleForNote(in.Title, text),
 		MIME:        MIMEMarkdown,
 		SizeBytes:   int64(len(data)),
@@ -333,7 +341,7 @@ func (s *Service) StartNoteImport(ctx context.Context, in NoteInput) (*ImportRes
 		Tags:        tags,
 		Status:      StatusPending,
 	}
-	return s.startImport(ctx, doc, nil)
+	return s.startImport(ctx, ownerID, doc, nil)
 }
 
 // ProcessImport 是导入任务的执行段：读原文 → 切分 → 落分块 → 排向量化任务。
@@ -349,7 +357,7 @@ func (s *Service) StartNoteImport(ctx context.Context, in NoteInput) (*ImportRes
 //   - 可重跑：FinishImport 是"先删后插"的一个事务，重复执行结果不变；
 //   - 不碰任务状态：成功/失败由 worker 统一写回。
 func (s *Service) ProcessImport(ctx context.Context, documentID int64) error {
-	doc, err := s.repo.Get(ctx, documentID)
+	doc, err := s.repo.GetInternal(ctx, documentID)
 	if err != nil {
 		return err
 	}
@@ -472,7 +480,7 @@ func errorCode(err error) string {
 //     此时对象存储里的正是那条既有文档指向的原文（内容寻址下 key 由哈希决定），
 //     删掉会让它变成"有记录没原文"，之后重索引就再也跑不起来；
 //  3. 其他失败 → 补偿清理，且只在文件是本次新写的时候删（Reused=false）。
-func (s *Service) startImport(ctx context.Context, doc *Document, saved *platform.SavedFile) (*ImportResult, error) {
+func (s *Service) startImport(ctx context.Context, ownerID int64, doc *Document, saved *platform.SavedFile) (*ImportResult, error) {
 	// 不需要在这里叫醒任何人：消息与文档在同一个事务里写进 outbox，
 	// relay 每 200ms 扫一次待发表就把它送出去了。
 	// 这正是把 jobs 表换成 outbox 后省掉的一步——业务层不再持有队列客户端。
@@ -481,7 +489,7 @@ func (s *Service) startImport(ctx context.Context, doc *Document, saved *platfor
 		return &ImportResult{Document: doc, MessageID: messageID}, nil
 	}
 	if errors.Is(err, ErrDuplicate) {
-		existing, getErr := s.repo.GetByContentHash(ctx, doc.ContentHash)
+		existing, getErr := s.repo.GetByContentHash(ctx, ownerID, doc.ContentHash)
 		if getErr == nil {
 			return &ImportResult{Document: existing, Existed: true}, nil
 		}
@@ -500,21 +508,29 @@ func (s *Service) startImport(ctx context.Context, doc *Document, saved *platfor
 }
 
 // Get 读取文档详情。
-func (s *Service) Get(ctx context.Context, id int64) (*Document, error) {
-	return s.repo.Get(ctx, id)
+func (s *Service) Get(ctx context.Context, ownerID, id int64) (*Document, error) {
+	return s.repo.Get(ctx, ownerID, id)
+}
+
+// GetInternal 供异步链路按 id 读取文档，**不带 owner 条件**。
+//
+// 只允许 consumer 与取消收尾调用：那里的 id 来自 outbox 消息，是我们自己写的，
+// 不是客户端能构造的。HTTP handler 用 Get(ctx, ownerID, id)。
+func (s *Service) GetInternal(ctx context.Context, id int64) (*Document, error) {
+	return s.repo.GetInternal(ctx, id)
 }
 
 // List 分页返回文档，同时给出总数供前端翻页。
 //
 // 总数与列表用同一个 filter，否则会出现"筛出 3 条、总数却写 10"，
 // 前端按总数算出来的页数完全对不上。
-func (s *Service) List(ctx context.Context, filter DocumentFilter, limit, offset int) ([]Document, int64, error) {
+func (s *Service) List(ctx context.Context, ownerID int64, filter DocumentFilter, limit, offset int) ([]Document, int64, error) {
 	limit, offset = ClampPaging(limit, offset)
-	docs, err := s.repo.List(ctx, filter, limit, offset)
+	docs, err := s.repo.List(ctx, ownerID, filter, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
-	total, err := s.repo.Count(ctx, filter)
+	total, err := s.repo.Count(ctx, ownerID, filter)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -525,7 +541,7 @@ func (s *Service) List(ctx context.Context, filter DocumentFilter, limit, offset
 //
 // 正文与它的分块、哈希是绑在一起的：改正文等于换一份文档，
 // 那应该重新导入，而不是在这里悄悄改掉 content_hash 让幂等判定失效。
-func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*Document, error) {
+func (s *Service) Update(ctx context.Context, ownerID, id int64, in UpdateInput) (*Document, error) {
 	patch := DocumentPatch{}
 	if in.Title != nil {
 		title := strings.TrimSpace(*in.Title)
@@ -555,28 +571,28 @@ func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*Docume
 			ErrInvalidMetadata)
 	}
 
-	if err := s.repo.Update(ctx, id, patch); err != nil {
+	if err := s.repo.Update(ctx, ownerID, id, patch); err != nil {
 		return nil, err
 	}
 	// 回读而不是在内存里拼一个：updated_at 由数据库写入，
 	// 直接返回旧结构体会让前端看到"改成功了但时间没变"。
-	return s.repo.Get(ctx, id)
+	return s.repo.Get(ctx, ownerID, id)
 }
 
 // ListChunks 返回某个文档的分块。
 //
 // 先读文档再读分块（而不是直接查 chunks）：文档不存在与"文档存在但没有分块"
 // 是两种不同结果，前者要 404，后者是合法的空列表。
-func (s *Service) ListChunks(ctx context.Context, documentID int64, limit, offset int) ([]Chunk, int64, error) {
-	if _, err := s.repo.Get(ctx, documentID); err != nil {
+func (s *Service) ListChunks(ctx context.Context, ownerID, documentID int64, limit, offset int) ([]Chunk, int64, error) {
+	if _, err := s.repo.Get(ctx, ownerID, documentID); err != nil {
 		return nil, 0, err
 	}
 	limit, offset = ClampPaging(limit, offset)
-	chunks, err := s.repo.ListChunks(ctx, documentID, limit, offset)
+	chunks, err := s.repo.ListChunks(ctx, ownerID, documentID, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
-	total, err := s.repo.CountChunks(ctx, documentID)
+	total, err := s.repo.CountChunks(ctx, ownerID, documentID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -591,15 +607,30 @@ func (s *Service) ListChunks(ctx context.Context, documentID int64, limit, offse
 //
 // 所以文件删除失败**不回滚、不返回错误**，只记一条 warn：此时用户看到的
 // "文档已删除"是真的，回滚反而会让他以为没删掉。
-func (s *Service) Delete(ctx context.Context, id int64) error {
-	doc, err := s.repo.Get(ctx, id)
+//
+// 多租户下还有第三个条件：原文按内容寻址、跨用户共享，所以删对象之前
+// 要确认全库没有人还在引用它（见 StoragePathRefs）。删早了会让别人的文档
+// 变成"有记录没原文"，那比留一个孤儿对象严重得多。
+func (s *Service) Delete(ctx context.Context, ownerID, id int64) error {
+	doc, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
 		return err
 	}
-	if err := s.repo.Delete(ctx, id); err != nil {
+	if err := s.repo.Delete(ctx, ownerID, id); err != nil {
 		return err
 	}
 	if doc.StoragePath == nil {
+		return nil
+	}
+	// 必须在删除事务提交之后才问"还有人引用吗"。
+	// 查询失败时**保留对象**：孤儿只是浪费空间，误删无法恢复。
+	refs, err := s.repo.StoragePathRefs(ctx, *doc.StoragePath)
+	if err != nil {
+		s.log.Warn("count storage refs failed, keep the object",
+			zap.Int64("document_id", id), zap.Error(err))
+		return nil
+	}
+	if refs > 0 {
 		return nil
 	}
 	if err := s.store.Remove(ctx, *doc.StoragePath); err != nil {
@@ -621,12 +652,12 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 //
 // 同一文档已有未完成的重索引任务时返回 ErrReindexRunning（409）：
 // 重复点击不该排两条队，那只会让同一份文档被两个 worker 同时替换分块。
-func (s *Service) StartReindex(ctx context.Context, id int64) (*ImportResult, error) {
-	doc, err := s.repo.Get(ctx, id)
+func (s *Service) StartReindex(ctx context.Context, ownerID, id int64) (*ImportResult, error) {
+	doc, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
-	messageID, err := s.repo.MarkIndexingWithTask(ctx, id, KindDocumentReindex)
+	messageID, err := s.repo.MarkIndexingWithTask(ctx, ownerID, id, KindDocumentReindex)
 	if err != nil {
 		if errors.Is(err, ErrDuplicate) {
 			return nil, ErrReindexRunning
@@ -647,7 +678,7 @@ func (s *Service) StartReindex(ctx context.Context, id int64) (*ImportResult, er
 // 顺序是先算完、再一次事务替换：算的途中失败什么都不改，
 // 替换的途中失败事务回滚，旧分块完整保留。
 func (s *Service) ProcessReindex(ctx context.Context, id int64) error {
-	doc, err := s.repo.Get(ctx, id)
+	doc, err := s.repo.GetInternal(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -678,8 +709,8 @@ func (s *Service) ProcessReindex(ctx context.Context, id int64) error {
 //
 // 向量化任务不在可取消之列：它只跑几秒，取消还要打断进行中的 HTTP 调用，
 // 而重新点一次就是重算——取消它没有用户可见的收益。
-func (s *Service) CancelProcessing(ctx context.Context, id int64) (*Document, error) {
-	if _, err := s.repo.Get(ctx, id); err != nil {
+func (s *Service) CancelProcessing(ctx context.Context, ownerID, id int64) (*Document, error) {
+	if _, err := s.repo.Get(ctx, ownerID, id); err != nil {
 		return nil, err
 	}
 	if s.tasks == nil {
@@ -723,7 +754,7 @@ func (s *Service) CancelProcessing(ctx context.Context, id int64) (*Document, er
 			return nil, err
 		}
 	}
-	return s.repo.Get(ctx, id)
+	return s.repo.Get(ctx, ownerID, id)
 }
 
 // SettleCancelled 写取消之后的业务终态。由 worker 在任务真正停下后回调，
@@ -740,7 +771,7 @@ func (s *Service) SettleCancelled(ctx context.Context, documentID int64, kind st
 	case KindDocumentReindex:
 		return s.repo.MarkReady(ctx, documentID)
 	}
-	doc, err := s.repo.Get(ctx, documentID)
+	doc, err := s.repo.GetInternal(ctx, documentID)
 	if err != nil {
 		return err
 	}

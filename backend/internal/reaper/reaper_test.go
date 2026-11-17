@@ -35,7 +35,7 @@ func setupDB(t *testing.T) *gorm.DB {
 
 // newReaper 用很短的扫描参数构造，避免测试里 sleep 太久。
 func newReaper(db *gorm.DB, staleAfter time.Duration) *Reaper {
-	return New(db, task.NewRepository(db), outbox.NewRepository(db), nil, Options{
+	return New(db, task.NewRepository(db), outbox.NewRepository(db), nil, nil, Options{
 		Interval:   time.Hour, // 测试直接调 once，不靠 ticker
 		StaleAfter: staleAfter,
 		Retention:  time.Hour,

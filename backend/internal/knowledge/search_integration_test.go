@@ -11,12 +11,12 @@ import (
 // `<=>` 的排序、`1 - distance` 的量纲、`embed_model` 过滤、以及
 // websearch_to_tsquery 对英文词的实际行为，假仓储一个都演不出来。
 func TestSearchIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	tech := "技术"
-	doc := sampleDocument(strings.Repeat("a", 64))
+	doc := sampleDocument(owner, strings.Repeat("a", 64))
 	doc.Collection = &tech
 	// 三条内容刻意分工：0 号两路都能命中（验证 RRF 加分）、
 	// 1 号只有向量能命中（验证排序）、2 号两路都不该命中（验证没有垃圾召回）。
@@ -30,7 +30,7 @@ func TestSearchIntegration(t *testing.T) {
 	}
 
 	life := "生活"
-	other := sampleDocument(strings.Repeat("b", 64))
+	other := sampleDocument(owner, strings.Repeat("b", 64))
 	other.Collection = &life
 	if err := repo.CreateWithChunks(ctx, other, []Chunk{
 		{Seq: 0, Content: "番茄炒蛋的做法", StartOffset: 0, EndOffset: 10, TokenCount: 4},
@@ -38,11 +38,11 @@ func TestSearchIntegration(t *testing.T) {
 		t.Fatalf("CreateWithChunks(other): %v", err)
 	}
 
-	stored, err := repo.ListChunks(ctx, doc.ID, 10, 0)
+	stored, err := repo.ListChunks(ctx, owner, doc.ID, 10, 0)
 	if err != nil || len(stored) != len(chunks) {
 		t.Fatalf("ListChunks = %d, %v", len(stored), err)
 	}
-	otherChunks, err := repo.ListChunks(ctx, other.ID, 10, 0)
+	otherChunks, err := repo.ListChunks(ctx, owner, other.ID, 10, 0)
 	if err != nil || len(otherChunks) != 1 {
 		t.Fatalf("ListChunks(other) = %d, %v", len(otherChunks), err)
 	}
@@ -72,7 +72,7 @@ func TestSearchIntegration(t *testing.T) {
 	}
 
 	t.Run("vector path orders by cosine similarity", func(t *testing.T) {
-		hits, err := repo.SearchVector(ctx, query, "fake-embed", 10, DocumentFilter{})
+		hits, err := repo.SearchVector(ctx, owner, query, "fake-embed", 10, DocumentFilter{})
 		if err != nil {
 			t.Fatalf("SearchVector: %v", err)
 		}
@@ -93,7 +93,7 @@ func TestSearchIntegration(t *testing.T) {
 	})
 
 	t.Run("vector path ignores chunks from another model", func(t *testing.T) {
-		hits, err := repo.SearchVector(ctx, query, "some-other-model", 10, DocumentFilter{})
+		hits, err := repo.SearchVector(ctx, owner, query, "some-other-model", 10, DocumentFilter{})
 		if err != nil {
 			t.Fatalf("SearchVector: %v", err)
 		}
@@ -105,7 +105,7 @@ func TestSearchIntegration(t *testing.T) {
 	t.Run("text path matches the english token", func(t *testing.T) {
 		// 中文在 simple 配置下整句是一个词，所以这里只验证英文词——
 		// 中文召回靠向量路，这条限制写在 docs/design/rag.md 的已知限制里。
-		hits, err := repo.SearchText(ctx, "redis", 10, DocumentFilter{})
+		hits, err := repo.SearchText(ctx, owner, "redis", 10, DocumentFilter{})
 		if err != nil {
 			t.Fatalf("SearchText: %v", err)
 		}
@@ -120,14 +120,14 @@ func TestSearchIntegration(t *testing.T) {
 	t.Run("collection filter applies to both paths", func(t *testing.T) {
 		collection := life
 		filter := DocumentFilter{Collection: &collection}
-		hits, err := repo.SearchText(ctx, "redis", 10, filter)
+		hits, err := repo.SearchText(ctx, owner, "redis", 10, filter)
 		if err != nil {
 			t.Fatalf("SearchText: %v", err)
 		}
 		if len(hits) != 0 {
 			t.Fatalf("hits = %d, want 0 outside the collection", len(hits))
 		}
-		vectorHits, err := repo.SearchVector(ctx, query, "fake-embed", 10, filter)
+		vectorHits, err := repo.SearchVector(ctx, owner, query, "fake-embed", 10, filter)
 		if err != nil {
 			t.Fatalf("SearchVector: %v", err)
 		}
@@ -140,7 +140,7 @@ func TestSearchIntegration(t *testing.T) {
 		embedder := &fakeEmbedder{model: "fake-embed", dim: EmbeddingDimensions, vectors: [][]float32{query}}
 		searcher := NewSearcher(repo, embedder)
 
-		res, err := searcher.Search(ctx, "redis", 8, DocumentFilter{})
+		res, err := searcher.Search(ctx, owner, "redis", 8, DocumentFilter{})
 		if err != nil {
 			t.Fatalf("Search: %v", err)
 		}
@@ -170,7 +170,7 @@ func TestSearchIntegration(t *testing.T) {
 
 	t.Run("searcher reports degraded when model changed", func(t *testing.T) {
 		embedder := &fakeEmbedder{model: "brand-new-model", dim: EmbeddingDimensions, vectors: [][]float32{query}}
-		res, err := NewSearcher(repo, embedder).Search(ctx, "redis", 8, DocumentFilter{})
+		res, err := NewSearcher(repo, embedder).Search(ctx, owner, "redis", 8, DocumentFilter{})
 		if err != nil {
 			t.Fatalf("Search: %v", err)
 		}

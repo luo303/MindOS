@@ -42,7 +42,9 @@ const (
 
 // Run 对应 qa_runs 表的一行，也就是"一次问答"。
 type Run struct {
-	ID       int64  `gorm:"column:id;primaryKey"`
+	ID int64 `gorm:"column:id;primaryKey"`
+	// OwnerID 是这次问答属于谁。会话记录按人隔离，复盘统计也按它分组。
+	OwnerID  int64  `gorm:"column:owner_id"`
 	Question string `gorm:"column:question"`
 	// Answer 是最终返回给用户的文本。判 ungrounded 时它已被换成拒答文案。
 	Answer string `gorm:"column:answer"`

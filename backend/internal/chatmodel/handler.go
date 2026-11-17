@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/luo303/mindos/backend/internal/auth"
 	"github.com/luo303/mindos/backend/internal/httpx"
 )
 
@@ -63,7 +64,11 @@ type probeView struct {
 // 不返回明文 Key，只给末四位与"是否已配置"。浏览器、终端历史、
 // 日志抓取都有可能把响应带出去。
 func (h *Handler) List(c *gin.Context) {
-	items, err := h.svc.List(c.Request.Context())
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
+	items, err := h.svc.List(c.Request.Context(), p.UserID)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -73,12 +78,16 @@ func (h *Handler) List(c *gin.Context) {
 
 // Create 新增一条配置：POST /chat-models。
 func (h *Handler) Create(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	var req createRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("name, base_url and model are required"))
 		return
 	}
-	view, err := h.svc.Create(c.Request.Context(), CreateInput{
+	view, err := h.svc.Create(c.Request.Context(), p.UserID, CreateInput{
 		Name:        req.Name,
 		BaseURL:     req.BaseURL,
 		Model:       req.Model,
@@ -96,6 +105,10 @@ func (h *Handler) Create(c *gin.Context) {
 
 // Update 修改一条配置：PATCH /chat-models/:id。
 func (h *Handler) Update(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
@@ -106,7 +119,7 @@ func (h *Handler) Update(c *gin.Context) {
 		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("name, base_url and model are required"))
 		return
 	}
-	view, err := h.svc.Update(c.Request.Context(), id, UpdateInput{
+	view, err := h.svc.Update(c.Request.Context(), p.UserID, id, UpdateInput{
 		Name:        req.Name,
 		BaseURL:     req.BaseURL,
 		Model:       req.Model,
@@ -123,12 +136,16 @@ func (h *Handler) Update(c *gin.Context) {
 
 // Delete 删除一条配置：DELETE /chat-models/:id。
 func (h *Handler) Delete(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
+	if err := h.svc.Delete(c.Request.Context(), p.UserID, id); err != nil {
 		httpx.Fail(c, mapError(err))
 		return
 	}
@@ -141,12 +158,16 @@ func (h *Handler) Delete(c *gin.Context) {
 // 是一次有副作用的原子操作，放进"整体替换字段"的 PATCH 里会让人以为
 // 它只是又一个可改属性。路径风格与 /documents/:id/reindex 一致。
 func (h *Handler) SetDefault(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	view, err := h.svc.SetDefault(c.Request.Context(), id)
+	view, err := h.svc.SetDefault(c.Request.Context(), p.UserID, id)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -156,12 +177,16 @@ func (h *Handler) SetDefault(c *gin.Context) {
 
 // Test 用指定配置真发一条消息：POST /chat-models/:id/test。
 func (h *Handler) Test(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	probe, err := h.svc.Test(c.Request.Context(), id)
+	probe, err := h.svc.Test(c.Request.Context(), p.UserID, id)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -172,6 +197,17 @@ func (h *Handler) Test(c *gin.Context) {
 		LatencyMS: probe.Latency.Milliseconds(),
 		Reply:     probe.Reply,
 	})
+}
+
+// principal 取当前登录用户。取不到说明路由没挂鉴权，属于装配错误，
+// 直接 401 而不是带着 0 继续查（那会表现为"配置凭空消失"）。
+func principal(c *gin.Context) (auth.Principal, bool) {
+	p, ok := auth.PrincipalFrom(c)
+	if !ok {
+		httpx.Fail(c, httpx.ErrAuthRequired)
+		return auth.Principal{}, false
+	}
+	return p, true
 }
 
 // parseID 解析路径里的数字 id。

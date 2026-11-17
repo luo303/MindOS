@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/luo303/mindos/backend/internal/agent"
+	"github.com/luo303/mindos/backend/internal/auth"
 	"github.com/luo303/mindos/backend/internal/chat"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/config"
@@ -249,6 +250,18 @@ func run() error {
 	)
 	settings := handler.NewSettingsHandler(cfg, embeddingProbe(embedder))
 
+	// —— 账号与会话 ——
+	//
+	// 装配位置放在业务模块之前：知识、问答、模型配置都要从中间件拿到的
+	// Principal 取 ownerID，auth 是它们的前置依赖。
+	// Secure 只在 prod 打开：本地 http 开发时带 Secure 的 Cookie 会被浏览器丢掉。
+	authRepo := auth.NewRepository(db)
+	authSvc := auth.NewService(authRepo, cfg.Auth.SessionTTL, cfg.Auth.RegistrationOpen(), log.Named("auth"))
+	authHandler := auth.NewHandler(authSvc, !cfg.IsDev())
+	log.Info("auth ready",
+		zap.Duration("session_ttl", cfg.Auth.SessionTTL),
+		zap.Bool("registration_open", cfg.Auth.RegistrationOpen()))
+
 	// —— 对话模型配置（用户配置 + 加密落库）——
 	//
 	// 主密钥优先取 MINDOS_MASTER_KEY；没配就自动生成到 DataDir/master.key。
@@ -323,7 +336,7 @@ func run() error {
 				return fmt.Errorf("bad envelope payload: %w", err)
 			}
 
-			doc, err := knowledgeSvc.Get(ctx, p.DocumentID)
+			doc, err := knowledgeSvc.GetInternal(ctx, p.DocumentID)
 			if err != nil {
 				return err
 			}
@@ -358,7 +371,7 @@ func run() error {
 				// 收尾前再看一眼取消：执行途中用户可能刚点了取消。
 				// 内容确实做好了，就保留成果——"已经完成"是事实，
 				// 把一份可用文档标成失败才是骗人。
-				if doc, err := knowledgeSvc.Get(ctx, p.DocumentID); err == nil && doc.Status == knowledge.StatusCancelling {
+				if doc, err := knowledgeSvc.GetInternal(ctx, p.DocumentID); err == nil && doc.Status == knowledge.StatusCancelling {
 					_ = taskRepo.MarkCancelled(ctx, p.TaskID)
 					return nil
 				}
@@ -404,7 +417,7 @@ func run() error {
 
 	// 兜底：broker 只管"送到"，管不了"消费端半路崩了"。
 	// 卡在 running 的任务队列里已经没有任何消息，只有对账能把它捞回来。
-	reaper := reaper.New(db, taskRepo, outboxRepo, log.Named("reaper"), reaper.Options{
+	reaper := reaper.New(db, taskRepo, outboxRepo, authRepo, log.Named("reaper"), reaper.Options{
 		Interval:   cfg.Reaper.Interval,
 		StaleAfter: cfg.Reaper.StaleAfter,
 		Retention:  cfg.Reaper.Retention,
@@ -448,12 +461,14 @@ func run() error {
 
 	engine := newEngine(log, cfg.IsDev())
 	router.Register(engine, router.Deps{
-		Health:     health,
-		System:     system,
-		Settings:   settings,
-		Knowledge:  knowledge.NewHandler(knowledgeSvc),
-		ChatModels: chatmodel.NewHandler(chatModelSvc),
-		Ask:        chat.NewHandler(chatSvc),
+		Health:         health,
+		System:         system,
+		Settings:       settings,
+		Auth:           authHandler,
+		RequireSession: auth.NewSessionMiddleware(authSvc),
+		Knowledge:      knowledge.NewHandler(knowledgeSvc),
+		ChatModels:     chatmodel.NewHandler(chatModelSvc),
+		Ask:            chat.NewHandler(chatSvc),
 	})
 
 	// 【为什么不用 router.Run()】
@@ -568,8 +583,8 @@ func (p relayPublisher) Publish(ctx context.Context, m outbox.Message) error {
 // 却让 agent 包可以脱离数据库测试。
 type knowledgeRetriever struct{ searcher *knowledge.Searcher }
 
-func (r knowledgeRetriever) Search(ctx context.Context, query string, limit int) ([]agent.Hit, error) {
-	result, err := r.searcher.Search(ctx, query, limit, knowledge.DocumentFilter{})
+func (r knowledgeRetriever) Search(ctx context.Context, ownerID int64, query string, limit int) ([]agent.Hit, error) {
+	result, err := r.searcher.Search(ctx, ownerID, query, limit, knowledge.DocumentFilter{})
 	if err != nil {
 		return nil, err
 	}

@@ -49,7 +49,9 @@ const instruction = `你是 MindOS 的知识库问答助手。你只能依据本
 // 定义在这里而不是复用 knowledge.Searcher：接口属于调用方，agent 不该
 // 为了一个方法把自己绑到知识模块的类型上。适配发生在 cmd/server。
 type Retriever interface {
-	Search(ctx context.Context, query string, limit int) ([]Hit, error)
+	// Search 只在该拥有者的知识库里检索。
+	// owner 由调用方按请求传入，不能存在 agent 实例上（Builder 是共享的）。
+	Search(ctx context.Context, ownerID int64, query string, limit int) ([]Hit, error)
 }
 
 // Limits 是一次问答的硬上限（AGENTS 的三重预算：步数、token、超时）。
@@ -97,14 +99,17 @@ type Result struct {
 type Agent struct {
 	chatModel model.BaseModel[*schema.Message]
 	retriever Retriever
-	registry  *Registry
-	limits    Limits
-	log       *zap.Logger
+	// ownerID 是本次问答的用户：工具检索只能看到这个人的文档。
+	// 存在实例上而不是塞进 context，是因为每个请求本来就会构造一个新 Agent。
+	ownerID  int64
+	registry *Registry
+	limits   Limits
+	log      *zap.Logger
 }
 
 // New 组装一次问答。registry 必须由调用方持有——问答结束后它还要用来
 // 生成引用列表与落库。
-func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, registry *Registry, limits Limits, log *zap.Logger) *Agent {
+func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerID int64, registry *Registry, limits Limits, log *zap.Logger) *Agent {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -117,6 +122,7 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, regist
 	return &Agent{
 		chatModel: chatModel,
 		retriever: retriever,
+		ownerID:   ownerID,
 		registry:  registry,
 		limits:    limits,
 		log:       log,
@@ -129,7 +135,7 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, regist
 // 例如客户端已经断开）。它是唯一把正文送出去的口子——工具结果、思考过程
 // 都不经过这里，避免把不该给用户看的内容混进答案。
 func (a *Agent) Ask(ctx context.Context, question string, onDelta func(string) error) (*Result, error) {
-	searchTool, err := newSearchTool(a.retriever, a.registry, a.limits.MaxToolCalls)
+	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.limits.MaxToolCalls)
 	if err != nil {
 		return nil, fmt.Errorf("build search tool: %w", err)
 	}

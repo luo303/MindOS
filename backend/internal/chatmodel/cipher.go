@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -64,28 +65,39 @@ func NewCipher(key []byte) (*Cipher, error) {
 	return &Cipher{aead: aead}, nil
 }
 
+// AADForOwner 返回绑定"这条配置属于谁"的附加认证数据。
+//
+// GCM 的 AAD 参与完整性校验但不进密文：同一段密文被复制到另一个人的行上时，
+// 解密会用不同的 AAD，Open 直接失败。效果是"搬行"不会让 B 悄悄用上 A 的 Key
+// 去花 A 的钱，而是得到"解不开，请重填"——后者能查，前者查不出来。
+func AADForOwner(ownerID int64) []byte {
+	return []byte("chat_model:" + strconv.FormatInt(ownerID, 10))
+}
+
 // Encrypt 返回 nonce||ciphertext。
 //
 // nonce 每条随机生成并拼在密文前面：GCM 复用 nonce 是最致命的误用
 // （能恢复出明文之间的关系），所以这里每次调用都重新读随机数，
 // 不接受调用方传入，避免"为了省事把 nonce 存成常量"。
-func (c *Cipher) Encrypt(plain string) ([]byte, error) {
+//
+// aad 必须与解密时一致；本模块固定用 AADForOwner(ownerID)。
+func (c *Cipher) Encrypt(plain string, aad []byte) ([]byte, error) {
 	nonce := make([]byte, c.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("read nonce: %w", err)
 	}
 	// Seal 的第一个参数是 dst：传 nonce 本身，密文就紧跟在它后面，
 	// 于是返回值天然是 nonce||ciphertext，不需要再拼一次。
-	return c.aead.Seal(nonce, nonce, []byte(plain), nil), nil
+	return c.aead.Seal(nonce, nonce, []byte(plain), aad), nil
 }
 
 // Decrypt 解开 Encrypt 的产物。
-func (c *Cipher) Decrypt(blob []byte) (string, error) {
+func (c *Cipher) Decrypt(blob []byte, aad []byte) (string, error) {
 	size := c.aead.NonceSize()
 	if len(blob) <= size {
 		return "", ErrDecryptFailed
 	}
-	plain, err := c.aead.Open(nil, blob[:size], blob[size:], nil)
+	plain, err := c.aead.Open(nil, blob[:size], blob[size:], aad)
 	if err != nil {
 		// 不把 err 原文往上带：它会包含 GCM 的底层描述，
 		// 对用户没有意义，而真正要说的只有"解不开，请重填 Key"。

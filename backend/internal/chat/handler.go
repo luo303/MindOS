@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/luo303/mindos/backend/internal/auth"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/httpx"
 	"github.com/luo303/mindos/backend/internal/knowledge"
@@ -45,6 +46,11 @@ type askRequest struct {
 //
 // 这个分界由 sseWriter.started 判断，不靠猜"大概写到哪了"。
 func (h *Handler) Ask(c *gin.Context) {
+	p, ok := auth.PrincipalFrom(c)
+	if !ok {
+		httpx.Fail(c, httpx.ErrAuthRequired)
+		return
+	}
 	var req askRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("question is required"))
@@ -52,7 +58,7 @@ func (h *Handler) Ask(c *gin.Context) {
 	}
 
 	writer := &sseWriter{c: c}
-	err := h.svc.Ask(c.Request.Context(), AskInput{
+	err := h.svc.Ask(c.Request.Context(), p.UserID, AskInput{
 		Question:    req.Question,
 		ChatModelID: req.ChatModelID,
 		Limit:       req.Limit,

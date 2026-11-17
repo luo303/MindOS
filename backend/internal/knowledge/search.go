@@ -19,14 +19,22 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pgvector/pgvector-go"
+	"gorm.io/gorm"
 )
 
 const (
 	// rrfK 是 RRF 的平滑常数，见文件头说明。调大会让名次差异更平缓。
 	rrfK = 60.0
+
+	// efSearch 是 HNSW 迭代扫描的动态候选列表大小。
+	// 100 与 defaultCandidates（30）不是一回事：后者是"查询返回多少条"，
+	// 前者是"为了让过滤后还剩够多条，索引内部要看多远"。过滤条件越严格
+	// （多租户就是这种情况），它越需要大一些。
+	efSearch = 100
 
 	// defaultCandidates 是每一路取多少候选再融合。
 	//
@@ -94,8 +102,8 @@ type SearchResult struct {
 // 什么都不用写就满足它。有了这层，融合与闸门逻辑可以用假实现测，
 // 不必每个用例都起一个真库。
 type searchStore interface {
-	SearchVector(ctx context.Context, vector []float32, model string, limit int, filter DocumentFilter) ([]Hit, error)
-	SearchText(ctx context.Context, query string, limit int, filter DocumentFilter) ([]Hit, error)
+	SearchVector(ctx context.Context, ownerID int64, vector []float32, model string, limit int, filter DocumentFilter) ([]Hit, error)
+	SearchText(ctx context.Context, ownerID int64, query string, limit int, filter DocumentFilter) ([]Hit, error)
 }
 
 // Searcher 把"问一句话"变成"一组带分数的分块"。
@@ -113,11 +121,11 @@ func NewSearcher(store searchStore, embedder Embedder) *Searcher {
 	return &Searcher{store: store, embedder: embedder}
 }
 
-// Search 执行一次混合检索。
+// Search 执行一次混合检索，只在该拥有者的文档里找。
 //
 // filter 只用到 Collection / Tag 两个字段，Status 会被忽略——
 // 检索永远只看 ready 的文档，这是硬约束，不交给调用方决定。
-func (s *Searcher) Search(ctx context.Context, query string, limit int, filter DocumentFilter) (*SearchResult, error) {
+func (s *Searcher) Search(ctx context.Context, ownerID int64, query string, limit int, filter DocumentFilter) (*SearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrEmptyQuery
@@ -142,11 +150,11 @@ func (s *Searcher) Search(ctx context.Context, query string, limit int, filter D
 		return nil, fmt.Errorf("knowledge: embedding returned %d vectors for 1 query", len(vectors))
 	}
 
-	vectorHits, err := s.store.SearchVector(ctx, vectors[0], s.embedder.Model(), defaultCandidates, filter)
+	vectorHits, err := s.store.SearchVector(ctx, ownerID, vectors[0], s.embedder.Model(), defaultCandidates, filter)
 	if err != nil {
 		return nil, err
 	}
-	textHits, err := s.store.SearchText(ctx, query, defaultCandidates, filter)
+	textHits, err := s.store.SearchText(ctx, ownerID, query, defaultCandidates, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +239,7 @@ SELECT c.id, c.document_id, c.seq, COALESCE(c.heading, '') AS heading,
   FROM document_chunks c
   JOIN documents d ON d.id = c.document_id
  WHERE d.status = 'ready'
+   AND d.owner_id = ?
    AND c.embedding IS NOT NULL
    AND d.embed_model = ?%s
  ORDER BY c.embedding <=> CAST(? AS vector)
@@ -240,7 +249,7 @@ SELECT c.id, c.document_id, c.seq, COALESCE(c.heading, '') AS heading,
 //
 // model 必须传"当前配置的模型"：换过模型但没重建时，库里的旧向量与查询向量
 // 不在同一空间，算出来的距离看着正常其实毫无意义。过滤掉它们比返回错的结果好。
-func (r *Repository) SearchVector(ctx context.Context, vector []float32, model string, limit int, filter DocumentFilter) ([]Hit, error) {
+func (r *Repository) SearchVector(ctx context.Context, ownerID int64, vector []float32, model string, limit int, filter DocumentFilter) ([]Hit, error) {
 	if len(vector) != EmbeddingDimensions {
 		return nil, fmt.Errorf("knowledge: query vector has %d dimensions, expected %d",
 			len(vector), EmbeddingDimensions)
@@ -250,10 +259,28 @@ func (r *Repository) SearchVector(ctx context.Context, vector []float32, model s
 
 	var hits []Hit
 	query := fmt.Sprintf(vectorSearchSQL, clauses)
-	queryArgs := []any{encoded, model}
+	queryArgs := []any{encoded, ownerID, model}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, encoded, limit)
-	if err := r.db.WithContext(ctx).Raw(query, queryArgs...).Scan(&hits).Error; err != nil {
+
+	// 为什么包一个事务：HNSW 是"先取 top-N 再过滤"，加上 owner 条件后
+	// 一次扫描可能取不满 N 条（别人的分块被过滤掉）。迭代扫描让它在
+	// 结果不足时继续往下扫，而开关只能通过 SET LOCAL / set_config 设置，
+	// 那要求处于事务里。
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 用 current_setting(..., true) 探测参数是否存在：未知参数返回 NULL，
+		// 老版本 pgvector 不会报错。探测不到就退回普通扫描（召回可能变差，
+		// 但检索不能因此整个失败）。
+		var probe *string
+		_ = tx.Raw("SELECT current_setting('hnsw.iterative_scan', true)").Scan(&probe).Error
+		if probe != nil {
+			_ = tx.Exec("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)").Error
+			// set_config 的第二个参数是 text：直接传 int 会被 pgx 以 text 编码拒绝。
+			_ = tx.Exec("SELECT set_config('hnsw.ef_search', ?, true)", strconv.Itoa(efSearch)).Error
+		}
+		return tx.Raw(query, queryArgs...).Scan(&hits).Error
+	})
+	if err != nil {
 		return nil, translateError("search vectors", err)
 	}
 	return hits, nil
@@ -271,6 +298,7 @@ SELECT c.id, c.document_id, c.seq, COALESCE(c.heading, '') AS heading,
   JOIN documents d ON d.id = c.document_id
  CROSS JOIN websearch_to_tsquery('simple', ?) AS q
  WHERE d.status = 'ready'
+   AND d.owner_id = ?
    AND c.tsv @@ q%s
  ORDER BY text_rank DESC
  LIMIT ?`
@@ -279,12 +307,12 @@ SELECT c.id, c.document_id, c.seq, COALESCE(c.heading, '') AS heading,
 //
 // 不按 embed_model 过滤：全文命中跟"向量是不是当前模型算的"没有关系。
 // 库里还没向量时，这一路是唯一还能工作的检索方式。
-func (r *Repository) SearchText(ctx context.Context, query string, limit int, filter DocumentFilter) ([]Hit, error) {
+func (r *Repository) SearchText(ctx context.Context, ownerID int64, query string, limit int, filter DocumentFilter) ([]Hit, error) {
 	clauses, args := searchFilterClauses(filter)
 
 	var hits []Hit
 	raw := fmt.Sprintf(textSearchSQL, clauses)
-	queryArgs := []any{query}
+	queryArgs := []any{query, ownerID}
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, limit)
 	if err := r.db.WithContext(ctx).Raw(raw, queryArgs...).Scan(&hits).Error; err != nil {

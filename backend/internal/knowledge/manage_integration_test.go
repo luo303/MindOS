@@ -19,9 +19,10 @@ func strPtr(s string) *string { return &s }
 
 // newIntegrationDocument 造一条笔记型文档：正文存在 content 列，
 // 不依赖文件系统，测试失败时也少一层"是盘上的问题还是库里的问题"。
-func newIntegrationDocument(text string) *Document {
+func newIntegrationDocument(owner int64, text string) *Document {
 	content := text
 	return &Document{
+		OwnerID:     owner,
 		Title:       "集成测试文档",
 		MIME:        MIMEMarkdown,
 		SizeBytes:   int64(len(text)),
@@ -33,11 +34,11 @@ func newIntegrationDocument(text string) *Document {
 }
 
 func TestTextArrayRoundTripIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
-	doc := newIntegrationDocument("数组读写")
+	doc := newIntegrationDocument(owner, "数组读写")
 	doc.Collection = strPtr("工作")
 	// 故意混入空格、引号、中文：这几个字符决定数组字面量要不要加引号、
 	// 以及解析时要不要去转义，是最容易写错的地方。
@@ -46,7 +47,7 @@ func TestTextArrayRoundTripIntegration(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	got, err := repo.Get(ctx, doc.ID)
+	got, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -65,31 +66,31 @@ func TestTextArrayRoundTripIntegration(t *testing.T) {
 
 	// 按标签筛选走 GIN 索引与 ANY(tags)。
 	tag := "含 空格"
-	docs, err := repo.List(ctx, DocumentFilter{Tag: &tag}, 10, 0)
+	docs, err := repo.List(ctx, owner, DocumentFilter{Tag: &tag}, 10, 0)
 	if err != nil {
 		t.Fatalf("list by tag: %v", err)
 	}
 	if len(docs) != 1 || docs[0].ID != doc.ID {
 		t.Fatalf("list by tag = %+v", docs)
 	}
-	total, err := repo.Count(ctx, DocumentFilter{Tag: &tag})
+	total, err := repo.Count(ctx, owner, DocumentFilter{Tag: &tag})
 	if err != nil || total != 1 {
 		t.Fatalf("count by tag = %d err = %v", total, err)
 	}
 
 	// 不存在的标签不能报错，只能是空结果。
 	missing := "根本没有"
-	if docs, err = repo.List(ctx, DocumentFilter{Tag: &missing}, 10, 0); err != nil || len(docs) != 0 {
+	if docs, err = repo.List(ctx, owner, DocumentFilter{Tag: &missing}, 10, 0); err != nil || len(docs) != 0 {
 		t.Fatalf("unknown tag: docs = %v err = %v", docs, err)
 	}
 }
 
 func TestUpdateMetadataIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
-	doc := newIntegrationDocument("局部更新")
+	doc := newIntegrationDocument(owner, "局部更新")
 	doc.Collection = strPtr("工作")
 	doc.Tags = StringArray{"go"}
 	if err := repo.CreateWithChunks(ctx, doc, chunkFixture(1)); err != nil {
@@ -99,13 +100,13 @@ func TestUpdateMetadataIntegration(t *testing.T) {
 	title := "改过的标题"
 	empty := ""
 	tags := StringArray{"检索"}
-	if err := repo.Update(ctx, doc.ID, DocumentPatch{
+	if err := repo.Update(ctx, owner, doc.ID, DocumentPatch{
 		Title: &title, Collection: &empty, Tags: &tags,
 	}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
-	got, err := repo.Get(ctx, doc.ID)
+	got, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -123,25 +124,25 @@ func TestUpdateMetadataIntegration(t *testing.T) {
 		t.Error("updated_at should move forward on update")
 	}
 
-	if err := repo.Update(ctx, 999, DocumentPatch{Title: &title}); !errors.Is(err, ErrNotFound) {
+	if err := repo.Update(ctx, owner, 999, DocumentPatch{Title: &title}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("update missing doc: err = %v, want ErrNotFound", err)
 	}
 }
 
 func TestDeleteCascadesChunksIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
-	doc := newIntegrationDocument("删除级联")
+	doc := newIntegrationDocument(owner, "删除级联")
 	if err := repo.CreateWithChunks(ctx, doc, chunkFixture(3)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := repo.Delete(ctx, doc.ID); err != nil {
+	if err := repo.Delete(ctx, owner, doc.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := repo.Get(ctx, doc.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := repo.Get(ctx, owner, doc.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("get after delete: err = %v, want ErrNotFound", err)
 	}
 
@@ -155,17 +156,17 @@ func TestDeleteCascadesChunksIntegration(t *testing.T) {
 	}
 
 	// 重复删除是 404，不是"又成功一次"。
-	if err := repo.Delete(ctx, doc.ID); !errors.Is(err, ErrNotFound) {
+	if err := repo.Delete(ctx, owner, doc.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("second delete: err = %v, want ErrNotFound", err)
 	}
 }
 
 func TestReplaceChunksIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
-	doc := newIntegrationDocument("重索引替换")
+	doc := newIntegrationDocument(owner, "重索引替换")
 	if err := repo.CreateWithChunks(ctx, doc, chunkFixture(2)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -173,14 +174,14 @@ func TestReplaceChunksIntegration(t *testing.T) {
 	if err := repo.ReplaceChunks(ctx, doc.ID, chunkFixture(3)); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	got, err := repo.Get(ctx, doc.ID)
+	got, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if got.ChunkCount != 3 {
 		t.Errorf("chunk_count = %d, want 3", got.ChunkCount)
 	}
-	chunks, err := repo.ListChunks(ctx, doc.ID, 10, 0)
+	chunks, err := repo.ListChunks(ctx, owner, doc.ID, 10, 0)
 	if err != nil {
 		t.Fatalf("list chunks: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestReplaceChunksIntegration(t *testing.T) {
 	if err := repo.ReplaceChunks(ctx, doc.ID, nil); err != nil {
 		t.Fatalf("replace with none: %v", err)
 	}
-	got, err = repo.Get(ctx, doc.ID)
+	got, err = repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestReplaceChunksIntegration(t *testing.T) {
 
 // 端到端：真仓储 + 内存存储替身，验证"同内容只留一条记录、一份原文"。
 func TestIdempotentImportIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	// 存储用替身而不是真 MinIO：这个用例验证的是 service + repository 的幂等链路，
 	// 对象存储的真实读写由 platform 的 MinIO 集成测试覆盖。
 	// 若这里也要求装 MinIO，跑一次数据库集成测试就得启两个容器。
@@ -219,7 +220,7 @@ func TestIdempotentImportIntegration(t *testing.T) {
 	ctx := context.Background()
 	text := "# 幂等\n\n同一份内容只应该入库一次。\n"
 
-	first, existed, err := importFile(ctx, t, svc, FileInput{
+	first, existed, err := importFile(ctx, t, svc, owner, FileInput{
 		Filename: "a.md",
 		Content:  strings.NewReader(text),
 	})
@@ -227,7 +228,7 @@ func TestIdempotentImportIntegration(t *testing.T) {
 		t.Fatalf("first import: existed=%v err=%v", existed, err)
 	}
 
-	second, existed, err := importFile(ctx, t, svc, FileInput{
+	second, existed, err := importFile(ctx, t, svc, owner, FileInput{
 		Filename: "b.md",
 		Content:  strings.NewReader(text),
 	})
@@ -269,19 +270,19 @@ func TestIdempotentImportIntegration(t *testing.T) {
 // TestReindexTaskIntegration 验证"重索引受理"在真实库上的三件事：
 // 状态与任务同一事务、同一文档不能排两条队、执行完状态回到 ready。
 func TestReindexTaskIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
-	doc := newIntegrationDocument("重索引任务")
+	doc := newIntegrationDocument(owner, "重索引任务")
 	if err := repo.CreateWithChunks(ctx, doc, chunkFixture(2)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	if _, err := repo.MarkIndexingWithTask(ctx, doc.ID, KindDocumentReindex); err != nil {
+	if _, err := repo.MarkIndexingWithTask(ctx, owner, doc.ID, KindDocumentReindex); err != nil {
 		t.Fatalf("mark indexing: %v", err)
 	}
-	indexing, err := repo.Get(ctx, doc.ID)
+	indexing, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -290,14 +291,14 @@ func TestReindexTaskIntegration(t *testing.T) {
 	}
 
 	// 部分唯一索引兜底：同一文档第二条未完成的重索引任务被拒。
-	if _, err := repo.MarkIndexingWithTask(ctx, doc.ID, KindDocumentReindex); !errors.Is(err, ErrDuplicate) {
+	if _, err := repo.MarkIndexingWithTask(ctx, owner, doc.ID, KindDocumentReindex); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("second mark indexing error = %v, want ErrDuplicate", err)
 	}
 
 	if err := repo.FinishImport(ctx, doc.ID, chunkFixture(3), false); err != nil {
 		t.Fatalf("finish import: %v", err)
 	}
-	got, err := repo.Get(ctx, doc.ID)
+	got, err := repo.Get(ctx, owner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -309,11 +310,11 @@ func TestReindexTaskIntegration(t *testing.T) {
 // 一次受理要在同一个事务里留下 tasks（进度真相）与 outbox（投递通道），
 // 且 outbox 的 payload 要带 task_id——消费端靠它回表更新进度。
 func TestCreateWithTaskIntegration(t *testing.T) {
-	db := setupKnowledgeDB(t)
+	db, owner := setupKnowledgeDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
-	doc := newIntegrationDocument("受理写入验证")
+	doc := newIntegrationDocument(owner, "受理写入验证")
 	messageID, err := repo.CreateWithTask(ctx, doc, KindDocumentImport)
 	if err != nil {
 		t.Fatalf("create with task: %v", err)

@@ -41,10 +41,10 @@ func NewBuilder(retriever Retriever, limits Limits, log *zap.Logger) *Builder {
 //
 // 模型客户端的超时不在这里设：一次问答的整体超时由调用方的 ctx 控制，
 // 两处都设会让"到底是哪一层超时"变成猜谜。
-func (b *Builder) Build(ctx context.Context, target *chatmodel.Resolved, registry *Registry) (Runner, error) {
+func (b *Builder) Build(ctx context.Context, ownerID int64, target *chatmodel.Resolved, registry *Registry) (Runner, error) {
 	chatModel, err := NewChatModel(ctx, FromResolved(target, 0))
 	if err != nil {
 		return nil, fmt.Errorf("build chat model: %w", err)
 	}
-	return New(chatModel, b.retriever, registry, b.limits, b.log), nil
+	return New(chatModel, b.retriever, ownerID, registry, b.limits, b.log), nil
 }

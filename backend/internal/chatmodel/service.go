@@ -117,8 +117,8 @@ func NewService(repo *Repository, cipher *Cipher, prober Prober) *Service {
 }
 
 // List 返回全部配置。
-func (s *Service) List(ctx context.Context) ([]View, error) {
-	items, err := s.repo.List(ctx)
+func (s *Service) List(ctx context.Context, ownerID int64) ([]View, error) {
+	items, err := s.repo.List(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func (s *Service) List(ctx context.Context) ([]View, error) {
 // 第一条配置自动成为默认：否则用户配完还要再点一次"设为默认"，
 // 第一次提问必然收到 400，体验上说不过去。这不是"服务端内置默认模型"，
 // 而是"唯一一条就是默认"这条规则的提前落地。
-func (s *Service) Create(ctx context.Context, in CreateInput) (*View, error) {
+func (s *Service) Create(ctx context.Context, ownerID int64, in CreateInput) (*View, error) {
 	name, baseURL, model, err := normalizeModel(in.Name, in.BaseURL, in.Model)
 	if err != nil {
 		return nil, err
@@ -144,6 +144,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*View, error) {
 	}
 
 	item := &ChatModel{
+		OwnerID:     ownerID,
 		Name:        name,
 		BaseURL:     baseURL,
 		Model:       model,
@@ -154,7 +155,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*View, error) {
 		if err := validateKey(key); err != nil {
 			return nil, err
 		}
-		cipherText, err := s.cipher.Encrypt(key)
+		cipherText, err := s.cipher.Encrypt(key, AADForOwner(ownerID))
 		if err != nil {
 			return nil, err
 		}
@@ -162,7 +163,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*View, error) {
 		item.APIKeyHint = hintOf(key)
 	}
 
-	total, err := s.repo.Count(ctx)
+	total, err := s.repo.Count(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -175,16 +176,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*View, error) {
 		return nil, err
 	}
 	if in.IsDefault || total == 0 {
-		if err := s.repo.SetDefault(ctx, item.ID); err != nil {
+		if err := s.repo.SetDefault(ctx, ownerID, item.ID); err != nil {
 			return nil, err
 		}
 	}
-	return s.reload(ctx, item.ID)
+	return s.reload(ctx, ownerID, item.ID)
 }
 
 // Update 整体替换一条配置的可编辑字段。
-func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*View, error) {
-	current, err := s.repo.Get(ctx, id)
+func (s *Service) Update(ctx context.Context, ownerID, id int64, in UpdateInput) (*View, error) {
+	current, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +214,9 @@ func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*View, 
 			if err := validateKey(key); err != nil {
 				return nil, err
 			}
-			cipherText, err := s.cipher.Encrypt(key)
+			// AAD 用行上的 OwnerID 而不是入参：两者理应相同，
+			// 但密文必须跟着行走，用入参会让"读出来的行被写回去"时换一个 AAD。
+			cipherText, err := s.cipher.Encrypt(key, AADForOwner(current.OwnerID))
 			if err != nil {
 				return nil, err
 			}
@@ -228,30 +231,30 @@ func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*View, 
 		}
 		return nil, err
 	}
-	return s.reload(ctx, id)
+	return s.reload(ctx, ownerID, id)
 }
 
 // Delete 删除一条配置。
 //
 // 删默认时不做自动继任：让用户明确选下一条，比系统替他挑一条更诚实。
 // 删完之后如果没有默认且还剩多条，提问会返回 ErrNotSelected，界面引导去选。
-func (s *Service) Delete(ctx context.Context, id int64) error {
-	return s.repo.Delete(ctx, id)
+func (s *Service) Delete(ctx context.Context, ownerID, id int64) error {
+	return s.repo.Delete(ctx, ownerID, id)
 }
 
 // SetDefault 指定默认配置。
-func (s *Service) SetDefault(ctx context.Context, id int64) (*View, error) {
-	if err := s.repo.SetDefault(ctx, id); err != nil {
+func (s *Service) SetDefault(ctx context.Context, ownerID, id int64) (*View, error) {
+	if err := s.repo.SetDefault(ctx, ownerID, id); err != nil {
 		return nil, err
 	}
-	return s.reload(ctx, id)
+	return s.reload(ctx, ownerID, id)
 }
 
 // Resolve 选出本次请求要用的配置，并把 Key 解密出来。
 //
 // 只给构造模型用；调用方不得把它序列化出去。
-func (s *Service) Resolve(ctx context.Context, id *int64) (*Resolved, error) {
-	item, err := s.repo.Resolve(ctx, id)
+func (s *Service) Resolve(ctx context.Context, ownerID int64, id *int64) (*Resolved, error) {
+	item, err := s.repo.Resolve(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +267,7 @@ func (s *Service) Resolve(ctx context.Context, id *int64) (*Resolved, error) {
 		MaxTokens:   item.MaxTokens,
 	}
 	if len(item.APIKeyCipher) > 0 {
-		key, err := s.cipher.Decrypt(item.APIKeyCipher)
+		key, err := s.cipher.Decrypt(item.APIKeyCipher, AADForOwner(item.OwnerID))
 		if err != nil {
 			return nil, fmt.Errorf("chat model %d: %w", item.ID, err)
 		}
@@ -274,19 +277,19 @@ func (s *Service) Resolve(ctx context.Context, id *int64) (*Resolved, error) {
 }
 
 // Touch 记录一次"最近使用"，失败只让调用方记 warn，不影响问答本身。
-func (s *Service) Touch(ctx context.Context, id int64) error {
-	return s.repo.Touch(ctx, id)
+func (s *Service) Touch(ctx context.Context, ownerID, id int64) error {
+	return s.repo.Touch(ctx, ownerID, id)
 }
 
 // Test 用指定配置真发一条消息。
 //
 // 配了不等于能用：Key 过期、模型名拼错、代理没放行、余额为零，
 // 都只有真发一次请求才知道。它也是保存前的验证手段。
-func (s *Service) Test(ctx context.Context, id int64) (*Probe, error) {
+func (s *Service) Test(ctx context.Context, ownerID, id int64) (*Probe, error) {
 	if s.prober == nil {
 		return nil, fmt.Errorf("%w: connectivity test is not available", ErrNotConfigured)
 	}
-	target, err := s.Resolve(ctx, &id)
+	target, err := s.Resolve(ctx, ownerID, &id)
 	if err != nil {
 		return nil, err
 	}
@@ -303,8 +306,8 @@ func (s *Service) Test(ctx context.Context, id int64) (*Probe, error) {
 //
 // 插入/更新后直接返回内存里的结构体，CreatedAt/UpdatedAt 会是零值或旧值，
 // 界面上的"更新于"就会显示 1970 年。多一次查询换一个不会说错话的响应，值得。
-func (s *Service) reload(ctx context.Context, id int64) (*View, error) {
-	item, err := s.repo.Get(ctx, id)
+func (s *Service) reload(ctx context.Context, ownerID, id int64) (*View, error) {
+	item, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}

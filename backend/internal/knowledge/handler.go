@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/luo303/mindos/backend/internal/auth"
 	"github.com/luo303/mindos/backend/internal/httpx"
 )
 
@@ -140,6 +141,10 @@ type updateDocumentRequest struct {
 
 // CreateFile 处理 multipart 上传：POST /documents，字段名 file。
 func (h *Handler) CreateFile(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage(
@@ -155,7 +160,7 @@ func (h *Handler) CreateFile(c *gin.Context) {
 	// 否则句柄会一直占着临时文件，Windows 下甚至删不掉。
 	defer func() { _ = f.Close() }()
 
-	res, err := h.svc.StartFileImport(c.Request.Context(), FileInput{
+	res, err := h.svc.StartFileImport(c.Request.Context(), p.UserID, FileInput{
 		Filename:   fileHeader.Filename,
 		Content:    f,
 		Collection: c.PostForm("collection"),
@@ -172,6 +177,10 @@ func (h *Handler) CreateFile(c *gin.Context) {
 
 // CreateNote 处理笔记导入：POST /documents/note。
 func (h *Handler) CreateNote(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	var req createNoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage(
@@ -179,7 +188,7 @@ func (h *Handler) CreateNote(c *gin.Context) {
 		return
 	}
 
-	res, err := h.svc.StartNoteImport(c.Request.Context(), NoteInput{
+	res, err := h.svc.StartNoteImport(c.Request.Context(), p.UserID, NoteInput{
 		Title:      req.Title,
 		Content:    req.Content,
 		Collection: req.Collection,
@@ -194,6 +203,10 @@ func (h *Handler) CreateNote(c *gin.Context) {
 
 // List 返回分页后的文档列表：GET /documents?limit=&offset=&collection=&tag=&status=。
 func (h *Handler) List(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	limit, offset, err := parsePaging(c)
 	if err != nil {
 		httpx.Fail(c, err)
@@ -204,7 +217,7 @@ func (h *Handler) List(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	docs, total, err := h.svc.List(c.Request.Context(), filter, limit, offset)
+	docs, total, err := h.svc.List(c.Request.Context(), p.UserID, filter, limit, offset)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -219,6 +232,10 @@ func (h *Handler) List(c *gin.Context) {
 
 // Update 局部更新文档元信息：PATCH /documents/:id。
 func (h *Handler) Update(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
@@ -231,7 +248,7 @@ func (h *Handler) Update(c *gin.Context) {
 		return
 	}
 
-	doc, err := h.svc.Update(c.Request.Context(), id, UpdateInput{
+	doc, err := h.svc.Update(c.Request.Context(), p.UserID, id, UpdateInput{
 		Title:      req.Title,
 		Collection: req.Collection,
 		Tags:       req.Tags,
@@ -245,12 +262,16 @@ func (h *Handler) Update(c *gin.Context) {
 
 // Get 返回文档详情：GET /documents/:id。
 func (h *Handler) Get(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	doc, err := h.svc.Get(c.Request.Context(), id)
+	doc, err := h.svc.Get(c.Request.Context(), p.UserID, id)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -262,6 +283,10 @@ func (h *Handler) Get(c *gin.Context) {
 //
 // 分块会按 seq 升序返回；前端用它做"引用跳转"和调试预览。
 func (h *Handler) ListChunks(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
@@ -273,7 +298,7 @@ func (h *Handler) ListChunks(c *gin.Context) {
 		return
 	}
 
-	chunks, total, err := h.svc.ListChunks(c.Request.Context(), id, limit, offset)
+	chunks, total, err := h.svc.ListChunks(c.Request.Context(), p.UserID, id, limit, offset)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -291,12 +316,16 @@ func (h *Handler) ListChunks(c *gin.Context) {
 // 用 200 + {"id":n} 而不是 204：本项目所有响应都走统一信封，
 // 204 按规范不能带 body，会让客户端多写一条"这个接口没有信封"的例外。
 func (h *Handler) Delete(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
+	if err := h.svc.Delete(c.Request.Context(), p.UserID, id); err != nil {
 		httpx.Fail(c, mapError(err))
 		return
 	}
@@ -305,12 +334,16 @@ func (h *Handler) Delete(c *gin.Context) {
 
 // Reindex 重新切分文档：POST /documents/:id/reindex。
 func (h *Handler) Reindex(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	res, err := h.svc.StartReindex(c.Request.Context(), id)
+	res, err := h.svc.StartReindex(c.Request.Context(), p.UserID, id)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -326,12 +359,16 @@ func (h *Handler) Reindex(c *gin.Context) {
 // 与 /reindex 的分工：reindex 换分块（偏移与 id 全变），embed 只重算向量。
 // 换模型、补配置、修一次向量化失败都该走这个接口。
 func (h *Handler) Embed(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	res, err := h.svc.StartEmbed(c.Request.Context(), id)
+	res, err := h.svc.StartEmbed(c.Request.Context(), p.UserID, id)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -360,13 +397,17 @@ type backfillView struct {
 // EmbedBackfill 把所有"已就绪但没按当前模型向量化"的文档批量排进队列：
 // POST /documents/embeddings/backfill。
 func (h *Handler) EmbedBackfill(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	var req backfillRequest
 	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
 		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage(
 			`request body must be JSON such as {"limit":50}, or empty`))
 		return
 	}
-	res, err := h.svc.StartEmbedBackfill(c.Request.Context(), req.Limit)
+	res, err := h.svc.StartEmbedBackfill(c.Request.Context(), p.UserID, req.Limit)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -384,12 +425,16 @@ func (h *Handler) EmbedBackfill(c *gin.Context) {
 // （排队中的任务立刻转 cancelled，运行中的已转 cancelling），
 // 用户要的是"现在什么状态"，不是"稍后给你个任务号"。
 func (h *Handler) Cancel(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	doc, err := h.svc.CancelProcessing(c.Request.Context(), id)
+	doc, err := h.svc.CancelProcessing(c.Request.Context(), p.UserID, id)
 	if err != nil {
 		httpx.Fail(c, mapError(err))
 		return
@@ -488,6 +533,20 @@ func newChunkView(c *Chunk) chunkView {
 		view.Heading = *c.Heading
 	}
 	return view
+}
+
+// principal 取当前登录用户。
+//
+// 中间件保证它一定存在，取不到说明这条路由没挂鉴权（装配错误）。
+// 直接 401 而不是带着零值继续查："owner_id = 0" 查不到任何数据，
+// 那会让装配错误表现为"数据凭空消失"，更难查。
+func principal(c *gin.Context) (auth.Principal, bool) {
+	p, ok := auth.PrincipalFrom(c)
+	if !ok {
+		httpx.Fail(c, httpx.ErrAuthRequired)
+		return auth.Principal{}, false
+	}
+	return p, true
 }
 
 // parseID 只接受正整数。strconv 的错误信息是英文且带实现细节，

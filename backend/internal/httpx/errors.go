@@ -177,6 +177,32 @@ var (
 	// 用 502：错误发生在我们之外，客户端重试可能有用也可能没用，
 	// 具体原因在 message 里，code 不再细分——细分留给任务表里的 error_code。
 	ErrUpstreamFailed = &Error{Code: "UPSTREAM_FAILED", Message: "upstream model service failed", HTTPStatus: http.StatusBadGateway}
+
+	// —— 账号与登录态 ——
+	//
+	// 这里刻意不用上面那个通用的 ErrUnauthorized：前端对"没登录"和"密码错"
+	// 的处理完全不同（一个跳登录页，一个提示输入错误），共用一个码就分不开。
+	//
+	// ErrAuthRequired 表示没带 Cookie，或会话已过期/被撤销。
+	ErrAuthRequired = &Error{Code: "AUTH_REQUIRED", Message: "authentication required", HTTPStatus: http.StatusUnauthorized}
+	// ErrInvalidCredentials 表示邮箱或密码不对。
+	// 文案不区分"用户不存在"与"密码错"：区分开就等于提供账号枚举接口。
+	ErrInvalidCredentials = &Error{Code: "AUTH_INVALID_CREDENTIALS", Message: "invalid email or password", HTTPStatus: http.StatusUnauthorized}
+	// ErrAccountLocked 表示连续失败触发了临时锁定。用 429 而不是 401：
+	// 凭据可能是对的，是"现在不许试"，客户端应看 Retry-After 而不是清空表单。
+	ErrAccountLocked = &Error{Code: "AUTH_ACCOUNT_LOCKED", Message: "too many failed attempts; try again later", HTTPStatus: http.StatusTooManyRequests}
+	// ErrAccountDisabled 表示账号被管理员停用。
+	ErrAccountDisabled = &Error{Code: "AUTH_ACCOUNT_DISABLED", Message: "this account is disabled", HTTPStatus: http.StatusForbidden}
+	// ErrEmailTaken 表示注册的邮箱已存在。
+	ErrEmailTaken = &Error{Code: "AUTH_EMAIL_TAKEN", Message: "this email is already registered", HTTPStatus: http.StatusConflict}
+	// ErrWeakPassword 表示长度不符合策略。
+	ErrWeakPassword = &Error{Code: "AUTH_WEAK_PASSWORD", Message: "password does not meet the length requirement", HTTPStatus: http.StatusBadRequest}
+	// ErrRegistrationClosed 表示部署关闭了自助注册。
+	ErrRegistrationClosed = &Error{Code: "AUTH_REGISTRATION_CLOSED", Message: "self-service registration is disabled", HTTPStatus: http.StatusForbidden}
+	// ErrPasswordMismatch 表示修改密码时旧密码不对。
+	ErrPasswordMismatch = &Error{Code: "AUTH_PASSWORD_MISMATCH", Message: "current password is incorrect", HTTPStatus: http.StatusBadRequest}
+	// ErrOriginMismatch 表示跨站写请求被拒（CSRF 防护）。
+	ErrOriginMismatch = &Error{Code: "AUTH_ORIGIN_MISMATCH", Message: "cross-site request rejected", HTTPStatus: http.StatusForbidden}
 )
 
 // IsCode 判断 err 链上是否有指定错误码的 *Error。

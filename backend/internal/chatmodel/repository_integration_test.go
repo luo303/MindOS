@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,8 @@ import (
 //
 //	MINDOS_TEST_DSN="host=localhost port=5432 user=mindos password=mindos_dev_password dbname=postgres sslmode=disable" \
 //	go test -count=1 -run Integration ./internal/chatmodel/
-func setupChatModelDB(t *testing.T) *gorm.DB {
+// setupChatModelDB 建库、跑迁移，并造一个归属用户：chat_models.owner_id 是 NOT NULL 外键。
+func setupChatModelDB(t *testing.T) (*gorm.DB, int64) {
 	t.Helper()
 	db := testsupport.NewDatabase(t, "chatmodel")
 
@@ -31,7 +33,9 @@ func setupChatModelDB(t *testing.T) *gorm.DB {
 	if err := migrate.New(db, migrations.FS).Up(ctx); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
-	return testsupport.NewGorm(t, db)
+	gdb := testsupport.NewGorm(t, db)
+	owner := testsupport.NewUser(t, gdb, fmt.Sprintf("chatmodel-%d@test.local", time.Now().UnixNano()))
+	return gdb, owner
 }
 
 func newTestService(t *testing.T, db *gorm.DB) *Service {
@@ -44,12 +48,12 @@ func newTestService(t *testing.T, db *gorm.DB) *Service {
 }
 
 func TestChatModelIntegration(t *testing.T) {
-	db := setupChatModelDB(t)
+	db, owner := setupChatModelDB(t)
 	svc := newTestService(t, db)
 	ctx := context.Background()
 
 	t.Run("first config becomes the default automatically", func(t *testing.T) {
-		view, err := svc.Create(ctx, CreateInput{
+		view, err := svc.Create(ctx, owner, CreateInput{
 			Name:    "讯飞 Spark",
 			BaseURL: "https://maas-api.cn-huabei-1.xf-yun.com/v2/",
 			Model:   "spark-x2.6",
@@ -73,7 +77,7 @@ func TestChatModelIntegration(t *testing.T) {
 		}
 
 		// 密文落库：直接读原始行确认库里没有明文。
-		raw, err := NewRepository(db).Get(ctx, view.ID)
+		raw, err := NewRepository(db).Get(ctx, owner, view.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -86,7 +90,7 @@ func TestChatModelIntegration(t *testing.T) {
 	})
 
 	t.Run("name conflict is reported, not silently overwritten", func(t *testing.T) {
-		_, err := svc.Create(ctx, CreateInput{
+		_, err := svc.Create(ctx, owner, CreateInput{
 			Name:    "讯飞 Spark",
 			BaseURL: "https://a/v1",
 			Model:   "m",
@@ -97,7 +101,7 @@ func TestChatModelIntegration(t *testing.T) {
 	})
 
 	t.Run("invalid base url is rejected before touching the database", func(t *testing.T) {
-		_, err := svc.Create(ctx, CreateInput{Name: "x", BaseURL: "api.example.com/v1", Model: "m"})
+		_, err := svc.Create(ctx, owner, CreateInput{Name: "x", BaseURL: "api.example.com/v1", Model: "m"})
 		if !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("err = %v, want ErrInvalidInput", err)
 		}
@@ -105,7 +109,7 @@ func TestChatModelIntegration(t *testing.T) {
 
 	var secondID int64
 	t.Run("second config does not steal the default", func(t *testing.T) {
-		view, err := svc.Create(ctx, CreateInput{
+		view, err := svc.Create(ctx, owner, CreateInput{
 			Name:    "本地 Ollama",
 			BaseURL: "http://localhost:11434/v1",
 			Model:   "qwen2.5",
@@ -121,7 +125,7 @@ func TestChatModelIntegration(t *testing.T) {
 	})
 
 	t.Run("resolve picks the default", func(t *testing.T) {
-		resolved, err := svc.Resolve(ctx, nil)
+		resolved, err := svc.Resolve(ctx, owner, nil)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
@@ -135,10 +139,10 @@ func TestChatModelIntegration(t *testing.T) {
 	})
 
 	t.Run("set default switches atomically", func(t *testing.T) {
-		if _, err := svc.SetDefault(ctx, secondID); err != nil {
+		if _, err := svc.SetDefault(ctx, owner, secondID); err != nil {
 			t.Fatalf("SetDefault: %v", err)
 		}
-		items, err := svc.List(ctx)
+		items, err := svc.List(ctx, owner)
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -162,7 +166,7 @@ func TestChatModelIntegration(t *testing.T) {
 	})
 
 	t.Run("explicit id wins over the default", func(t *testing.T) {
-		items, err := svc.List(ctx)
+		items, err := svc.List(ctx, owner)
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -172,7 +176,7 @@ func TestChatModelIntegration(t *testing.T) {
 				nonDefault = item.ID
 			}
 		}
-		resolved, err := svc.Resolve(ctx, &nonDefault)
+		resolved, err := svc.Resolve(ctx, owner, &nonDefault)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
@@ -183,19 +187,19 @@ func TestChatModelIntegration(t *testing.T) {
 
 	t.Run("api key three-state update", func(t *testing.T) {
 		repo := NewRepository(db)
-		before, err := repo.Get(ctx, secondID)
+		before, err := repo.Get(ctx, owner, secondID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
 		cipherBefore := append([]byte(nil), before.APIKeyCipher...)
 
 		// 1. 不传 APIKey：密文与 hint 都必须原样保留。
-		if _, err := svc.Update(ctx, secondID, UpdateInput{
+		if _, err := svc.Update(ctx, owner, secondID, UpdateInput{
 			Name: "本地 Ollama", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5",
 		}); err != nil {
 			t.Fatalf("Update: %v", err)
 		}
-		after, err := repo.Get(ctx, secondID)
+		after, err := repo.Get(ctx, owner, secondID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -210,7 +214,7 @@ func TestChatModelIntegration(t *testing.T) {
 
 		// 2. 传空串：清除 Key，hint 一起清掉。
 		empty := ""
-		view, err := svc.Update(ctx, secondID, UpdateInput{
+		view, err := svc.Update(ctx, owner, secondID, UpdateInput{
 			Name: "本地 Ollama", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5", APIKey: &empty,
 		})
 		if err != nil {
@@ -222,7 +226,7 @@ func TestChatModelIntegration(t *testing.T) {
 
 		// 3. 传新值：重新加密。
 		fresh := "sk-brand-new-9876"
-		view, err = svc.Update(ctx, secondID, UpdateInput{
+		view, err = svc.Update(ctx, owner, secondID, UpdateInput{
 			Name: "本地 Ollama", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5", APIKey: &fresh,
 		})
 		if err != nil {
@@ -236,12 +240,12 @@ func TestChatModelIntegration(t *testing.T) {
 	t.Run("multiple configs without a default require a choice", func(t *testing.T) {
 		// 先加到三条：删掉默认之后要留下两条，才构成"多条且无默认"。
 		// 只剩一条时按规则会用那一条，测不到 ErrNotSelected。
-		if _, err := svc.Create(ctx, CreateInput{
+		if _, err := svc.Create(ctx, owner, CreateInput{
 			Name: "临时配置", BaseURL: "https://c.example.com/v1", Model: "m",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		items, err := svc.List(ctx)
+		items, err := svc.List(ctx, owner)
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -251,26 +255,26 @@ func TestChatModelIntegration(t *testing.T) {
 				defaultID = item.ID
 			}
 		}
-		if err := svc.Delete(ctx, defaultID); err != nil {
+		if err := svc.Delete(ctx, owner, defaultID); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
 		// 这里绝不允许"随便挑一条"：静默选错模型，用户会以为是回答质量问题。
-		if _, err := svc.Resolve(ctx, nil); !errors.Is(err, ErrNotSelected) {
+		if _, err := svc.Resolve(ctx, owner, nil); !errors.Is(err, ErrNotSelected) {
 			t.Fatalf("err = %v, want ErrNotSelected", err)
 		}
 	})
 
 	t.Run("single config resolves without an explicit default", func(t *testing.T) {
-		items, err := svc.List(ctx)
+		items, err := svc.List(ctx, owner)
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
 		for _, item := range items[1:] {
-			if err := svc.Delete(ctx, item.ID); err != nil {
+			if err := svc.Delete(ctx, owner, item.ID); err != nil {
 				t.Fatalf("Delete: %v", err)
 			}
 		}
-		resolved, err := svc.Resolve(ctx, nil)
+		resolved, err := svc.Resolve(ctx, owner, nil)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
@@ -278,17 +282,17 @@ func TestChatModelIntegration(t *testing.T) {
 			t.Errorf("resolved %d, want the only remaining config %d", resolved.ID, items[0].ID)
 		}
 
-		if err := svc.Delete(ctx, items[0].ID); err != nil {
+		if err := svc.Delete(ctx, owner, items[0].ID); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
-		if _, err := svc.Resolve(ctx, nil); !errors.Is(err, ErrNotConfigured) {
+		if _, err := svc.Resolve(ctx, owner, nil); !errors.Is(err, ErrNotConfigured) {
 			t.Fatalf("err = %v, want ErrNotConfigured", err)
 		}
 	})
 
 	t.Run("decrypting with a different master key fails loudly", func(t *testing.T) {
 		// 重新建一条配置，然后用另一把主密钥读它——模拟"换机器、丢了 master.key"。
-		if _, err := svc.Create(ctx, CreateInput{
+		if _, err := svc.Create(ctx, owner, CreateInput{
 			Name: "被换了密钥的配置", BaseURL: "https://a/v1", Model: "m", APIKey: "sk-secret-value",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
@@ -298,7 +302,7 @@ func TestChatModelIntegration(t *testing.T) {
 			t.Fatalf("NewCipher: %v", err)
 		}
 		broken := NewService(NewRepository(db), otherCipher, nil)
-		_, err = broken.Resolve(ctx, nil)
+		_, err = broken.Resolve(ctx, owner, nil)
 		if !errors.Is(err, ErrDecryptFailed) {
 			t.Fatalf("err = %v, want ErrDecryptFailed", err)
 		}
@@ -308,12 +312,12 @@ func TestChatModelIntegration(t *testing.T) {
 // 库层面的约束必须单独验证：service 的校验能拦住绝大多数情况，
 // 但真正保证"库里不会出现非法数据"的是 CHECK 与唯一索引。
 func TestChatModelConstraintsIntegration(t *testing.T) {
-	db := setupChatModelDB(t)
+	db, owner := setupChatModelDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	// 绕过 service 直接插入非法 base_url：CHECK 必须拒绝。
-	err := repo.Create(ctx, &ChatModel{Name: "bad", BaseURL: "not-a-url", Model: "m"})
+	err := repo.Create(ctx, &ChatModel{OwnerID: owner, Name: "bad", BaseURL: "not-a-url", Model: "m"})
 	if err == nil {
 		t.Fatal("database accepted a base_url without scheme")
 	}
@@ -322,11 +326,11 @@ func TestChatModelConstraintsIntegration(t *testing.T) {
 	}
 
 	// 两条同时为默认：部分唯一索引必须拒绝第二条。
-	first := &ChatModel{Name: "a", BaseURL: "https://a/v1", Model: "m", IsDefault: true}
+	first := &ChatModel{OwnerID: owner, Name: "a", BaseURL: "https://a/v1", Model: "m", IsDefault: true}
 	if err := repo.Create(ctx, first); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	second := &ChatModel{Name: "b", BaseURL: "https://b/v1", Model: "m", IsDefault: true}
+	second := &ChatModel{OwnerID: owner, Name: "b", BaseURL: "https://b/v1", Model: "m", IsDefault: true}
 	if err := repo.Create(ctx, second); !errors.Is(err, errDuplicate) {
 		t.Fatalf("err = %v, want the duplicate marker", err)
 	}

@@ -94,12 +94,15 @@ type fakeRetriever struct {
 	hits  []Hit
 	err   error
 	calls int
-	gotQ  string
+	// gotOwner 断言工具检索带上了当前用户：漏传会答到别人的知识库里。
+	gotOwner int64
+	gotQ     string
 	gotN  int
 }
 
-func (f *fakeRetriever) Search(_ context.Context, query string, limit int) ([]Hit, error) {
+func (f *fakeRetriever) Search(_ context.Context, ownerID int64, query string, limit int) ([]Hit, error) {
 	f.calls++
+	f.gotOwner = ownerID
 	f.gotQ = query
 	f.gotN = limit
 	return f.hits, f.err
@@ -108,7 +111,7 @@ func (f *fakeRetriever) Search(_ context.Context, query string, limit int) ([]Hi
 func TestSearchToolRegistersHits(t *testing.T) {
 	retriever := &fakeRetriever{hits: []Hit{{ChunkID: 7, Title: "文档", Seq: 3, Content: "正文"}}}
 	registry := NewRegistry()
-	searchTool, err := newSearchTool(retriever, registry, 3)
+	searchTool, err := newSearchTool(retriever, 42, registry, 3)
 	if err != nil {
 		t.Fatalf("newSearchTool: %v", err)
 	}
@@ -118,6 +121,9 @@ func TestSearchToolRegistersHits(t *testing.T) {
 		t.Fatalf("InvokableRun: %v", err)
 	}
 	// 查询词要被 trim 再传给检索：带着空格去做向量化，召回质量会莫名其妙地差。
+	if retriever.gotOwner != 42 {
+		t.Errorf("owner = %d, want 42", retriever.gotOwner)
+	}
 	if retriever.gotQ != "Redis 集群" {
 		t.Errorf("query = %q, want trimmed", retriever.gotQ)
 	}
@@ -142,7 +148,7 @@ func TestSearchToolRegistersHits(t *testing.T) {
 
 func TestSearchToolRejectsEmptyQuery(t *testing.T) {
 	retriever := &fakeRetriever{}
-	searchTool, err := newSearchTool(retriever, NewRegistry(), 3)
+	searchTool, err := newSearchTool(retriever, 42, NewRegistry(), 3)
 	if err != nil {
 		t.Fatalf("newSearchTool: %v", err)
 	}
@@ -157,7 +163,7 @@ func TestSearchToolRejectsEmptyQuery(t *testing.T) {
 
 func TestSearchToolEnforcesCallLimit(t *testing.T) {
 	retriever := &fakeRetriever{}
-	searchTool, err := newSearchTool(retriever, NewRegistry(), 2)
+	searchTool, err := newSearchTool(retriever, 42, NewRegistry(), 2)
 	if err != nil {
 		t.Fatalf("newSearchTool: %v", err)
 	}
@@ -177,7 +183,7 @@ func TestSearchToolEnforcesCallLimit(t *testing.T) {
 }
 
 func TestSearchToolEmptyResultIsNotAnError(t *testing.T) {
-	searchTool, err := newSearchTool(&fakeRetriever{}, NewRegistry(), 3)
+	searchTool, err := newSearchTool(&fakeRetriever{}, 42, NewRegistry(), 3)
 	if err != nil {
 		t.Fatalf("newSearchTool: %v", err)
 	}
@@ -240,7 +246,7 @@ func TestAskCollectsAnswerAndUsage(t *testing.T) {
 		reply: "多端共享靠 WebSocket 推送 [1]。",
 		usage: &schema.TokenUsage{PromptTokens: 100, CompletionTokens: 20},
 	}
-	a := New(bot, &fakeRetriever{}, registry, DefaultLimits(), nil)
+	a := New(bot, &fakeRetriever{}, 42, registry, DefaultLimits(), nil)
 
 	var streamed strings.Builder
 	result, err := a.Ask(context.Background(), "多端共享怎么做的", func(delta string) error {
@@ -266,7 +272,7 @@ func TestAskCollectsAnswerAndUsage(t *testing.T) {
 
 func TestAskPropagatesModelError(t *testing.T) {
 	bot := &fakeChatModel{err: errors.New("upstream exploded")}
-	a := New(bot, &fakeRetriever{}, NewRegistry(), DefaultLimits(), nil)
+	a := New(bot, &fakeRetriever{}, 42, NewRegistry(), DefaultLimits(), nil)
 	if _, err := a.Ask(context.Background(), "q", nil); err == nil {
 		t.Fatal("model error should be returned")
 	}
@@ -274,7 +280,7 @@ func TestAskPropagatesModelError(t *testing.T) {
 
 func TestAskStopsWhenDeltaHandlerFails(t *testing.T) {
 	bot := &fakeChatModel{reply: "答案 [1]"}
-	a := New(bot, &fakeRetriever{}, NewRegistry(), DefaultLimits(), nil)
+	a := New(bot, &fakeRetriever{}, 42, NewRegistry(), DefaultLimits(), nil)
 
 	wantErr := errors.New("client gone")
 	_, err := a.Ask(context.Background(), "q", func(string) error { return wantErr })
@@ -292,7 +298,7 @@ func TestAskReportsBudgetExceeded(t *testing.T) {
 	}
 	limits := DefaultLimits()
 	limits.MaxTokens = 60000
-	a := New(bot, &fakeRetriever{}, NewRegistry(), limits, nil)
+	a := New(bot, &fakeRetriever{}, 42, NewRegistry(), limits, nil)
 
 	if _, err := a.Ask(context.Background(), "q", nil); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
@@ -304,7 +310,7 @@ func TestAskReportsBudgetExceeded(t *testing.T) {
 func TestToolAndResultShareRegistry(t *testing.T) {
 	retriever := &fakeRetriever{hits: []Hit{{ChunkID: 3, Title: "t", Content: "c"}}}
 	registry := NewRegistry()
-	searchTool, err := newSearchTool(retriever, registry, 3)
+	searchTool, err := newSearchTool(retriever, 42, registry, 3)
 	if err != nil {
 		t.Fatalf("newSearchTool: %v", err)
 	}

@@ -56,7 +56,7 @@ func newTestServiceWithEmbedder(e Embedder) (*Service, *fakeRepo, *fakeStore) {
 func seedImportedNote(t *testing.T, svc *Service) *Document {
 	t.Helper()
 	ctx := context.Background()
-	res, err := svc.StartNoteImport(ctx, NoteInput{
+	res, err := svc.StartNoteImport(ctx, testOwner, NoteInput{
 		Title:   "并发笔记",
 		Content: "# 第一节\n\n正文一。\n\n## 第二节\n\n正文二。\n",
 	})
@@ -66,7 +66,7 @@ func seedImportedNote(t *testing.T, svc *Service) *Document {
 	if err := svc.ProcessImport(ctx, res.Document.ID); err != nil {
 		t.Fatalf("process import: %v", err)
 	}
-	doc, err := svc.Get(ctx, res.Document.ID)
+	doc, err := svc.Get(ctx, testOwner, res.Document.ID)
 	if err != nil {
 		t.Fatalf("get document: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestProcessEmbedWritesVectorsAndStatus(t *testing.T) {
 	if err := svc.ProcessEmbed(context.Background(), doc.ID); err != nil {
 		t.Fatalf("process embed: %v", err)
 	}
-	done, err := svc.Get(context.Background(), doc.ID)
+	done, err := svc.Get(context.Background(), testOwner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestProcessEmbedDiscardsResultWhenChunksReplaced(t *testing.T) {
 	if !errors.Is(err, ErrStaleChunks) {
 		t.Fatalf("err = %v, want ErrStaleChunks", err)
 	}
-	after, err := svc.Get(ctx, doc.ID)
+	after, err := svc.Get(ctx, testOwner, doc.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -244,18 +244,18 @@ func TestStartEmbedGuards(t *testing.T) {
 	t.Run("未配置模型", func(t *testing.T) {
 		svc, _, _ := newTestService(1 << 20)
 		doc := seedImportedNote(t, svc)
-		if _, err := svc.StartEmbed(ctx, doc.ID); !errors.Is(err, ErrEmbeddingNotConfigured) {
+		if _, err := svc.StartEmbed(ctx, testOwner, doc.ID); !errors.Is(err, ErrEmbeddingNotConfigured) {
 			t.Fatalf("err = %v, want ErrEmbeddingNotConfigured", err)
 		}
 	})
 
 	t.Run("文档还没处理完", func(t *testing.T) {
 		svc, _, _ := newTestServiceWithEmbedder(newFakeEmbedder())
-		res, err := svc.StartNoteImport(ctx, NoteInput{Content: "# 待处理\n\n正文。\n"})
+		res, err := svc.StartNoteImport(ctx, testOwner, NoteInput{Content: "# 待处理\n\n正文。\n"})
 		if err != nil {
 			t.Fatalf("start import: %v", err)
 		}
-		if _, err := svc.StartEmbed(ctx, res.Document.ID); !errors.Is(err, ErrNotReady) {
+		if _, err := svc.StartEmbed(ctx, testOwner, res.Document.ID); !errors.Is(err, ErrNotReady) {
 			t.Fatalf("err = %v, want ErrNotReady", err)
 		}
 	})
@@ -264,7 +264,7 @@ func TestStartEmbedGuards(t *testing.T) {
 		svc, _, _ := newTestServiceWithEmbedder(newFakeEmbedder())
 		doc := seedImportedNote(t, svc)
 		// importNote 之后已经有一条 pending 的 embed 任务。
-		if _, err := svc.StartEmbed(ctx, doc.ID); !errors.Is(err, ErrEmbedRunning) {
+		if _, err := svc.StartEmbed(ctx, testOwner, doc.ID); !errors.Is(err, ErrEmbedRunning) {
 			t.Fatalf("err = %v, want ErrEmbedRunning", err)
 		}
 	})
@@ -275,7 +275,7 @@ func TestStartEmbedGuards(t *testing.T) {
 		// 把已有的 embed 任务收掉，模拟"上一次已经跑完"。
 		repo.tasks.completeFor(doc.ID)
 
-		res, err := svc.StartEmbed(ctx, doc.ID)
+		res, err := svc.StartEmbed(ctx, testOwner, doc.ID)
 		if err != nil {
 			t.Fatalf("start embed: %v", err)
 		}
@@ -300,7 +300,7 @@ func TestStartEmbedBackfillCounts(t *testing.T) {
 	repo.docs[doc.ID].EmbedStatus = EmbedStatusDone
 	repo.docs[doc.ID].EmbedModel = &oldModel
 
-	res, err := svc.StartEmbedBackfill(ctx, 10)
+	res, err := svc.StartEmbedBackfill(ctx, testOwner, 10)
 	if err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestStartEmbedBackfillCounts(t *testing.T) {
 	}
 
 	// 再点一次：已有活跃任务 → 计入 skipped，不报错。
-	res, err = svc.StartEmbedBackfill(ctx, 10)
+	res, err = svc.StartEmbedBackfill(ctx, testOwner, 10)
 	if err != nil {
 		t.Fatalf("backfill again: %v", err)
 	}

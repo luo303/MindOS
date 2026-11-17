@@ -12,7 +12,10 @@ import "time"
 // APIKeyCipher 直接映射 bytea：GORM 对 []byte 走 binary 协议，不需要自定义类型
 // （documents.tags 那种 text[] 才需要，见 knowledge.StringArray）。
 type ChatModel struct {
-	ID           int64      `gorm:"column:id;primaryKey"`
+	ID int64 `gorm:"column:id;primaryKey"`
+	// OwnerID 是配置归属。Key 的密文用 AADForOwner(OwnerID) 绑定，
+	// 所以这个字段在解密前就必须正确（从库里读出来的行天然带着它）。
+	OwnerID      int64      `gorm:"column:owner_id"`
 	Name         string     `gorm:"column:name"`
 	BaseURL      string     `gorm:"column:base_url"`
 	Model        string     `gorm:"column:model"`

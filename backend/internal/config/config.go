@@ -20,10 +20,10 @@ import (
 
 // Config 是应用的全部配置，字段分组与 .env 中的区块一一对应。
 //
-// MindOS 是单用户本地应用：没有账号体系，因此这里不存在 JWT / 认证相关配置。
 // 需要新增配置时，必须同时满足两点——代码真的读了它，且 .env.example 里有对应项。
 type Config struct {
 	App       AppConfig
+	Auth      AuthConfig
 	Log       LogConfig
 	DB        DBConfig
 	Redis     RedisConfig
@@ -47,6 +47,23 @@ type AppConfig struct {
 	// 相对路径按启动目录解析（所有命令都在 backend/ 下执行）。
 	DataDir string
 }
+
+// AuthConfig 控制登录态，只放"部署者才会改"的两项。
+//
+// 密码哈希成本、锁定阈值这类值是安全策略的一部分，留在代码常量里：
+// 放进 .env 只会让人随手调低，而"调低"这件事没有任何正当场景。
+type AuthConfig struct {
+	// SessionTTL 是会话的绝对有效期（不滑动续期）。
+	// 默认 30 天：本地工具不需要每天重登，而会话表本身有撤销与过期两条防线。
+	SessionTTL time.Duration
+	// RegistrationMode 是 "open" 或 "closed"，决定是否允许自助注册。
+	// 默认关闭：向量模型是部署者付费的全局配置，公网开放注册等于开放这份额度；
+	// 本地开发要注册时在 .env 里改成 open，注册完再改回去。
+	RegistrationMode string
+}
+
+// RegistrationOpen 报告是否允许自助注册。
+func (c AuthConfig) RegistrationOpen() bool { return c.RegistrationMode == "open" }
 
 // LogConfig 控制日志输出。
 type LogConfig struct {
@@ -253,6 +270,10 @@ func Load() (*Config, error) {
 			ShutdownTimeout: reader.duration("SHUTDOWN_TIMEOUT", 10*time.Second),
 			DataDir:         reader.text("MINDOS_DATA_DIR", ".data"),
 		},
+		Auth: AuthConfig{
+			SessionTTL:       reader.duration("AUTH_SESSION_TTL", 720*time.Hour),
+			RegistrationMode: strings.ToLower(strings.TrimSpace(reader.text("AUTH_REGISTRATION", "closed"))),
+		},
 		Log: LogConfig{
 			Level:  strings.ToLower(reader.text("LOG_LEVEL", "debug")),
 			Format: reader.text("LOG_FORMAT", "console"),
@@ -357,6 +378,17 @@ func (c *Config) validate() error {
 	}
 	if c.App.ShutdownTimeout <= 0 {
 		errs = append(errs, errors.New("SHUTDOWN_TIMEOUT must be greater than 0"))
+	}
+	// 只认 open / closed 两个词：把 "true"/"1" 静默当成 open 会让"以为关了其实开着"
+	// 变成一件查不出来的事。
+	if c.Auth.SessionTTL <= 0 {
+		errs = append(errs, errors.New("AUTH_SESSION_TTL must be greater than 0"))
+	}
+	switch c.Auth.RegistrationMode {
+	case "open", "closed":
+	default:
+		errs = append(errs, fmt.Errorf(
+			"AUTH_REGISTRATION must be open or closed, got %q", c.Auth.RegistrationMode))
 	}
 	if c.DB.Host == "" {
 		errs = append(errs, errors.New("DB_HOST is required"))

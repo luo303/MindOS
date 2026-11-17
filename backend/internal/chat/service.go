@@ -83,18 +83,18 @@ func (s Settings) normalized() Settings {
 // 这里用 knowledge 的类型而不是自己复制一份：chat 与 knowledge 同属业务层，
 // 复制一份 SearchResult 只会多一处"字段改了另一处忘了"的风险。
 type Searcher interface {
-	Search(ctx context.Context, query string, limit int, filter knowledge.DocumentFilter) (*knowledge.SearchResult, error)
+	Search(ctx context.Context, ownerID int64, query string, limit int, filter knowledge.DocumentFilter) (*knowledge.SearchResult, error)
 }
 
 // ModelResolver 是对话模型配置的读取能力。*chatmodel.Service 满足它。
 type ModelResolver interface {
-	Resolve(ctx context.Context, id *int64) (*chatmodel.Resolved, error)
-	Touch(ctx context.Context, id int64) error
+	Resolve(ctx context.Context, ownerID int64, id *int64) (*chatmodel.Resolved, error)
+	Touch(ctx context.Context, ownerID, id int64) error
 }
 
 // AnswererBuilder 按配置构造一次问答。*agent.Builder 满足它。
 type AnswererBuilder interface {
-	Build(ctx context.Context, target *chatmodel.Resolved, registry *agent.Registry) (agent.Runner, error)
+	Build(ctx context.Context, ownerID int64, target *chatmodel.Resolved, registry *agent.Registry) (agent.Runner, error)
 }
 
 // Emitter 是事件出口：handler 实现它写 SSE，测试实现它收集事件序列。
@@ -188,7 +188,7 @@ func NewService(searcher Searcher, models ModelResolver, runs RunStore, builder 
 // 返回 error 只表示"还没开始推送就失败了"（handler 据此返回 JSON 错误）；
 // 一旦第一个事件发出去，后续失败都通过 Error 事件表达并返回 nil——
 // 那时 HTTP 状态码已经定死，再返回 error 也没人能用了。
-func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
+func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emitter) error {
 	start := time.Now()
 
 	question := strings.TrimSpace(in.Question)
@@ -204,7 +204,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 	defer cancel()
 
 	// 1. 选模型。这一步在任何事件之前，失败可以让 handler 返回 503/400。
-	resolved, err := s.models.Resolve(runCtx, in.ChatModelID)
+	resolved, err := s.models.Resolve(runCtx, ownerID, in.ChatModelID)
 	if err != nil {
 		return err
 	}
@@ -216,7 +216,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 
 	// 2. 宿主的预检索。它不是 tool：阈值闸门必须在这一步判断，
 	// 而"要不要调模型"这个问题只能在调模型之前问。
-	searchResult, err := s.searcher.Search(runCtx, question, limit, knowledge.DocumentFilter{})
+	searchResult, err := s.searcher.Search(runCtx, ownerID, question, limit, knowledge.DocumentFilter{})
 	if err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 	if len(searchResult.Hits) == 0 || searchResult.MaxSimilarity < settings.MinSimilarity {
 		// 两种情况的 reason 相同：对上层与用户来说都是"没有依据"。
 		// 区分"一条没检索到"与"检索到了但不够像"只对调参有用，那是日志的事。
-		return s.finishRefused(ctx, emit, start, question, resolved, searchResult, ReasonNoEvidence)
+		return s.finishRefused(ctx, ownerID, emit, start, question, resolved, searchResult, ReasonNoEvidence)
 	}
 
 	// 4. 编号并推送"本次依据"。
@@ -239,7 +239,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 	}
 
 	// 5. 构造问答执行体。到这里还没成功推送过正文，失败仍算"流未开始"。
-	answerer, err := s.builder.Build(runCtx, resolved, registry)
+	answerer, err := s.builder.Build(runCtx, ownerID, resolved, registry)
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 		return emit.Delta(delta)
 	})
 	if runErr != nil {
-		return s.finishFailed(ctx, emit, start, question, resolved, answer.String(), runErr)
+		return s.finishFailed(ctx, ownerID, emit, start, question, resolved, answer.String(), runErr)
 	}
 
 	// 7. 裁决。必须等完整输出——引用校验没有"流式"版本。
@@ -277,6 +277,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 	defer persistCancel()
 
 	run := &Run{
+		OwnerID:          ownerID,
 		Question:         question,
 		Answer:           finalAnswer,
 		RawAnswer:        stringPtr(result.Answer),
@@ -302,7 +303,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 
 	// 最近使用时间失败只记 warn：它影响的是一个展示字段，不该让一次
 	// 已经完成的问答返回错误。
-	if err := s.models.Touch(persistCtx, resolved.ID); err != nil {
+	if err := s.models.Touch(persistCtx, ownerID, resolved.ID); err != nil {
 		s.log.Warn("touch chat model failed", zap.Int64("chat_model_id", resolved.ID), zap.Error(err))
 	}
 	return nil
@@ -312,7 +313,7 @@ func (s *Service) Ask(ctx context.Context, in AskInput, emit Emitter) error {
 //
 // 也要发 retrieval（空数组）：让界面能显示"检索过了，没有命中"，
 // 而不是让用户面对一个凭空出现的拒答。
-func (s *Service) finishRefused(ctx context.Context, emit Emitter, start time.Time, question string, resolved *chatmodel.Resolved, searchResult *knowledge.SearchResult, reason string) error {
+func (s *Service) finishRefused(ctx context.Context, ownerID int64, emit Emitter, start time.Time, question string, resolved *chatmodel.Resolved, searchResult *knowledge.SearchResult, reason string) error {
 	retrieved := retrievalPayload(searchResult.Hits, nil)
 	// 发空数组而不是真实片段：相似度 0.2 的片段给用户看会被误当成"依据"。
 	_ = emit.Retrieval([]RetrievalItem{})
@@ -322,6 +323,7 @@ func (s *Service) finishRefused(ctx context.Context, emit Emitter, start time.Ti
 	defer persistCancel()
 
 	run := &Run{
+		OwnerID:       ownerID,
 		Question:      question,
 		Answer:        refusalAnswer,
 		Verdict:       VerdictRefused,
@@ -341,7 +343,7 @@ func (s *Service) finishRefused(ctx context.Context, emit Emitter, start time.Ti
 // finishFailed 处理执行期失败：落一行 failed，并把可读原因推给前端。
 //
 // 上游原始错误只进日志，不进响应：它可能带 URL、账号片段或厂商的内部描述。
-func (s *Service) finishFailed(ctx context.Context, emit Emitter, start time.Time, question string, resolved *chatmodel.Resolved, partial string, runErr error) error {
+func (s *Service) finishFailed(ctx context.Context, ownerID int64, emit Emitter, start time.Time, question string, resolved *chatmodel.Resolved, partial string, runErr error) error {
 	code, message, retryable := classifyRunError(runErr)
 	s.log.Warn("agent run failed",
 		zap.Int64("chat_model_id", resolved.ID),
@@ -353,6 +355,7 @@ func (s *Service) finishFailed(ctx context.Context, emit Emitter, start time.Tim
 	defer persistCancel()
 
 	run := &Run{
+		OwnerID:       ownerID,
 		Question:      question,
 		Answer:        partial,
 		RawAnswer:     stringPtr(partial),

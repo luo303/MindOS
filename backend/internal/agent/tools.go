@@ -53,7 +53,7 @@ type searchOutput struct {
 //
 // 它只做三件事：限流、调 Retriever、把结果登记进 registry 并回给模型。
 // 不碰 repository、不拼 SQL、不认识文档状态——那些都在 knowledge 层。
-func newSearchTool(retriever Retriever, registry *Registry, maxCalls int) (tool.InvokableTool, error) {
+func newSearchTool(retriever Retriever, ownerID int64, registry *Registry, maxCalls int) (tool.InvokableTool, error) {
 	var calls atomic.Int32
 
 	invoke := func(ctx context.Context, in searchInput) ([]searchOutput, error) {
@@ -72,7 +72,7 @@ func newSearchTool(retriever Retriever, registry *Registry, maxCalls int) (tool.
 			limit = 5
 		}
 
-		hits, err := retriever.Search(ctx, query, limit)
+		hits, err := retriever.Search(ctx, ownerID, query, limit)
 		if err != nil {
 			return nil, err
 		}
