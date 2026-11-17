@@ -2,7 +2,7 @@
 
 ## 1. 定位与边界
 
-MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空间**。
+MindOS 是一个**多用户、本地优先的 AI 个人知识与行动工作空间**：每个账号拥有独立的知识库、问答记录与模型配置。
 
 它把三类数据放进同一个闭环：
 
@@ -20,22 +20,29 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
 2. **可修订**：记忆会错，也一定会过时。系统必须支持改、删、合并、作废，而不是只增不改。
 3. **可控**：Agent 的花费、步数、可执行动作都有硬上限；写操作必须经人确认。
 
-## 2. 单用户假设与演进路径
+## 2. 隔离模型
 
-首期**不做注册登录、不做租户隔离**。理由不是省事，而是这个阶段的所有复杂度都该花在知识与 Agent 上：
+**一个账号就是一个隔离域。** 业务表统一带 `owner_id bigint not null`（指向 `users.id`），
+所有面向用户的查询都必须带它；条件**不可选**——写成"有值才加"就是全库泄漏。
 
-- 单用户场景下，"是谁"这个问题没有信息量，认证只会给每个接口增加一层无意义的中间件。
-- 本地部署没有信任边界：能访问 `localhost:8080` 的人就是使用者。
-- 提前加 `owner_id` 会让所有查询、所有索引、所有测试都背上一个恒为 1 的条件。
+为什么是 `owner_id` 而不是 `tenant_id` / `workspace_id`：
 
-**未来要多用户时怎么改**（写在这里是为了证明当前选择不是死路）：
+- 它准确表达"这条数据是谁的"。将来若引入团队空间，`workspace_id` 才是隔离键，
+  而 `owner_id` 仍然有意义（创建者/审计），两者不冲突。
+- 现在就叫 `workspace_id` 会让人以为系统已经支持组织，而实际上一个空间只有一个用户。
 
-1. 新增 `users` 表与登录；业务表统一加 `owner_id bigint not null default 1`。
-2. 把 repository 的 `Where` 收口到一处构造器，加归属条件只改这一处。
-3. 唯一索引从 `content_hash` 改为 `(owner_id, content_hash)`；`memories` 的部分唯一索引同样加前缀。
-4. 最后再评估是否需要 RLS（行级安全）——它要求所有查询显式走事务，成本不低。
+四条边界：
 
-**明确不做的**：多租户计费、组织空间、协作编辑、权限矩阵。这些属于另一个产品。
+1. **登录态**：数据库会话表 + HttpOnly Cookie，删一行即撤销；不用 JWT（撤销要维护黑名单）。
+2. **传参**：`ownerID` 从 handler 显式传到 repository，靠编译期发现漏传，不从 context 隐式取。
+3. **越权**：一律表现为 404（不是 403）——403 配合自增 id 就是资源枚举器。
+4. **异步链路**：consumer 按 id 直查（id 来自内部消息），这类方法带 `Internal` 后缀并注明信任边界。
+
+唯一索引同时收窄：`documents (owner_id, content_hash)`、`chat_models (owner_id, name)`、
+`chat_models (owner_id) where is_default`。
+
+**明确不做的**：组织空间与成员、协作编辑、角色权限矩阵、按用户计费、账号注销、RLS。
+设计取舍与迁移细节见 `docs/design/multi-tenancy.md`。
 
 ## 3. 模块划分与依赖
 
@@ -157,12 +164,13 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | id | bigserial | 主键 |
+| owner_id | bigint FK | 归属用户，**所有查询的必带条件** |
 | title | text | 标题 |
 | source_type | text | `file` / `note` / `web` |
 | source_url | text | 网页来源 |
 | mime | text | `text/markdown` / `text/plain` / `application/pdf` / `text/html` |
 | size_bytes | bigint | 上传前校验上限 |
-| content_hash | char(64) | SHA-256，**唯一索引**，重复导入的幂等依据 |
+| content_hash | char(64) | SHA-256，`(owner_id, content_hash)` 唯一，同一用户内重复导入的幂等依据 |
 | storage_path | text | 原文的对象 key（`documents/ab/cd/<sha256>`）；note 类型为空 |
 | content | text | note 正文 / 网页提取正文；file 类型为空 |
 | collection | text | 分类（单值，够用；多维用 tags） |
@@ -225,10 +233,11 @@ MindOS 是一个**单用户、本地优先的 AI 个人知识与行动工作空�
 
 ### 5.3 agent 与 chat
 
-**chat_models**（已实现，迁移 0009）：`id / name unique / base_url / model / api_key_cipher bytea / api_key_hint / temperature / max_tokens / is_default / last_used_at / created_at / updated_at`。
-对话模型配置由用户管理；`api_key` 用 AES-256-GCM 加密入库，接口只回末四位；`is_default` 有部分唯一索引兜底（最多一条默认）。
+**chat_models**（迁移 0013 起按用户隔离）：`id / owner_id / name / base_url / model / api_key_cipher bytea / api_key_hint / temperature / max_tokens / is_default / last_used_at / created_at / updated_at`。
+`name` 唯一与"最多一条默认"都收窄到 `(owner_id, ...)`。`api_key` 用 AES-256-GCM 加密入库，
+AAD 绑定 `owner_id`（密文被搬到别人的行上会解不开，而不是悄悄用上别人的 Key），接口只回末四位。
 
-**qa_runs**（已实现，迁移 0010）：`id / question / answer / raw_answer / verdict(answered|refused|ungrounded|failed) / verdict_reason / citations jsonb / retrieved jsonb / chat_model_id FK / model / prompt_tokens / completion_tokens / latency_ms / error_code / created_at`。
+**qa_runs**（迁移 0013 起按用户隔离）：`id / owner_id / question / answer / raw_answer / verdict(answered|refused|ungrounded|failed) / verdict_reason / citations jsonb / retrieved jsonb / chat_model_id FK / model / prompt_tokens / completion_tokens / latency_ms / error_code / created_at`。
 每次问答落一行，拒答与失败也落——拒答率与可复盘是这套系统的核心指标。
 
 **conversations**：`id / title / mode(chat|plan) / status / last_message_at / created_at`
@@ -293,7 +302,8 @@ Eino 的 `CheckPointStore` 接口就是 `Set/Get(ctx, key, []byte)`，状态用 
 
 **usage_ledger**：`id / scope_type(chat|document|memory|insight) / scope_id / provider / model / prompt_tokens / completion_tokens / cost_micros / created_at`。只插不改，是成本核算的唯一真相。
 
-**app_settings**：`key text PK / value jsonb / updated_at`——LLM 与 Embedding 配置、预算上限、工具开关。单用户场景下不需要按用户分表。
+**app_settings**：`key text PK / value jsonb / updated_at`——部署级配置（Embedding 模型、预算上限、工具开关）。
+对话模型已经按用户存 `chat_models`，所以这张表只放"全部署共用"的东西；按用户区分的配置不要往这里加。
 
 **insights**：`id / period_type(daily|weekly) / period_start date / content / metrics jsonb / created_at`，`unique (period_type, period_start)`。
 
@@ -516,7 +526,19 @@ draft ──用户确认──> approved ──开始执行──> active ──
 
 ## 12. API 清单（`/api/v1`）
 
-单用户，无鉴权。响应统一 `httpx.Envelope`；SSE 走事件流。
+除 `/healthz`、`/readyz`、`POST /auth/register`、`POST /auth/login` 外，所有接口都需要登录；
+所有业务数据按 `owner_id` 隔离，越权一律返回 404。响应统一 `httpx.Envelope`；SSE 走事件流。
+
+**Auth**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/auth/register` | 邮箱 + 密码 + 昵称（可选）；成功即登录，受 `AUTH_REGISTRATION` 约束 |
+| POST | `/auth/login` | 邮箱 + 密码；成功下发 HttpOnly Cookie |
+| POST | `/auth/logout` | 删除当前会话并清 Cookie |
+| POST | `/auth/logout-all` | 踢掉其他设备上的会话 |
+| GET | `/auth/me` | 当前用户 |
+| PUT | `/auth/password` | 旧密码 + 新密码；成功后吊销其他会话 |
 
 **Knowledge**
 
@@ -619,7 +641,7 @@ draft ──用户确认──> approved ──开始执行──> active ──
 
 ## 15. 非目标
 
-- 多用户、组织空间、协作与权限（见第 2 节的演进路径）
+- 组织空间与成员、协作编辑、角色权限矩阵、按用户计费与配额、账号注销
 - 移动端 App、浏览器插件
 - 多 Agent 编排与 Agent 市场
 - 知识图谱、图数据库

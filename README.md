@@ -4,7 +4,7 @@
 
 > 让知识拥有记忆，让记忆驱动行动。
 
-MindOS 是一个单用户、本地优先的 AI 个人工作空间：文档、网页、笔记进来变成可检索的知识；对话与活动中提炼出可修订的长期记忆；Agent 拿着知识与记忆回答问题、拆解目标、调用工具执行任务。
+MindOS 是一个多用户、本地优先的 AI 个人工作空间：每个账号有独立的知识库、问答记录与模型配置；文档、网页、笔记进来变成可检索的知识；对话与活动中提炼出可修订的长期记忆；Agent 拿着知识与记忆回答问题、拆解目标、调用工具执行任务。
 
 它不是聊天工具的壳，区别在于三件事必须成立：
 
@@ -16,7 +16,8 @@ MindOS 是一个单用户、本地优先的 AI 个人工作空间：文档、网
 
 | 模块 | 做什么 | 状态 |
 |---|---|---|
-| Knowledge | 文档/笔记入库、解析、切分、分块向量化、管理、异步任务链路；混合检索与带引用问答待做 | 部分实现 |
+| 账号 | 注册、登录、登出、改密码；按用户隔离知识、问答与模型配置 | 已实现 |
+| Knowledge | 文档/笔记入库、解析、切分、分块向量化、管理、异步任务链路、混合检索与带引用问答 | 已实现 |
 | Memory | 四类长期记忆（画像/事实/经历/项目）的提炼、去重合并、召回 | 未开始 |
 | Agent | Eino ADK 运行时、工具调用、预算闸门、checkpoint、人工审批、事件回放 | 未开始 |
 | Action | 目标 → 计划 → 任务三级结构，依赖与进度，Agent 拆解 + 人工确认 | 未开始 |
@@ -45,6 +46,7 @@ mindos/
 │   ├── cmd/server/          进程入口：装配与启停
 │   ├── cmd/migrate/         SQL 迁移执行
 │   ├── internal/
+│   │   ├── auth/            账号、密码哈希、会话、登录态中间件
 │   │   ├── config/          配置加载与校验
 │   │   ├── logging/         zap 初始化
 │   │   ├── httpx/           统一响应与错误（零依赖叶子包）
@@ -86,10 +88,15 @@ docker compose --env-file backend/.env -f deployments/docker-compose.yml up -d
 
 # 3. 执行迁移并启动服务
 cd backend
-go run ./cmd/migrate up          # 执行迁移
+go run ./cmd/migrate up          # 执行迁移（0012/0013 会清空旧的单用户业务数据）
 go run ./cmd/server
 
-# 4. 前端（另开终端，在仓库根目录）
+# 4. 创建第一个账号
+#    注册默认关闭。临时把 backend/.env 里的 AUTH_REGISTRATION 改成 open，
+#    打开 http://localhost:5173/register 注册，注册完改回 closed 并重启服务。
+#    之后新增用户都走同一个开关；没有邮箱验证，也没有找回密码。
+
+# 5. 前端（另开终端，在仓库根目录）
 cd frontend
 npm install
 npm run dev                      # http://localhost:5173，/api 代理到 8080
@@ -100,6 +107,7 @@ npm run dev                      # http://localhost:5173，/api 代理到 8080
 ```bash
 curl -i http://localhost:8080/healthz     # 存活探针，不检查依赖
 curl -i http://localhost:8080/readyz      # 就绪探针，检查 PostgreSQL，不可用返回 503
+curl -i http://localhost:8080/api/v1/documents   # 未登录：401 AUTH_REQUIRED
 ```
 
 ### 常见启动问题
@@ -115,6 +123,16 @@ mindos: load config: parse config: invalid DB_PORT: must be an integer, got "not
 - 布尔值接受 `1/0`、`true/false`、`yes/no`、`on/off`，不接受 `maybe`。
 - duration 必须带单位，例如 `10s`、`500ms`、`30m`。
 - 进程环境变量优先于 `.env`，修改 `.env` 前先确认没有同名环境变量覆盖。
+
+**忘记密码没有自助入口。** 本项目没有邮箱验证与找回流程。自托管场景下由部署者直接在库里重置：
+
+```bash
+# 生成一个 bcrypt 哈希（成本 12），再写回 users.password_hash
+go run ./cmd/migrate version   # 先确认库连得上
+docker exec -it mindos-postgres psql -U mindos -d mindos -c "select id, email from users"
+```
+
+把新哈希写进 `users.password_hash` 后，该账号的旧密码立即失效（会话不受影响，可在设置页退出登录）。
 
 **请求 panic 时仍应有完整访问日志。** 日志中会同时出现：
 

@@ -5,7 +5,7 @@
 
 ## 1. 项目是什么
 
-**MindOS：AI 个人知识与行动管理系统。** 文档、网页、笔记进来变成可检索的知识；对话与活动里提炼出可修订的长期记忆；Agent 拿着知识与记忆回答问题、拆解目标、调用工具执行任务。单用户、本地优先。
+**MindOS：AI 个人知识与行动管理系统。** 文档、网页、笔记进来变成可检索的知识；对话与活动里提炼出可修订的长期记忆；Agent 拿着知识与记忆回答问题、拆解目标、调用工具执行任务。多用户、本地优先。
 
 一句话：**让知识拥有记忆，让记忆驱动行动。** 它不是聊天套壳：知识要能回到原文、记忆要能回到来源、行动要能回到审批、Agent 每一步要能回放。
 
@@ -18,11 +18,13 @@
 | Agent 不能失控、不能烧钱、要能中断恢复 | 步数 / token / 超时三重预算 + checkpoint | Eino ADK Runner、审批门、事件全量落库 |
 | 长任务不能与 HTTP 生命周期绑死 | outbox + RabbitMQ 派发 + tasks 对账 | 死信重投、积压观测、断连取消 |
 
-**单用户是硬边界**：不建 `users` 表、不做认证与租户隔离。多用户与云端属于后置能力；提前引入 `owner_id`、登录、RLS 都算越界。
+**多租户是硬边界**：一个账号就是一个隔离域。业务表必须有 `owner_id`（指向 `users.id`），
+所有面向用户的查询必须带它，且条件**不可选**——写成 `if ownerID > 0` 视同越权漏洞。
+组织/团队空间、角色权限矩阵仍是后置能力；提前引入 `workspace_id` 与成员表算越界。
 
 技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
 
-**当前状态（2026-11-16）：文档入库、异步任务链路、分块向量化与单轮 RAG 问答已完成并验证。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`；`POST /ask` 走混合检索（RRF）+ 阈值闸门 + Eino ADK Agent + SSE 流式回答 + 引用校验，对话模型配置存库（密钥 AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md` 与 `docs/design/rag.md`。
+**当前状态（2026-11-17）：文档入库、异步任务链路、分块向量化、单轮 RAG 问答，以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`；`POST /ask` 走混合检索（RRF）+ 阈值闸门 + Eino ADK Agent + SSE 流式回答 + 引用校验，对话模型配置存库（密钥 AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md` 与 `docs/design/rag.md`。
 
 ## 2. 仓库结构与命令
 
@@ -79,10 +81,11 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 | `internal/ctxbuild` | 上下文组装与 token 预算 | 发起模型调用 |
 | `internal/insight` | 周期总结与分析 | 修改知识/记忆原文 |
 | `internal/job` `internal/worker` | 任务表、派发、消费 | 写 HTTP 响应 |
+| `internal/auth` | 账号、密码哈希、会话、登录态中间件 | 认识业务模块；在 handler 里拼业务 SQL |
 | `internal/platform` | 连接、健康检查、客户端封装 | 任何业务语义 |
 | `internal/httpx` | 响应结构、错误类型 | **引用项目内任何包**（叶子包） |
 
-四条最容易破的边界：① `httpx` 不 import 任何 `internal/*`，否则 main、中间件、handler 会形成环；② 跨模块只能调对方 service 的导出方法，**不许 import 对方的 repository 与 model**；③ `agent` / `worker` 里不出现 `gin`，`chat/handler` 里不出现 `eino`；④ `platform` 里不出现 `document` / `memory` / `task` 之类的业务词。
+五条最容易破的边界：① `httpx` 不 import 任何 `internal/*`，否则 main、中间件、handler 会形成环；② 跨模块只能调对方 service 的导出方法，**不许 import 对方的 repository 与 model**；③ `agent` / `worker` 里不出现 `gin`，`chat/handler` 里不出现 `eino`；④ `platform` 里不出现 `document` / `memory` / `task` 之类的业务词；⑤ `auth` 只认识 `users` / `sessions`，不 import 任何业务模块。
 
 ## 4. 硬性约束（必须）
 
@@ -98,6 +101,12 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 10. **Agent 三重上限**：`max_steps`、token 预算、整体超时，缺一不允许合并。
 11. **工具调用必须留痕**：每次调用写 `tool_audits`；写类工具必须过审批门。
 12. **改动收尾门槛**：后端 `go build ./...` + `go vet ./...` + `go test -race ./...` 全绿；前端 `npm run lint` + `test` + `build` 全绿；端到端验证跑通。
+13. **隔离条件不可选**：仓储里的 `owner_id` 只能用 `Where("owner_id = ? AND ...", ownerID, ...)` 写死。
+    写成"有值才加条件"的那一天，就是全库泄漏的开始。零值应查不到任何行，而不是查到所有行。
+14. **异步链路例外**：worker / consumer 按 id 直查（id 来自内部 outbox 消息，不是客户端），
+    这类方法命名带 `Internal` 或在注释里写明信任边界，handler 不得调用。
+15. **新增租户表必须带 `owner_id NOT NULL`**，子表通过父表约束，跨表读必须 JOIN 父表并带 owner 条件；
+    迁移测试会扫 `information_schema` 检查这一点（白名单见 `docs/design/multi-tenancy.md`）。
 
 ## 5. Never（明确禁止）
 
@@ -164,8 +173,9 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 2. `backend/migrations/` 写 SQL 迁移（正向 + 回滚）。
 3. `internal/<module>/repository.go` 写数据访问（只收 `context.Context` + 参数）。
 4. `internal/<module>/service.go` 写业务规则与事务边界。
-5. `internal/<module>/handler.go` 写绑定与校验（`binding` tag），调 service，用 `httpx` 输出。
-6. `internal/router/router.go` 在 `Deps` 加字段，挂到 `/api/v1`。
+5. `internal/<module>/handler.go` 写绑定与校验（`binding` tag），从 `auth.PrincipalFrom(c)` 取当前用户，
+   把 `ownerID` 显式传给 service，用 `httpx` 输出。
+6. `internal/router/router.go` 在 `Deps` 加字段，挂到 `/api/v1` 的 `authed` 分组下（默认需要登录）。
 7. `cmd/server/main.go` 完成装配。
 8. 用真实 curl 跑通成功路径 + 至少一个失败路径，贴出响应。
 
