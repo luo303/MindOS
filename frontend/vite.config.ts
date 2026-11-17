@@ -21,7 +21,10 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8080',
-        changeOrigin: true,
+        // 必须保留原始 Host：浏览器的 Origin 是 http://localhost:5173，
+        // 后端用它和 Host 比对做 CSRF 校验。changeOrigin=true 会把 Host 改成
+        // 127.0.0.1:8080，于是每个写请求都被判成跨站（注册、登录直接 403）。
+        changeOrigin: false,
       },
     },
   },

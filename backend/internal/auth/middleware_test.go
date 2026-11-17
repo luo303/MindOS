@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -17,27 +18,33 @@ type envelope struct {
 func TestCheckOrigin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
-	e.Use(CheckOrigin())
+	// 前端跑在 5173、API 跑在 8080：这是 Vite 开发的默认形态。
+	e.Use(CheckOrigin([]string{"http://localhost:5173"}, nil))
 	e.POST("/x", func(c *gin.Context) { c.Status(http.StatusOK) })
 	e.GET("/x", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	cases := []struct {
 		name   string
 		method string
+		host   string
 		origin string
 		want   int
 	}{
 		// curl / 服务端调用不带 Origin：必须放行，否则 AGENTS.md 要求的真实 curl 验证做不了。
-		{"no origin", http.MethodPost, "", http.StatusOK},
-		{"same host", http.MethodPost, "http://example.com", http.StatusOK},
+		{"no origin", http.MethodPost, "example.com", "", http.StatusOK},
+		{"same host", http.MethodPost, "example.com", "http://example.com", http.StatusOK},
 		// 跨站写请求：SameSite 之外的第二道闸。
-		{"cross site", http.MethodPost, "http://evil.example.net", http.StatusForbidden},
+		{"cross site", http.MethodPost, "example.com", "http://evil.example.net", http.StatusForbidden},
 		// GET 不产生副作用，不受这条限制。
-		{"get with cross origin", http.MethodGet, "http://evil.example.net", http.StatusOK},
+		{"get with cross origin", http.MethodGet, "example.com", "http://evil.example.net", http.StatusOK},
+		// 代理改写 Host（changeOrigin=true）时 Origin 与 Host 必然不同；
+		// 登记过的前端地址必须放行，否则注册/登录全部 403——这是实际踩到的缺陷。
+		{"proxied but allowlisted", http.MethodPost, "127.0.0.1:8080", "http://localhost:5173", http.StatusOK},
+		{"proxied but not allowlisted", http.MethodPost, "127.0.0.1:8080", "http://evil.example.net", http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, "http://example.com/x", nil)
+			req := httptest.NewRequest(tc.method, "http://"+tc.host+"/x", nil)
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
 			}
@@ -46,6 +53,7 @@ func TestCheckOrigin(t *testing.T) {
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.want)
 			}
+			// 拒绝时的提示必须能指引人排查，而不是只说"被拒了"。
 			if tc.want == http.StatusForbidden {
 				var env envelope
 				if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
@@ -54,8 +62,33 @@ func TestCheckOrigin(t *testing.T) {
 				if env.Code != "AUTH_ORIGIN_MISMATCH" {
 					t.Errorf("code = %q, want AUTH_ORIGIN_MISMATCH", env.Code)
 				}
+				if !strings.Contains(env.Message, "AUTH_ALLOWED_ORIGINS") {
+					t.Errorf("message = %q, want an actionable hint", env.Message)
+				}
 			}
 		})
+	}
+}
+
+func TestOriginKeyNormalizesDefaultPort(t *testing.T) {
+	cases := map[string]string{
+		"http://example.com":      "http://example.com",
+		"http://example.com:80":   "http://example.com",
+		"https://example.com:443": "https://example.com",
+		"http://Example.com:8080": "http://example.com:8080",
+		"http://localhost:5173":   "http://localhost:5173",
+	}
+	for raw, want := range cases {
+		got, ok := originKey(raw)
+		if !ok || got != want {
+			t.Errorf("originKey(%q) = %q, %v; want %q", raw, got, ok, want)
+		}
+	}
+	// 不是 Origin 的形态：没有协议、空 host、非 http(s)。
+	for _, raw := range []string{"localhost:5173", "http://", "ftp://example.com", "http://example.com/path"} {
+		if _, ok := originKey(raw); ok {
+			t.Errorf("originKey(%q) should be rejected", raw)
+		}
 	}
 }
 

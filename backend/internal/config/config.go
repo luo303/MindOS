@@ -60,6 +60,14 @@ type AuthConfig struct {
 	// 默认关闭：向量模型是部署者付费的全局配置，公网开放注册等于开放这份额度；
 	// 本地开发要注册时在 .env 里改成 open，注册完再改回去。
 	RegistrationMode string
+	// AllowedOrigins 是与 API 不同源、但可信的前端地址（如 http://localhost:5173）。
+	//
+	// 为什么需要它：CSRF 校验默认比较 Origin 与请求 Host，前提是浏览器直接访问 API
+	// 或代理保留原始 Host。反向代理改写 Host（Vite 的 changeOrigin、nginx 默认的
+	// proxy_set_header）时两者必然不等，合法请求会被当成跨站攻击。
+	//
+	// 只接受"协议 + 主机 + 端口"，不带路径——Origin 头本来就只有这些。
+	AllowedOrigins []string
 }
 
 // RegistrationOpen 报告是否允许自助注册。
@@ -273,6 +281,7 @@ func Load() (*Config, error) {
 		Auth: AuthConfig{
 			SessionTTL:       reader.duration("AUTH_SESSION_TTL", 720*time.Hour),
 			RegistrationMode: strings.ToLower(strings.TrimSpace(reader.text("AUTH_REGISTRATION", "closed"))),
+			AllowedOrigins:   parseOriginList(reader.text("AUTH_ALLOWED_ORIGINS", "")),
 		},
 		Log: LogConfig{
 			Level:  strings.ToLower(reader.text("LOG_LEVEL", "debug")),
@@ -390,6 +399,16 @@ func (c *Config) validate() error {
 		errs = append(errs, fmt.Errorf(
 			"AUTH_REGISTRATION must be open or closed, got %q", c.Auth.RegistrationMode))
 	}
+	// 每条都必须是 Origin 的形态：协议 + 主机（+ 端口），不带路径/查询/片段。
+	// 写错的话 CSRF 校验会静默拒绝合法请求，所以宁可在启动时就报错。
+	for _, origin := range c.Auth.AllowedOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, fmt.Errorf(
+				"AUTH_ALLOWED_ORIGINS entry %q must look like http://localhost:5173", origin))
+		}
+	}
 	if c.DB.Host == "" {
 		errs = append(errs, errors.New("DB_HOST is required"))
 	}
@@ -489,6 +508,24 @@ func (c *Config) validate() error {
 	}
 	// errors.Join 是 Go 1.20 加入的：把多个错误合成一个，报错时一次看全。
 	return errors.Join(errs...)
+}
+
+// parseOriginList 把逗号分隔的来源拆成切片，丢弃空项。
+//
+// 逗号分隔而不是 JSON：与 .env 里其他列表型配置（标签、队列）的写法一致，
+// 且出错时人能直接看出是哪一项写错了。
+func parseOriginList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // validateModelConfig 检查模型配置的"全配或全空"规则。

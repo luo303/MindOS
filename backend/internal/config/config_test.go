@@ -265,6 +265,40 @@ func TestLoadReadsModelAndBudgetConfig(t *testing.T) {
 // TestLoadRejectsPartialEmbeddingConfig 确认向量模型配置只配一半时启动报错并指出缺哪几项。
 //
 // 对话模型已不在这里：它由用户配置并存库，服务端不再读 LLM_* 环境变量。
+// 可信来源必须是 Origin 的形态；写错了会让合法请求被 CSRF 校验静默拒绝，
+// 所以宁可启动失败。
+func TestLoadAllowedOrigins(t *testing.T) {
+	t.Chdir(t.TempDir())
+	setRequiredEnv(t)
+
+	t.Setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5173, https://app.example.com")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"http://localhost:5173", "https://app.example.com"}
+	if len(cfg.Auth.AllowedOrigins) != len(want) {
+		t.Fatalf("allowed origins = %v, want %v", cfg.Auth.AllowedOrigins, want)
+	}
+	for i := range want {
+		if cfg.Auth.AllowedOrigins[i] != want[i] {
+			t.Errorf("origin[%d] = %q, want %q", i, cfg.Auth.AllowedOrigins[i], want[i])
+		}
+	}
+
+	// 带路径的写法是常见的误解：Origin 头里没有路径。
+	t.Setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5173/app")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "AUTH_ALLOWED_ORIGINS") {
+		t.Fatalf("err = %v, want AUTH_ALLOWED_ORIGINS validation error", err)
+	}
+
+	// 空值表示"只接受同源"，不是错误。
+	t.Setenv("AUTH_ALLOWED_ORIGINS", "")
+	if cfg, err := Load(); err != nil || len(cfg.Auth.AllowedOrigins) != 0 {
+		t.Fatalf("blank value: cfg=%+v err=%v", cfg.Auth.AllowedOrigins, err)
+	}
+}
+
 func TestLoadRejectsPartialEmbeddingConfig(t *testing.T) {
 	t.Chdir(t.TempDir())
 	setRequiredEnv(t)

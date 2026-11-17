@@ -466,9 +466,12 @@ func run() error {
 		Settings:       settings,
 		Auth:           authHandler,
 		RequireSession: auth.NewSessionMiddleware(authSvc),
-		Knowledge:      knowledge.NewHandler(knowledgeSvc),
-		ChatModels:     chatmodel.NewHandler(chatModelSvc),
-		Ask:            chat.NewHandler(chatSvc),
+		// 可信来源来自配置：反向代理改写 Host 时，Origin 与 Host 天然不等，
+		// 合法请求会被误判成跨站。日志里会打出两组地址，便于排查。
+		CheckOrigin: auth.CheckOrigin(cfg.Auth.AllowedOrigins, log.Named("auth")),
+		Knowledge:   knowledge.NewHandler(knowledgeSvc),
+		ChatModels:  chatmodel.NewHandler(chatModelSvc),
+		Ask:         chat.NewHandler(chatSvc),
 	})
 
 	// 【为什么不用 router.Run()】

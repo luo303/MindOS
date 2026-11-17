@@ -32,6 +32,9 @@ type Deps struct {
 	Auth *auth.Handler
 	// RequireSession 是会话校验中间件。由 auth 包构造，router 只负责挂在哪。
 	RequireSession gin.HandlerFunc
+	// CheckOrigin 是写请求的 CSRF 同源校验。可信来源列表由 main 从配置读出后注入，
+	// router 不读配置。
+	CheckOrigin gin.HandlerFunc
 
 	// Knowledge 是知识模块（文档入库与分块）。
 	Knowledge *knowledge.Handler
@@ -75,7 +78,7 @@ func Register(e *gin.Engine, deps Deps) {
 	v1 := e.Group("/api/v1")
 	// 所有写请求先过同源校验（CSRF 的第二道闸，第一道是 SameSite=Lax）。
 	// 挂在组上而不是逐个接口：漏挂一个写接口就等于少一道防线。
-	v1.Use(auth.CheckOrigin())
+	v1.Use(deps.CheckOrigin)
 
 	// —— 公开接口 ——
 	// 注册受 AUTH_REGISTRATION 控制；登录本身有限流与账号锁定。

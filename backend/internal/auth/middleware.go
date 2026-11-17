@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/luo303/mindos/backend/internal/httpx"
 )
@@ -86,12 +87,32 @@ func NewSessionMiddleware(svc *Service) gin.HandlerFunc {
 
 // CheckOrigin 是 CSRF 的第二道闸（第一道是 SameSite=Lax）。
 //
-// 规则：非 GET/HEAD/OPTIONS 请求如果带了 Origin，host 必须与 Host 一致。
+// 规则：非 GET/HEAD/OPTIONS 请求如果带了 Origin，必须满足下面之一：
+//  1. Origin 的 host 与请求 Host 相同（浏览器直连 API，或代理保留原始 Host）；
+//  2. Origin 在 allowedOrigins 里（反向代理改写 Host 的部署）。
+//
+// 为什么需要第 2 条：CSRF 校验拿 Origin 比 Host，前提是两者是同一个地址。
+// Vite 的 changeOrigin=true、nginx 默认的 proxy_set_header 都会把 Host 改成
+// 上游地址，此时 Origin=http://localhost:5173、Host=127.0.0.1:8080，
+// 合法请求会被当成攻击——这是实测踩到的误判。
+//
+// 为什么不读 X-Forwarded-Host：那个头由请求方提供，攻击者可以把它写成自己的域名，
+// 于是"Origin 与 X-Forwarded-Host 一致"这条规则形同虚设。可信来源只能是配置。
 //
 // 为什么"不带 Origin 就放行"：curl、服务端调用、老客户端不会带这个头，
 // 一律要求会让 AGENTS.md 里的真实 curl 验证无法进行。而浏览器对同源与跨源的
 // POST 都会带 Origin，所以跨站表单/脚本一定命中检查。
-func CheckOrigin() gin.HandlerFunc {
+func CheckOrigin(allowedOrigins []string, log *zap.Logger) gin.HandlerFunc {
+	if log == nil {
+		log = zap.NewNop()
+	}
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		if key, ok := originKey(origin); ok {
+			allowed[key] = struct{}{}
+		}
+	}
+
 	return func(c *gin.Context) {
 		switch c.Request.Method {
 		case "GET", "HEAD", "OPTIONS":
@@ -103,15 +124,43 @@ func CheckOrigin() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		u, err := url.Parse(origin)
-		if err != nil {
-			httpx.Abort(c, httpx.ErrOriginMismatch)
+		if u, err := url.Parse(origin); err == nil && strings.EqualFold(u.Host, c.Request.Host) {
+			c.Next()
 			return
 		}
-		if !strings.EqualFold(u.Host, c.Request.Host) {
-			httpx.Abort(c, httpx.ErrOriginMismatch)
-			return
+		if key, ok := originKey(origin); ok {
+			if _, trusted := allowed[key]; trusted {
+				c.Next()
+				return
+			}
 		}
-		c.Next()
+
+		// 记下两端地址：运维看到"前端 5173、后端 8080"就能立刻明白是代理改写了 Host。
+		log.Warn("cross-site request rejected",
+			zap.String("origin", origin),
+			zap.String("host", c.Request.Host),
+			zap.String("path", c.Request.URL.Path))
+		httpx.Abort(c, httpx.ErrOriginMismatch.WithMessage(
+			"请求来源校验未通过（CSRF 防护）。本地开发请确认前端代理保留原始 Host，"+
+				"或在 AUTH_ALLOWED_ORIGINS 中登记前端地址"))
 	}
+}
+
+// originKey 把 Origin 规整成 "scheme://host" 作为比较键。
+//
+// 去掉默认端口：http://x 与 http://x:80 是同一个来源，配置时不该逼人写端口。
+func originKey(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	host := strings.ToLower(u.Host)
+	if (u.Scheme == "http" && strings.HasSuffix(host, ":80")) ||
+		(u.Scheme == "https" && strings.HasSuffix(host, ":443")) {
+		if idx := strings.LastIndex(host, ":"); idx > 0 {
+			host = host[:idx]
+		}
+	}
+	return strings.ToLower(u.Scheme) + "://" + host, true
 }
