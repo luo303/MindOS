@@ -41,15 +41,20 @@ const instruction = `你是 MindOS 的知识库问答助手。回答涉及用户
 3. 只引用本次工具真正返回过的编号；不要编造编号。
 4. 返回的片段不足以回答时，只输出这一句：` + RefusalSentence + `。不要解释、不要给建议、不要猜。
 5. 不要照抄原文超过 30 字，用自己的话归纳。
-6. 不要提"资料""上下文""片段""根据提供的内容"这类词，直接回答问题。
+6. 不要提"资料""上下文""片段""根据提供的内容"这类词，直接回答问题。`
 
-当问题需要数量、分布、时间范围或按字段筛选（"有多少篇""按分类统计""哪些还没向量化"）时，
+// sqlInstruction 只在 SQL 工具真的注册时才拼进系统提示词。
+// 否则模型会去调一个不存在的 query_knowledge，把一次普通问答变成工具错误。
+const sqlInstruction = `当问题需要数量、分布、时间范围或按字段筛选（"有多少篇""按分类统计""哪些还没向量化"）时，
 调用 query_knowledge 执行一条只读 SELECT。可用表与列：
 - documents: id, title, source_type, mime, collection, tags, status, chunk_count, size_bytes, embed_status, embed_model, embed_dimensions, embedded_chunks, embedded_at, created_at, updated_at, owner_id
 - document_chunks: id, document_id, seq, heading, start_offset, end_offset, token_count, embed_model, embedded_at, created_at
 
 SQL 规则：只写一条 SELECT/WITH；必须显式写列名（SELECT * 会被权限拒绝）；
 content 不可读，问"内容讲了什么"仍然用 search_knowledge；统计结果不需要引用编号。`
+
+// instructionWithSQL 是注册了 SQL 工具时的完整提示词。
+const instructionWithSQL = instruction + "\n\n" + sqlInstruction
 
 // Retriever 是 agent 需要的全部检索能力。
 //
@@ -172,10 +177,16 @@ func (a *Agent) Ask(ctx context.Context, question string, onDelta func(string) e
 		tools = append(tools, sqlTool)
 	}
 
+	// 工具列表决定提示词：没注册 query_knowledge 就不该在提示词里提它。
+	instr := instruction
+	if a.sqlRunner != nil {
+		instr = instructionWithSQL
+	}
+
 	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "mindos-rag",
 		Description: "基于个人知识库回答问题，按需检索或统计",
-		Instruction: instruction,
+		Instruction: instr,
 		Model:       a.chatModel,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
