@@ -137,6 +137,82 @@ func TestUpDownUpIntegration(t *testing.T) {
 	}
 }
 
+// TestAIReaderMigrationIntegration 验证 0014 的角色、策略与列授权真的生效，
+// 并验证 down 只拆本库的策略/授权、不删共享角色。
+func TestAIReaderMigrationIntegration(t *testing.T) {
+	runner := setupTestDB(t)
+	ctx := context.Background()
+
+	if err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	mustBool := func(query string) bool {
+		t.Helper()
+		var value bool
+		if err := runner.db.QueryRowContext(ctx, query).Scan(&value); err != nil {
+			t.Fatalf("query %q: %v", query, err)
+		}
+		return value
+	}
+
+	var super, bypass bool
+	if err := runner.db.QueryRowContext(ctx,
+		`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'mindos_ai_reader'`,
+	).Scan(&super, &bypass); err != nil {
+		t.Fatalf("read role: %v", err)
+	}
+	if super || bypass {
+		t.Fatalf("role attrs = super:%v bypass:%v, want both false", super, bypass)
+	}
+
+	var policies int
+	if err := runner.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM pg_policies WHERE tablename IN ('documents', 'document_chunks')`,
+	).Scan(&policies); err != nil {
+		t.Fatalf("count policies: %v", err)
+	}
+	if policies != 2 {
+		t.Fatalf("policies = %d, want 2", policies)
+	}
+
+	if !mustBool(`SELECT has_column_privilege('mindos_ai_reader', 'public.documents', 'title', 'SELECT')`) {
+		t.Error("documents.title should be readable")
+	}
+	if mustBool(`SELECT has_column_privilege('mindos_ai_reader', 'public.documents', 'content', 'SELECT')`) {
+		t.Error("documents.content must not be readable")
+	}
+	if mustBool(`SELECT has_column_privilege('mindos_ai_reader', 'public.document_chunks', 'content', 'SELECT')`) {
+		t.Error("document_chunks.content must not be readable")
+	}
+	if mustBool(`SELECT has_function_privilege('mindos_ai_reader', 'pg_catalog.set_config(text,text,boolean)', 'EXECUTE')`) {
+		t.Error("set_config must not be executable")
+	}
+
+	if err := runner.Down(ctx); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	if err := runner.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM pg_policies WHERE tablename IN ('documents', 'document_chunks')`,
+	).Scan(&policies); err != nil {
+		t.Fatalf("count policies after down: %v", err)
+	}
+	if policies != 0 {
+		t.Fatalf("policies after down = %d, want 0", policies)
+	}
+	if mustBool(`SELECT has_column_privilege('mindos_ai_reader', 'public.documents', 'title', 'SELECT')`) {
+		t.Error("column privilege should be revoked by down")
+	}
+	// 角色是集群级的：down 不删它，否则别的库还在引用时会直接失败。
+	if !mustBool(`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mindos_ai_reader')`) {
+		t.Error("role should survive down; cleanup is manual after all databases are down")
+	}
+
+	if err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up again: %v", err)
+	}
+}
+
 // TestDirtyRecoveryIntegration 覆盖"迁移中断"场景：
 // 手工把版本标记弄脏，验证 Up 拒绝执行、Force 能恢复、恢复后可继续。
 func TestDirtyRecoveryIntegration(t *testing.T) {

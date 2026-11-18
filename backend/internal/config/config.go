@@ -26,11 +26,12 @@ type Config struct {
 	Auth      AuthConfig
 	Log       LogConfig
 	DB        DBConfig
+	AI        AIConfig
 	Redis     RedisConfig
 	Storage   StorageConfig
 	Crypto    CryptoConfig
 	Embedding EmbeddingConfig
-	// Rag 是问答的三项参数：进上下文的片段数、拒答阈值、整体超时。
+	// Rag 是问答的两项参数：检索条数上限、整体超时。
 	Rag    RagConfig
 	Agent  AgentConfig
 	Job    JobConfig
@@ -94,6 +95,18 @@ type DBConfig struct {
 	// LogSQL 为 true 时打印每一条 SQL（开发环境默认开启）。
 	LogSQL bool
 }
+
+// AIConfig 是 SQL 查询工具用的独立只读账号。
+//
+// 两个字段都空表示不启用该工具；只配一个视为配置错误。
+// 它不能和主库账号相同：主库账号通常是 owner/superuser，会绕过 RLS。
+type AIConfig struct {
+	DBUser     string
+	DBPassword string
+}
+
+// Enabled 报告是否配置了 SQL 工具账号。
+func (c AIConfig) Enabled() bool { return c.DBUser != "" }
 
 // DSN 返回 gorm.io/driver/postgres 需要的连接串（key=value 形式）。
 // 敏感字段只在内存中拼装，不要打日志。
@@ -291,6 +304,10 @@ func Load() (*Config, error) {
 			PingTimeout:     reader.duration("DB_PING_TIMEOUT", 3*time.Second),
 			LogSQL:          reader.boolean("DB_LOG_SQL", env == "dev"),
 		},
+		AI: AIConfig{
+			DBUser:     reader.text("AI_DB_USER", ""),
+			DBPassword: reader.text("AI_DB_PASSWORD", ""),
+		},
 		Redis: RedisConfig{
 			Addr:     reader.text("REDIS_ADDR", "localhost:6379"),
 			Password: reader.text("REDIS_PASSWORD", ""),
@@ -447,6 +464,13 @@ func (c *Config) validate() error {
 	if c.Embedding.BatchSize < 1 || c.Embedding.BatchSize > 64 {
 		errs = append(errs, fmt.Errorf(
 			"EMBEDDING_BATCH_SIZE must be between 1 and 64, got %d", c.Embedding.BatchSize))
+	}
+	if (c.AI.DBUser == "") != (c.AI.DBPassword == "") {
+		errs = append(errs, errors.New("AI_DB_USER and AI_DB_PASSWORD must be set together"))
+	}
+	if c.AI.Enabled() && c.AI.DBUser == c.DB.User {
+		// 主库账号通常是 owner 甚至 superuser，用它跑模型 SQL 等于没有 RLS。
+		errs = append(errs, errors.New("AI_DB_USER must differ from DB_USER"))
 	}
 	if c.Rag.TopK < 1 || c.Rag.TopK > 20 {
 		errs = append(errs, fmt.Errorf("RAG_TOP_K must be between 1 and 20, got %d", c.Rag.TopK))

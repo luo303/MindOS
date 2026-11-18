@@ -41,7 +41,15 @@ const instruction = `你是 MindOS 的知识库问答助手。回答涉及用户
 3. 只引用本次工具真正返回过的编号；不要编造编号。
 4. 返回的片段不足以回答时，只输出这一句：` + RefusalSentence + `。不要解释、不要给建议、不要猜。
 5. 不要照抄原文超过 30 字，用自己的话归纳。
-6. 不要提"资料""上下文""片段""根据提供的内容"这类词，直接回答问题。`
+6. 不要提"资料""上下文""片段""根据提供的内容"这类词，直接回答问题。
+
+当问题需要数量、分布、时间范围或按字段筛选（"有多少篇""按分类统计""哪些还没向量化"）时，
+调用 query_knowledge 执行一条只读 SELECT。可用表与列：
+- documents: id, title, source_type, mime, collection, tags, status, chunk_count, size_bytes, embed_status, embed_model, embed_dimensions, embedded_chunks, embedded_at, created_at, updated_at, owner_id
+- document_chunks: id, document_id, seq, heading, start_offset, end_offset, token_count, embed_model, embedded_at, created_at
+
+SQL 规则：只写一条 SELECT/WITH；必须显式写列名（SELECT * 会被权限拒绝）；
+content 不可读，问"内容讲了什么"仍然用 search_knowledge；统计结果不需要引用编号。`
 
 // Retriever 是 agent 需要的全部检索能力。
 //
@@ -88,6 +96,8 @@ type Result struct {
 	// 带上它而不是让调用方再去问 registry：一次问答的片段与答案是一体的，
 	// 分两处取很容易出现"答案用 A 批片段、引用列表却是 B 批"的错位。
 	Hits []Numbered
+	// SQLAudits 是本次 run 的 SQL 调用审计（可能为空）。
+	SQLAudits []SQLAudit
 }
 
 // Agent 绑定一次问答。
@@ -98,6 +108,9 @@ type Result struct {
 type Agent struct {
 	chatModel model.BaseModel[*schema.Message]
 	retriever Retriever
+	// sqlRunner 为 nil 表示没有配置只读 SQL 工具，本次 run 只挂检索。
+	sqlRunner SQLRunner
+	audits    *auditLog
 	// ownerID 是本次问答的用户：工具检索只能看到这个人的文档。
 	// 存在实例上而不是塞进 context，是因为每个请求本来就会构造一个新 Agent。
 	ownerID  int64
@@ -113,7 +126,7 @@ type Agent struct {
 
 // New 组装一次问答。registry 必须由调用方持有——问答结束后它还要用来
 // 生成引用列表与落库。
-func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerID int64, registry *Registry, maxResults int, limits Limits, onHits func([]Numbered), log *zap.Logger) *Agent {
+func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRunner SQLRunner, ownerID int64, registry *Registry, maxResults int, limits Limits, onHits func([]Numbered), log *zap.Logger) *Agent {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -126,6 +139,8 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerI
 	return &Agent{
 		chatModel:  chatModel,
 		retriever:  retriever,
+		sqlRunner:  sqlRunner,
+		audits:     &auditLog{},
 		ownerID:    ownerID,
 		registry:   registry,
 		maxResults: maxResults,
@@ -141,19 +156,30 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerI
 // 例如客户端已经断开）。它是唯一把正文送出去的口子——工具结果、思考过程
 // 都不经过这里，避免把不该给用户看的内容混进答案。
 func (a *Agent) Ask(ctx context.Context, question string, onDelta func(string) error) (*Result, error) {
-	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.maxResults, a.limits.MaxToolCalls, a.onHits)
+	// 一次 run 一个预算：检索与 SQL 共享 3 次，而不是各 3 次。
+	budget := newToolBudget(a.limits.MaxToolCalls)
+
+	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.maxResults, budget, a.onHits)
 	if err != nil {
 		return nil, fmt.Errorf("build search tool: %w", err)
+	}
+	tools := []tool.BaseTool{searchTool}
+	if a.sqlRunner != nil {
+		sqlTool, err := newSQLTool(a.sqlRunner, a.ownerID, budget, a.audits)
+		if err != nil {
+			return nil, fmt.Errorf("build sql tool: %w", err)
+		}
+		tools = append(tools, sqlTool)
 	}
 
 	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "mindos-rag",
-		Description: "基于个人知识库回答问题，必须给出可核对的引用",
+		Description: "基于个人知识库回答问题，按需检索或统计",
 		Instruction: instruction,
 		Model:       a.chatModel,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: []tool.BaseTool{searchTool},
+				Tools: tools,
 				// 顺序执行：并行时两个检索同时跑，编号分配顺序随调度变化，
 				// 同一个问题两次运行会给出不同的 [n] 对应关系，排查时非常费劲。
 				ExecuteSequentially: true,
@@ -245,6 +271,7 @@ func (a *Agent) Ask(ctx context.Context, question string, onDelta func(string) e
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		Hits:             a.registry.All(),
+		SQLAudits:        a.audits.all(),
 	}
 	a.log.Info("agent run finished",
 		zap.Int("chars", len([]rune(result.Answer))),

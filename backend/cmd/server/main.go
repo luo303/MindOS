@@ -124,6 +124,25 @@ func run() error {
 		}
 	}()
 
+	// 只读 SQL 工具是可选的：配了 AI_DB_USER 才建独立池，并在启动时自检角色。
+	// 没配就不注册 query_knowledge，问答只挂检索——这是默认形态。
+	var sqlExecutor *agent.SQLExecutor
+	if cfg.AI.Enabled() {
+		aiPool, err := platform.NewReadOnlyPool(ctx, cfg.DB, cfg.AI.DBUser, cfg.AI.DBPassword)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = aiPool.Close() }()
+
+		if err := agent.CheckAIReader(ctx, aiPool); err != nil {
+			return err
+		}
+		sqlExecutor = agent.NewSQLExecutor(aiPool)
+		log.Info("sql query tool enabled", zap.String("db_user", cfg.AI.DBUser))
+	} else {
+		log.Info("sql query tool disabled: AI_DB_USER not set")
+	}
+
 	// 5. HTTP 组件装配。
 	health := handler.NewHealthHandler(db, cfg.DB.PingTimeout, version)
 
@@ -289,6 +308,7 @@ func run() error {
 
 	agentBuilder := agent.NewBuilder(
 		knowledgeRetriever{searcher: searcher},
+		sqlExecutor,
 		agent.DefaultLimits(),
 		cfg.Rag.TopK,
 		log.Named("agent"),

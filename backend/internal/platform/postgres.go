@@ -4,10 +4,15 @@ package platform
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql 的 pgx 驱动
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -63,6 +68,42 @@ func NewPostgres(ctx context.Context, cfg config.DBConfig, log *zap.Logger) (*go
 		return nil, fmt.Errorf("ping postgres %s:%d/%s: %w", cfg.Host, cfg.Port, cfg.Name, err)
 	}
 
+	return db, nil
+}
+
+// NewReadOnlyPool 用给定账号打开一个独立的小连接池。
+//
+// 它和主库池刻意分开：
+//   - 账号不同（AI 只读角色），池子大小与生命周期互不影响；
+//   - 用 URL 形式的 DSN，密码里有空格/引号也不会把 key=value 串拼坏；
+//   - 池上限压到 4，与角色的 CONNECTION LIMIT 对齐，避免应用自己把角色连满。
+func NewReadOnlyPool(ctx context.Context, cfg config.DBConfig, user, password string) (*sql.DB, error) {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(user, password),
+		Host:   net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
+		Path:   "/" + cfg.Name,
+	}
+	q := u.Query()
+	q.Set("sslmode", cfg.SSLMode)
+	q.Set("TimeZone", "UTC")
+	u.RawQuery = q.Encode()
+
+	db, err := sql.Open("pgx", u.String())
+	if err != nil {
+		return nil, fmt.Errorf("open read-only postgres: %w", err)
+	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(10 * time.Minute)
+	db.SetConnMaxIdleTime(time.Minute)
+
+	pingCtx, cancel := context.WithTimeout(ctx, cfg.PingTimeout)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping read-only postgres: %w", err)
+	}
 	return db, nil
 }
 

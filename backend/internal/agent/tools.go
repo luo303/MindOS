@@ -29,6 +29,30 @@ const (
 // 收手并用已有片段作答，这比直接掐断更接近人想要的结果。
 var ErrToolCallLimit = errors.New("tool call limit reached")
 
+// toolBudget 是本次 run 所有工具共享的调用计数器。
+//
+// 为什么共享：预算的含义是"这次问答最多调 3 次工具"，不是"每个工具各 3 次"。
+// 两个工具各自计数会让实际上限变成 6 次，加第三个工具就是 9 次——预算形同虚设。
+type toolBudget struct {
+	calls atomic.Int32
+	max   int
+}
+
+func newToolBudget(max int) *toolBudget {
+	if max <= 0 {
+		max = 1
+	}
+	return &toolBudget{max: max}
+}
+
+// take 先加再比：并行的两个调用都抢同一个计数器，用原子加保证"最多 N 次"是硬上限。
+func (b *toolBudget) take() error {
+	if int(b.calls.Add(1)) > b.max {
+		return fmt.Errorf("%w (max %d)", ErrToolCallLimit, b.max)
+	}
+	return nil
+}
+
 // searchInput 是 search_knowledge 的参数结构。
 //
 // json 与 jsonschema 两个 tag 都要写：前者决定解码时的字段名，
@@ -53,14 +77,10 @@ type searchOutput struct {
 //
 // 它只做三件事：限流、调 Retriever、把结果登记进 registry 并回给模型。
 // 不碰 repository、不拼 SQL、不认识文档状态——那些都在 knowledge 层。
-func newSearchTool(retriever Retriever, ownerID int64, registry *Registry, maxResults, maxCalls int, onHits func([]Numbered)) (tool.InvokableTool, error) {
-	var calls atomic.Int32
-
+func newSearchTool(retriever Retriever, ownerID int64, registry *Registry, maxResults int, budget *toolBudget, onHits func([]Numbered)) (tool.InvokableTool, error) {
 	invoke := func(ctx context.Context, in searchInput) ([]searchOutput, error) {
-		// 先计数再判断：并行的两个调用都抢同一个计数器，
-		// 用原子加保证"最多 maxCalls 次"是硬上限，而不是大致上限。
-		if int(calls.Add(1)) > maxCalls {
-			return nil, fmt.Errorf("%w (max %d)", ErrToolCallLimit, maxCalls)
+		if err := budget.take(); err != nil {
+			return nil, err
 		}
 		query := strings.TrimSpace(in.Query)
 		if query == "" {

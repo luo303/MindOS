@@ -240,7 +240,7 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 		RawAnswer:        stringPtr(result.Answer),
 		Verdict:          VerdictAnswered,
 		Citations:        marshalJSON(citations),
-		Retrieved:        marshalJSON(retrievalPayload(registry.All())),
+		Retrieved:        marshalJSON(retrievedPayload(registry.All(), result.SQLAudits)),
 		ChatModelID:      int64Ptr(resolved.ID),
 		Model:            stringPtr(resolved.Model),
 		PromptTokens:     result.PromptTokens,
@@ -362,6 +362,21 @@ func parseCitations(answer string) []int {
 		out = append(out, n)
 	}
 	sort.Ints(out)
+	return out
+}
+
+// retrievedPayload 把"检索到的片段"与"SQL 审计"合成一个数组落库。
+//
+// 检索条目沿用原来的结构（旧行也是这个形状）；SQL 条目带 kind:"sql"，
+// 只有审计信息，没有 SQL 原文或结果。前端不读这个字段，它只服务复盘。
+func retrievedPayload(items []agent.Numbered, audits []agent.SQLAudit) []any {
+	out := make([]any, 0, len(items)+len(audits))
+	for _, item := range retrievalPayload(items) {
+		out = append(out, item)
+	}
+	for _, audit := range audits {
+		out = append(out, audit)
+	}
 	return out
 }
 
