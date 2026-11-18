@@ -1,10 +1,17 @@
-import { useQuery } from '@tanstack/react-query'
-import { Loader2, SendHorizontal, Settings2 } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Loader2, Plus, SendHorizontal, Settings2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { askStream } from '@/api/ask'
 import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
+import {
+  conversationKeys,
+  createConversation,
+  fetchConversations,
+  fetchMessages,
+  sendConversationMessage,
+  type ChatMessage,
+} from '@/api/conversations'
 import { ApiError, describeError } from '@/api/errors'
 import type { AskVerdict } from '@/api/types'
 import { PageHeader } from '@/components/page-header'
@@ -35,33 +42,80 @@ function readStoredModelId(): number | null {
 }
 
 function newId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
 }
 
 /**
- * 问答页：单轮流式问答，答案带可点回原文的引用。
+ * 把后端的 messages 还原成界面上的"一问一答"。
  *
- * "单轮"指后端不维护会话上下文，每次提问都是独立一次检索 + 回答。
- * 前端仍保留本次页面里的多组问答，方便对比；刷新即清空。
+ * 后端一条消息一行；界面按 user 开新 turn，紧随其后的 assistant 填进 answer。
+ */
+function turnsFromMessages(messages: ChatMessage[]): Turn[] {
+  const turns: Turn[] = []
+  let current: Turn | null = null
+  for (const message of messages) {
+    if (message.role === 'user') {
+      current = {
+        id: 'msg-' + message.id,
+        question: message.content,
+        answer: '',
+        phase: 'settled',
+        hits: [],
+        citations: [],
+      }
+      turns.push(current)
+      continue
+    }
+    if (!current) {
+      continue
+    }
+    current.answer = message.content
+    current.citations = message.citations ?? []
+    current.phase = 'settled'
+  }
+  return turns
+}
+
+/**
+ * 对话页：多轮会话 + 流式回答。
+ *
+ * 每轮把"最近 16 条历史 + 当前问题"交给后端；历史、标题、消息落库都由后端负责。
+ * 页面只保留当前会话的展示状态，刷新后从 messages 重新还原。
  */
 export function ChatPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const modelsQuery = useQuery({
     queryKey: chatModelKeys.all,
     queryFn: ({ signal }) => fetchChatModels(signal),
     staleTime: 30_000,
   })
-  // data 未到时给同一个空数组而不是每次渲染新建 []：
-  // 否则 useEffect 的依赖每轮都变，fallback 逻辑会被无意义地反复触发。
   const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data])
 
   const [selectedId, setSelectedId] = useState<number | null>(() => readStoredModelId())
+  const [activeId, setActiveId] = useState<number | null>(null)
   const [turns, setTurns] = useState<Turn[]>([])
   const [input, setInput] = useState('')
   const [pending, setPending] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const creatingRef = useRef(false)
+  // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
+  const syncedConversationRef = useRef<number | null>(null)
 
-  // 选中的模型可能已被删除：回落到默认那条，不留下一个指向不存在配置的下拉。
+  const conversationsQuery = useQuery({
+    queryKey: conversationKeys.all,
+    queryFn: ({ signal }) => fetchConversations(signal),
+    enabled: models.length > 0,
+    staleTime: 10_000,
+  })
+  const messagesQuery = useQuery({
+    queryKey: conversationKeys.messages(activeId ?? 0),
+    queryFn: ({ signal }) => fetchMessages(activeId ?? 0, signal),
+    enabled: activeId !== null,
+    staleTime: 5_000,
+  })
+
+  // 选中的模型可能已被删除：回落到默认那条。
   useEffect(() => {
     if (models.length === 0) {
       return
@@ -73,6 +127,46 @@ export function ChatPage() {
     setSelectedId(fallback.id)
   }, [models, selectedId])
 
+  // 没有会话时自动建一个；有会话时默认选最近更新的一条。
+  useEffect(() => {
+    if (activeId !== null || !conversationsQuery.isSuccess || models.length === 0) {
+      return
+    }
+    const list = conversationsQuery.data
+    if (list.length > 0) {
+      setActiveId(list[0].id)
+      return
+    }
+    if (creatingRef.current) {
+      return
+    }
+    creatingRef.current = true
+    void (async () => {
+      try {
+        const conv = await createConversation()
+        setActiveId(conv.id)
+        setTurns([])
+        await queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+      } catch {
+        // 建会话失败时保持空态；下一次用户点"新会话"会重试。
+      } finally {
+        creatingRef.current = false
+      }
+    })()
+  }, [activeId, conversationsQuery.isSuccess, conversationsQuery.data, models.length, queryClient])
+
+  // 历史加载完成后还原 turns；流式过程中不要用缓存覆盖正在生成的内容。
+  useEffect(() => {
+    if (pending || activeId === null || !messagesQuery.data) {
+      return
+    }
+    if (syncedConversationRef.current === activeId) {
+      return
+    }
+    syncedConversationRef.current = activeId
+    setTurns(turnsFromMessages(messagesQuery.data))
+  }, [activeId, messagesQuery.data, pending])
+
   const chooseModel = (id: number) => {
     setSelectedId(id)
     try {
@@ -82,7 +176,31 @@ export function ChatPage() {
     }
   }
 
+  const createNewConversation = async () => {
+    if (creatingRef.current) {
+      return
+    }
+    creatingRef.current = true
+    setPending(true)
+    try {
+      const conv = await createConversation()
+      setActiveId(conv.id)
+      setTurns([])
+      await queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+    } catch (error) {
+      setTurns([])
+      console.warn('create conversation failed', error)
+    } finally {
+      setPending(false)
+      creatingRef.current = false
+    }
+  }
+
   const run = async (question: string) => {
+    const conversationId = activeId
+    if (conversationId === null) {
+      return
+    }
     const id = newId()
     setTurns((prev) => [
       ...prev,
@@ -97,10 +215,10 @@ export function ChatPage() {
     }
 
     try {
-      await askStream(
+      await sendConversationMessage(
+        conversationId,
         { question, chatModelId: selectedId ?? undefined },
         {
-          // 模型可以多次检索，retrieval 事件会分批到达：按编号合并，不要覆盖。
           onRetrieval: (hits) =>
             patch((turn) => {
               const byNumber = new Map(turn.hits.map((item) => [item.n, item]))
@@ -117,13 +235,16 @@ export function ChatPage() {
           onCitation: (items) => patch((turn) => ({ ...turn, citations: items })),
           onError: (code, message) =>
             patch((turn) => ({ ...turn, phase: 'failed', error: { code, message } })),
-          onDone: (payload) =>
+          onDone: (payload) => {
             patch((turn) => ({
               ...turn,
               done: payload,
-              // 已经判成 refused / withdrawn 的不要被 done 覆盖回 settled。
               phase: turn.phase === 'streaming' ? 'settled' : turn.phase,
-            })),
+            }))
+            // 只刷新会话列表（标题/更新时间）；不重拉 messages，
+            // 否则刚流式生成的内容会被一次空缓存覆盖。
+            void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+          },
         },
         controller.signal,
       )
@@ -151,7 +272,7 @@ export function ChatPage() {
 
   const submit = () => {
     const question = input.trim()
-    if (question === '' || pending) {
+    if (question === '' || pending || activeId === null) {
       return
     }
     setInput('')
@@ -161,19 +282,49 @@ export function ChatPage() {
   const stop = () => abortRef.current?.abort()
 
   const noModel = modelsQuery.isSuccess && models.length === 0
+  const conversations = conversationsQuery.data ?? []
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
       <PageHeader
-        title="问答"
-        description="只根据已导入的文档回答，每句标注来源；没有依据时直接说没有。"
+        title="对话"
+        description="多轮会话；回答按需检索知识库，每句标注来源，没有依据会直接说没有。"
         actions={
-          <ModelSelect
-            models={models}
-            value={selectedId}
-            onChange={chooseModel}
-            disabled={pending || models.length === 0}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="选择会话"
+              className="border-input bg-background h-9 max-w-52 rounded-md border px-2 text-sm"
+              value={activeId ?? ''}
+              onChange={(event) => {
+                const next = Number(event.target.value)
+                setActiveId(Number.isFinite(next) && next > 0 ? next : null)
+                setTurns([])
+              }}
+              disabled={pending || conversations.length === 0}
+            >
+              {conversations.length === 0 ? <option value="">新会话</option> : null}
+              {conversations.map((conv) => (
+                <option key={conv.id} value={conv.id}>
+                  {conv.title || '新会话'}
+                </option>
+              ))}
+            </select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void createNewConversation()}
+              disabled={pending || noModel}
+            >
+              <Plus aria-hidden="true" />
+              新会话
+            </Button>
+            <ModelSelect
+              models={models}
+              value={selectedId}
+              onChange={chooseModel}
+              disabled={pending || models.length === 0}
+            />
+          </div>
         }
       />
 
@@ -181,7 +332,7 @@ export function ChatPage() {
         <Skeleton className="h-9 w-48" />
       ) : noModel ? (
         <div className="border-border bg-muted/40 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2">
-          <p className="text-sm">还没有可用的对话模型配置，问答无法开始。</p>
+          <p className="text-sm">还没有可用的对话模型配置，对话无法开始。</p>
           <Button variant="outline" size="sm" onClick={() => navigate('/settings')}>
             <Settings2 aria-hidden="true" />
             去设置
@@ -193,12 +344,7 @@ export function ChatPage() {
 
       <div className="space-y-4">
         {turns.map((turn) => (
-          <TurnCard
-            key={turn.id}
-            turn={turn}
-            onRetry={() => void run(turn.question)}
-            onStop={stop}
-          />
+          <TurnCard key={turn.id} turn={turn} onRetry={() => void run(turn.question)} onStop={stop} />
         ))}
       </div>
 
@@ -213,17 +359,20 @@ export function ChatPage() {
                 submit()
               }
             }}
-            placeholder="问一个关于知识库里内容的问题，⌘/Ctrl + Enter 发送"
+            placeholder="继续这个会话，⌘/Ctrl + Enter 发送"
             rows={3}
             maxLength={500}
-            disabled={pending || noModel || modelsQuery.isPending}
+            disabled={pending || noModel || modelsQuery.isPending || activeId === null}
             aria-label="输入问题"
           />
           <div className="flex items-center justify-between gap-3">
             <p className="text-muted-foreground text-xs">
-              {input.length}/500 · 回答只使用知识库内容，没有依据会拒答
+              {input.length}/500 · 最近 16 条对话会作为上下文
             </p>
-            <Button onClick={submit} disabled={pending || input.trim() === '' || noModel}>
+            <Button
+              onClick={submit}
+              disabled={pending || input.trim() === '' || noModel || activeId === null}
+            >
               {pending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
               ) : (
@@ -240,16 +389,12 @@ export function ChatPage() {
 
 /**
  * 把后端裁决翻成界面阶段。
- *
- * ungrounded 要把正文换成撤回提示——这是"流式 + 末尾裁决"的代价，
- * 也是它唯一的代价：极少数情况下用户会看到正文被替换。
  */
 function applyVerdict(turn: Turn, status: AskVerdict, reason: string): Turn {
   switch (status) {
     case 'answered':
       return { ...turn, verdict: status, reason }
     case 'refused':
-      // 模型自己说无法回答时保留原话；闸门拦下的情况一个 delta 都没有，用固定文案。
       return { ...turn, verdict: status, reason, phase: 'refused', answer: turn.answer || REFUSAL_TEXT }
     case 'ungrounded':
       return { ...turn, verdict: status, reason, phase: 'withdrawn', answer: WITHDRAWN_TEXT }

@@ -42,18 +42,37 @@ export type AskHandlers = {
  * 网络错误、HTTP 错误、用户 Abort 时 reject。
  */
 export async function askStream(input: AskInput, handlers: AskHandlers, signal?: AbortSignal): Promise<void> {
+  return streamSSE(
+    '/ask',
+    {
+      question: input.question,
+      ...(input.chatModelId ? { chat_model_id: input.chatModelId } : {}),
+      ...(input.limit ? { limit: input.limit } : {}),
+    },
+    handlers,
+    signal,
+  )
+}
+
+/**
+ * streamSSE 是通用入口：单轮 /ask 与会话消息共用同一套解析。
+ *
+ * path 必须是相对 API_BASE 的路径；body 由调用方按接口拼。
+ */
+export async function streamSSE(
+  path: string,
+  body: unknown,
+  handlers: AskHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
   let response: Response
   try {
-    response = await fetch(`${API_BASE}/ask`, {
+    response = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
       // 与 apiRequest 一致：登录态在 Cookie 里，流式请求同样要带上。
       credentials: 'include',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify({
-        question: input.question,
-        ...(input.chatModelId ? { chat_model_id: input.chatModelId } : {}),
-        ...(input.limit ? { limit: input.limit } : {}),
-      }),
+      body: JSON.stringify(body),
       signal,
     })
   } catch (error) {

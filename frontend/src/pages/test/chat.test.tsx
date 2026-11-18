@@ -54,24 +54,43 @@ function doneEvent(runId: number): AskEvent {
   }
 }
 
-/** /chat-models 固定返回一条配置；/ask 的响应由调用方按次排队给出。 */
-function stubChatFetch(...askResponses: Response[]) {
-  let askCalls = 0
+const conversationFixture = {
+  id: 1,
+  title: '测试会话',
+  message_count: 0,
+  created_at: '2026-11-18T00:00:00Z',
+  updated_at: '2026-11-18T00:00:00Z',
+}
+
+/** /chat-models、/conversations 固定返回；会话消息的 POST 响应由调用方按次排队给出。 */
+function stubChatFetch(...messageResponses: Response[]) {
+  let messageCalls = 0
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (input: string) => {
-      if (input.endsWith('/chat-models')) {
+    vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (url.endsWith('/chat-models')) {
         return jsonResponse(envelope({ items: [chatModelFixture()] }))
       }
-      if (input.endsWith('/ask')) {
-        const response = askResponses[askCalls]
-        askCalls += 1
+      if (url.endsWith('/conversations') && method === 'GET') {
+        return jsonResponse(envelope({ items: [conversationFixture] }))
+      }
+      if (url.endsWith('/conversations') && method === 'POST') {
+        return jsonResponse(envelope(conversationFixture))
+      }
+      if (url.includes('/conversations/1/messages') && method === 'GET') {
+        return jsonResponse(envelope({ items: [] }))
+      }
+      if (url.includes('/conversations/1/messages') && method === 'POST') {
+        const response = messageResponses[messageCalls]
+        messageCalls += 1
         if (!response) {
-          throw new Error(`unexpected /ask call #${askCalls}`)
+          throw new Error(`unexpected message call #${messageCalls}`)
         }
         return response
       }
-      throw new Error(`unexpected url: ${input}`)
+      throw new Error(`unexpected url: ${url}`)
     }),
   )
 }
