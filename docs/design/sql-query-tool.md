@@ -587,8 +587,11 @@ ALTER ROLE mindos_ai_reader SET search_path = public;
 -- 关掉"模型自己改租户"的入口；工具改用 SET LOCAL（工具语句，不经过这个函数）
 REVOKE EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) FROM PUBLIC;
 
--- 只授这一张表的 SELECT，其余一张都不给
-GRANT SELECT ON documents TO mindos_ai_reader;
+-- 只授"统计需要的列"：content / storage_path / content_hash / owner_id 都不给。
+-- 实测：列级授权下 count(*) 可用、select 列可用、select * 被权限拒绝。
+GRANT SELECT (id, title, source_type, mime, collection, tags, status,
+              chunk_count, size_bytes, embed_status, created_at, updated_at)
+  ON documents TO mindos_ai_reader;
 
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 CREATE POLICY documents_ai_read ON documents
@@ -624,6 +627,8 @@ AI_DB_PASSWORD=<上一步设置的密码>
 
 - `search_path = public` 是必须的：模型要能写 `FROM documents`。它同时也让 `users` 能被解析到，
   但那个角色没有 SELECT，解析成功、执行时 42501。
+- **列级授权不是整表授权**：模型写 `SELECT * FROM documents` 会被拒（没有 `content` 等列的权限），
+  必须显式列名或用 `count(*)`。工具描述里要写清，否则模型会反复试错。
 - 策略里的 `current_setting('app.tenant_id', true)` 在未设置时返回 `NULL`，比较结果也是
   `NULL` → 一行都查不到。**默认拒绝**，不依赖调用方每次都记得设。
 
@@ -716,13 +721,16 @@ SELECT has_table_privilege(current_user, 'public.chat_models', 'SELECT');
 |---|---|
 | 角色属性 | `rolsuper=false`、`rolbypassrls=false`、非表 owner |
 | 策略 | `documents` 的 `relrowsecurity=true`，`pg_policies` 有 `documents_ai_read` |
-| 授权 | `documents` 有 SELECT；`users` / `chat_models` / `sessions` 没有 |
+| 授权 | `documents` 只授了统计列；`users` / `chat_models` / `sessions` 没有 SELECT |
 
 运行层（以 AI 角色连接）：
 
 | 用例 | 期望 |
 |---|---|
 | 设 tenant=1 后查 `documents` | 只有 tenant 1 的行 |
+| `SELECT count(*) FROM documents` | 正常返回本人文档数 |
+| `SELECT * FROM documents` | 权限拒绝（列未授权），提示改用显式列名 |
+| `SELECT content FROM documents` | 权限拒绝 |
 | 显式 `WHERE owner_id = 2` | 0 行（策略覆盖 WHERE） |
 | 不设 tenant_id 直接查 | 0 行（默认拒绝） |
 | 先查 tenant 1，回滚后再查 | 0 行（SET LOCAL 未泄漏） |
