@@ -282,26 +282,24 @@ func run() error {
 
 	// —— 检索与问答 ——
 	//
-	// 一个 Searcher 两处用：宿主预检索用它判断阈值（不调模型就能说"没有依据"），
-	// agent 的 search_knowledge 工具用它做二次检索。
+	// Searcher 只给 agent 的 search_knowledge 工具用：宿主不再预检索，
+	// 是否检索、检索几次由模型在 ReAct 循环里决定。
 	// embedding 为 nil 时 Search 直接报"未配置"，不会悄悄退化成全文检索。
 	searcher := knowledge.NewSearcher(knowledge.NewRepository(db), embedding)
 
 	agentBuilder := agent.NewBuilder(
 		knowledgeRetriever{searcher: searcher},
 		agent.DefaultLimits(),
+		cfg.Rag.TopK,
 		log.Named("agent"),
 	)
 
 	chatSvc := chat.NewService(
-		searcher,
 		chatModelSvc,
 		chat.NewRepository(db),
 		agentBuilder,
 		chat.Settings{
-			TopK:          cfg.Rag.TopK,
-			MinSimilarity: cfg.Rag.MinSimilarity,
-			Timeout:       cfg.Rag.Timeout,
+			Timeout: cfg.Rag.Timeout,
 		},
 		log.Named("chat"),
 	)
@@ -603,6 +601,7 @@ func (r knowledgeRetriever) Search(ctx context.Context, ownerID int64, query str
 			StartOffset: hit.StartOffset,
 			EndOffset:   hit.EndOffset,
 			Similarity:  hit.Similarity,
+			RRFScore:    hit.RRFScore,
 		})
 	}
 	return hits, nil

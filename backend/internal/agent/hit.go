@@ -23,6 +23,8 @@ type Hit struct {
 	StartOffset int
 	EndOffset   int
 	Similarity  float64
+	// RRFScore 只用于"本次依据"面板展示融合分数；模型看不到它。
+	RRFScore float64
 }
 
 // Numbered 是"带编号的片段"，编号就是模型要引用的 [n]。

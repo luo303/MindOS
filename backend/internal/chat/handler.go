@@ -35,7 +35,6 @@ func NewHandler(svc *Service) *Handler {
 type askRequest struct {
 	Question    string `json:"question" binding:"required"`
 	ChatModelID *int64 `json:"chat_model_id"`
-	Limit       int    `json:"limit"`
 }
 
 // Ask 是流式问答：POST /ask。
@@ -61,7 +60,6 @@ func (h *Handler) Ask(c *gin.Context) {
 	err := h.svc.Ask(c.Request.Context(), p.UserID, AskInput{
 		Question:    req.Question,
 		ChatModelID: req.ChatModelID,
-		Limit:       req.Limit,
 	}, writer)
 	if err == nil {
 		return

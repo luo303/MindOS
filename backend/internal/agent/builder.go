@@ -29,22 +29,31 @@ var _ Runner = (*Agent)(nil)
 type Builder struct {
 	retriever Retriever
 	limits    Limits
-	log       *zap.Logger
+	// maxResults 是单次检索的条数上限，来自 RAG_TOP_K。
+	maxResults int
+	log        *zap.Logger
 }
 
-// NewBuilder 组装构造器。retriever 由 cmd/server 注入适配器。
-func NewBuilder(retriever Retriever, limits Limits, log *zap.Logger) *Builder {
-	return &Builder{retriever: retriever, limits: limits, log: log}
+// NewBuilder 组装构造器。retriever 由 cmd/server 注入适配器；
+// maxResults 是单次工具检索的条数上限（<=0 时用 8，最大 10）。
+func NewBuilder(retriever Retriever, limits Limits, maxResults int, log *zap.Logger) *Builder {
+	if maxResults <= 0 {
+		maxResults = 8
+	}
+	if maxResults > maxToolLimit {
+		maxResults = maxToolLimit
+	}
+	return &Builder{retriever: retriever, limits: limits, maxResults: maxResults, log: log}
 }
 
 // Build 用给定配置与本次的编号表构造 Runner。
 //
 // 模型客户端的超时不在这里设：一次问答的整体超时由调用方的 ctx 控制，
 // 两处都设会让"到底是哪一层超时"变成猜谜。
-func (b *Builder) Build(ctx context.Context, ownerID int64, target *chatmodel.Resolved, registry *Registry) (Runner, error) {
+func (b *Builder) Build(ctx context.Context, ownerID int64, target *chatmodel.Resolved, registry *Registry, onHits func([]Numbered)) (Runner, error) {
 	chatModel, err := NewChatModel(ctx, FromResolved(target, 0))
 	if err != nil {
 		return nil, fmt.Errorf("build chat model: %w", err)
 	}
-	return New(chatModel, b.retriever, ownerID, registry, b.limits, b.log), nil
+	return New(chatModel, b.retriever, ownerID, registry, b.maxResults, b.limits, onHits, b.log), nil
 }

@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
@@ -28,18 +27,12 @@ const (
 	// maxQuestionRunes 与前端输入限制一致。
 	maxQuestionRunes = 500
 
-	// defaultTopK 是没配置时的兜底条数。
-	defaultTopK = 8
-	// maxTopK 是上限：再多只会挤掉对话与推理空间，不会让答案更好。
-	maxTopK = 20
-	// defaultTimeout 覆盖检索 + 模型 + 工具调用。
+	// defaultTimeout 覆盖模型与工具调用的整段时间。
 	defaultTimeout = 60 * time.Second
 
 	// snippetRunes 是 retrieval 事件里给前端看的前缀长度。
 	// 只给个开头让人判断"是不是这篇"，正文仍要点进去看。
 	snippetRunes = 120
-	// promptSnippetRunes 是拼进 prompt 的单条上限，与分块粒度对齐。
-	promptSnippetRunes = 600
 )
 
 // refusalAnswer 是"库里确实没有依据"时返回给用户的固定文案。
@@ -56,34 +49,20 @@ var (
 	ErrQuestionTooLong = errors.New("question is too long")
 )
 
-// Settings 是问答的三项可调参数（对应 RAG_* 配置）。
+// Settings 是问答的可调参数。
+//
+// 检索条数不在这里：它由 RAG_TOP_K 交给 agent.Builder 作为工具上限，
+// 因为"查几条"现在是模型在工具调用里决定的。阈值已随预检索一起删除。
 type Settings struct {
-	TopK          int
-	MinSimilarity float64
-	Timeout       time.Duration
+	// Timeout 覆盖模型与工具调用的整段时间。
+	Timeout time.Duration
 }
 
 func (s Settings) normalized() Settings {
-	if s.TopK <= 0 {
-		s.TopK = defaultTopK
-	}
-	if s.TopK > maxTopK {
-		s.TopK = maxTopK
-	}
-	// 阈值不做范围纠正：0 是合法值（永不拒答），负值说明配置写错了，
-	// 但把它悄悄改成默认值会让人以为配置生效了。
 	if s.Timeout <= 0 {
 		s.Timeout = defaultTimeout
 	}
 	return s
-}
-
-// Searcher 是问答需要的检索能力。*knowledge.Searcher 满足它。
-//
-// 这里用 knowledge 的类型而不是自己复制一份：chat 与 knowledge 同属业务层，
-// 复制一份 SearchResult 只会多一处"字段改了另一处忘了"的风险。
-type Searcher interface {
-	Search(ctx context.Context, ownerID int64, query string, limit int, filter knowledge.DocumentFilter) (*knowledge.SearchResult, error)
 }
 
 // ModelResolver 是对话模型配置的读取能力。*chatmodel.Service 满足它。
@@ -93,8 +72,11 @@ type ModelResolver interface {
 }
 
 // AnswererBuilder 按配置构造一次问答。*agent.Builder 满足它。
+//
+// onHits 是工具检索后的回调：检索已移进 agent，chat 不再预检索，
+// 但"本次依据"仍要推给前端，所以由 builder 把它转交给工具。
 type AnswererBuilder interface {
-	Build(ctx context.Context, ownerID int64, target *chatmodel.Resolved, registry *agent.Registry) (agent.Runner, error)
+	Build(ctx context.Context, ownerID int64, target *chatmodel.Resolved, registry *agent.Registry, onHits func([]agent.Numbered)) (agent.Runner, error)
 }
 
 // Emitter 是事件出口：handler 实现它写 SSE，测试实现它收集事件序列。
@@ -144,10 +126,11 @@ type DonePayload struct {
 }
 
 // AskInput 是一次问答的输入。
+//
+// 没有 limit：检索条数由模型在工具调用里决定，上限来自 RAG_TOP_K。
 type AskInput struct {
 	Question    string
 	ChatModelID *int64
-	Limit       int
 }
 
 // RunStore 是写入运行记录的能力。*Repository 满足它。
@@ -160,7 +143,6 @@ type RunStore interface {
 
 // Service 编排一次问答。
 type Service struct {
-	searcher Searcher
 	models   ModelResolver
 	runs     RunStore
 	builder  AnswererBuilder
@@ -169,12 +151,11 @@ type Service struct {
 }
 
 // NewService 组装编排层。依赖全部由 cmd/server 注入。
-func NewService(searcher Searcher, models ModelResolver, runs RunStore, builder AnswererBuilder, settings Settings, log *zap.Logger) *Service {
+func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, settings Settings, log *zap.Logger) *Service {
 	if log == nil {
 		log = zap.NewNop()
 	}
 	return &Service{
-		searcher: searcher,
 		models:   models,
 		runs:     runs,
 		builder:  builder,
@@ -209,44 +190,24 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 		return err
 	}
 
-	limit := in.Limit
-	if limit <= 0 || limit > settings.TopK {
-		limit = settings.TopK
-	}
-
-	// 2. 宿主的预检索。它不是 tool：阈值闸门必须在这一步判断，
-	// 而"要不要调模型"这个问题只能在调模型之前问。
-	searchResult, err := s.searcher.Search(runCtx, ownerID, question, limit, knowledge.DocumentFilter{})
-	if err != nil {
-		return err
-	}
-
-	// 3. 阈值闸门。没依据就不调模型——成本为 0，编造概率为 0。
-	// 注意判据是向量路的 max similarity，不是 RRF 分数：后者只跟名次有关，
-	// 拿它比阈值会得到一个恒真或恒假的条件。
-	if len(searchResult.Hits) == 0 || searchResult.MaxSimilarity < settings.MinSimilarity {
-		// 两种情况的 reason 相同：对上层与用户来说都是"没有依据"。
-		// 区分"一条没检索到"与"检索到了但不够像"只对调参有用，那是日志的事。
-		return s.finishRefused(ctx, ownerID, emit, start, question, resolved, searchResult, ReasonNoEvidence)
-	}
-
-	// 4. 编号并推送"本次依据"。
+	// 2. 本次 run 的编号表。检索已经移进 agent，这里只负责收集工具返回的片段；
+	//    模型可能检索 0 次或多次，编号随每次工具调用增长。
 	registry := agent.NewRegistry()
-	numbered := registry.Register(toAgentHits(searchResult.Hits))
-	retrievalItems := retrievalPayload(searchResult.Hits, numbered)
-	if err := emit.Retrieval(retrievalItems); err != nil {
-		return err
-	}
 
-	// 5. 构造问答执行体。到这里还没成功推送过正文，失败仍算"流未开始"。
-	answerer, err := s.builder.Build(runCtx, ownerID, resolved, registry)
+	// 3. 构造执行体。onHits 在每次工具检索并登记编号后把"本次依据"推给前端。
+	answerer, err := s.builder.Build(runCtx, ownerID, resolved, registry, func(hits []agent.Numbered) {
+		if err := emit.Retrieval(retrievalPayload(hits)); err != nil {
+			// 客户端可能已经断开；真正的停止由 onDelta 返回错误负责。
+			s.log.Warn("emit retrieval failed", zap.Error(err))
+		}
+	})
 	if err != nil {
 		return err
 	}
 
-	// 6. 流式跑。正文边收边推，同时留一份完整副本用于裁决与落库。
+	// 4. 流式跑。问题原样交给模型：要不要检索、检索几次由它决定。
 	var answer strings.Builder
-	result, runErr := answerer.Ask(runCtx, buildPrompt(question, numbered), func(delta string) error {
+	result, runErr := answerer.Ask(runCtx, question, func(delta string) error {
 		answer.WriteString(delta)
 		return emit.Delta(delta)
 	})
@@ -254,24 +215,20 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 		return s.finishFailed(ctx, ownerID, emit, start, question, resolved, answer.String(), runErr)
 	}
 
-	// 7. 裁决。必须等完整输出——引用校验没有"流式"版本。
-	verdict, reason, citations := judge(result.Answer, registry)
+	// 5. 引用只做映射：正文里出现、且这次真的登记过的编号。
+	//    不做校验、不撤回——这里没有 judge。
+	citations := citationsFromAnswer(result.Answer, registry)
 	finalAnswer := result.Answer
-	if verdict == VerdictUngrounded {
-		// 正文撤回，换成拒答文案。原文仍在 raw_answer 里，供事后分析。
-		finalAnswer = refusalAnswer
-	}
 	if strings.TrimSpace(finalAnswer) == "" {
 		finalAnswer = refusalAnswer
 	}
 
-	// verdict 一定先于 citation：裁决没出来之前，没有任何引用是可信的。
-	_ = emit.Verdict(verdict, reason)
-	if verdict == VerdictAnswered {
+	_ = emit.Verdict(VerdictAnswered, "")
+	if len(citations) > 0 {
 		_ = emit.Citation(citations)
 	}
 
-	// 8. 落库。用 WithoutCancel：客户端断开时 request ctx 已取消，
+	// 6. 落库。用 WithoutCancel：客户端断开时 request ctx 已取消，
 	// 但这次问答已经算完了，记录不该因此丢掉。
 	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer persistCancel()
@@ -281,10 +238,9 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 		Question:         question,
 		Answer:           finalAnswer,
 		RawAnswer:        stringPtr(result.Answer),
-		Verdict:          verdict,
-		VerdictReason:    stringPtr(reason),
+		Verdict:          VerdictAnswered,
 		Citations:        marshalJSON(citations),
-		Retrieved:        marshalJSON(retrievalItems),
+		Retrieved:        marshalJSON(retrievalPayload(registry.All())),
 		ChatModelID:      int64Ptr(resolved.ID),
 		Model:            stringPtr(resolved.Model),
 		PromptTokens:     result.PromptTokens,
@@ -306,37 +262,6 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 	if err := s.models.Touch(persistCtx, ownerID, resolved.ID); err != nil {
 		s.log.Warn("touch chat model failed", zap.Int64("chat_model_id", resolved.ID), zap.Error(err))
 	}
-	return nil
-}
-
-// finishRefused 处理"不调模型直接拒答"，并落一行 refused 记录。
-//
-// 也要发 retrieval（空数组）：让界面能显示"检索过了，没有命中"，
-// 而不是让用户面对一个凭空出现的拒答。
-func (s *Service) finishRefused(ctx context.Context, ownerID int64, emit Emitter, start time.Time, question string, resolved *chatmodel.Resolved, searchResult *knowledge.SearchResult, reason string) error {
-	retrieved := retrievalPayload(searchResult.Hits, nil)
-	// 发空数组而不是真实片段：相似度 0.2 的片段给用户看会被误当成"依据"。
-	_ = emit.Retrieval([]RetrievalItem{})
-	_ = emit.Verdict(VerdictRefused, reason)
-
-	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer persistCancel()
-
-	run := &Run{
-		OwnerID:       ownerID,
-		Question:      question,
-		Answer:        refusalAnswer,
-		Verdict:       VerdictRefused,
-		VerdictReason: stringPtr(reason),
-		Citations:     marshalJSON(nil),
-		Retrieved:     marshalJSON(retrieved),
-		ChatModelID:   int64Ptr(resolved.ID),
-		Model:         stringPtr(resolved.Model),
-		LatencyMS:     int(time.Since(start).Milliseconds()),
-	}
-	runID := s.saveRun(persistCtx, run)
-
-	_ = emit.Done(DonePayload{RunID: runID, ChatModelID: resolved.ID, LatencyMS: int64(run.LatencyMS)})
 	return nil
 }
 
@@ -390,35 +315,20 @@ func (s *Service) saveRun(ctx context.Context, run *Run) int64 {
 // 代码里的 [12345] 之类的下标。
 var citationPattern = regexp.MustCompile(`\[(\d{1,3})\]`)
 
-// judge 是真正起作用的第二道闸。
+// citationsFromAnswer 把正文里的 [n] 映射成 citation，**只做展示，不做校验**。
 //
-// 规则顺序有意义：
-//   - 没有引用但命中拒答句 → refused（知识库里确实没有，正常结果）
-//   - 没有引用也不是拒答句 → ungrounded（模型没给依据，是系统缺陷）
-//   - 有引用但越界 → ungrounded（编造引用，结构上被拦住）
-//
-// 先看拒答句再判 ungrounded，是为了不让"模型老实说不知道"被记成缺陷。
-func judge(answer string, registry *agent.Registry) (string, string, []CitationItem) {
-	trimmed := strings.TrimSpace(answer)
+// 没有编号、编号不存在、引用越界都不影响回答本身：能映射的发出去，
+// 映射不到的直接跳过（正文里会原样显示成 [9] 这样的文本）。
+// 这就是"去掉 judge"之后的引用语义。
+func citationsFromAnswer(answer string, registry *agent.Registry) []CitationItem {
 	refs := parseCitations(answer)
-
-	if len(refs) == 0 {
-		if strings.Contains(trimmed, agent.RefusalSentence) {
-			return VerdictRefused, ReasonModelRefused, nil
-		}
-		return VerdictUngrounded, ReasonNoCitation, nil
-	}
-
+	out := make([]CitationItem, 0, len(refs))
 	for _, n := range refs {
-		if _, ok := registry.Get(n); !ok {
-			return VerdictUngrounded, ReasonUnknownCitation, nil
+		hit, ok := registry.Get(n)
+		if !ok {
+			continue
 		}
-	}
-
-	citations := make([]CitationItem, 0, len(refs))
-	for _, n := range refs {
-		hit, _ := registry.Get(n)
-		citations = append(citations, CitationItem{
+		out = append(out, CitationItem{
 			N:           n,
 			DocumentID:  hit.DocumentID,
 			ChunkID:     hit.ChunkID,
@@ -429,7 +339,7 @@ func judge(answer string, registry *agent.Registry) (string, string, []CitationI
 			Similarity:  hit.Similarity,
 		})
 	}
-	return VerdictAnswered, "", citations
+	return out
 }
 
 // parseCitations 提取正文里出现过的编号，去重并按数字升序。
@@ -455,70 +365,14 @@ func parseCitations(answer string) []int {
 	return out
 }
 
-// buildPrompt 把预检索到的片段拼进用户消息。
-//
-// 为什么放在 user 而不是 system：system 里是规则，正文是本次的数据，
-// 混在一起会让模型把"某篇文档里的一句话"当成规则来遵守。
-func buildPrompt(question string, hits []agent.Numbered) string {
-	var b strings.Builder
-	b.WriteString("<context>\n")
-	for _, hit := range hits {
-		// Seq 是 0 基的段落序号，展示时用 1 基：人对"第 0 段"没有直觉。
-		fmt.Fprintf(&b, "[%d] 文档《%s》第 %d 段（相似度 %.2f）\n%s\n\n",
-			hit.N, hit.Title, hit.Seq+1, hit.Similarity, truncateRunes(hit.Content, promptSnippetRunes))
-	}
-	b.WriteString("</context>\n\n问题：")
-	b.WriteString(question)
-	return b.String()
-}
-
-func toAgentHits(hits []knowledge.Hit) []agent.Hit {
-	out := make([]agent.Hit, 0, len(hits))
-	for _, hit := range hits {
-		out = append(out, agent.Hit{
-			DocumentID:  hit.DocumentID,
-			ChunkID:     hit.ChunkID,
-			Seq:         hit.Seq,
-			Title:       hit.Title,
-			Heading:     hit.Heading,
-			Content:     hit.Content,
-			StartOffset: hit.StartOffset,
-			EndOffset:   hit.EndOffset,
-			Similarity:  hit.Similarity,
-		})
-	}
-	return out
-}
-
 // retrievalPayload 生成"本次依据"的载荷。
 //
-// numbered 为 nil 时表示这些片段没有编号（拒答路径）：编号填 0，
-// 前端据 n>0 判断是否可点。
-func retrievalPayload(hits []knowledge.Hit, numbered []agent.Numbered) []RetrievalItem {
-	items := make([]RetrievalItem, 0, len(hits))
-	if len(numbered) > 0 {
-		// RRF 分数不在 agent.Hit 里（它只对排序有意义），但接口要如实给出，
-		// 否则前端会看到一个恒为 0 的字段，误以为融合没生效。
-		rrf := make(map[int64]float64, len(hits))
-		for _, hit := range hits {
-			rrf[hit.ChunkID] = hit.RRFScore
-		}
-		for _, hit := range numbered {
-			items = append(items, RetrievalItem{
-				N:          hit.N,
-				DocumentID: hit.DocumentID,
-				ChunkID:    hit.ChunkID,
-				Title:      hit.Title,
-				Seq:        hit.Seq,
-				Similarity: hit.Similarity,
-				RRFScore:   rrf[hit.ChunkID],
-				Snippet:    truncateRunes(hit.Content, snippetRunes),
-			})
-		}
-		return items
-	}
-	for _, hit := range hits {
-		items = append(items, RetrievalItem{
+// 只接受带编号的片段：检索已经发生在工具里，所有命中在回调前都登记过编号。
+func retrievalPayload(items []agent.Numbered) []RetrievalItem {
+	out := make([]RetrievalItem, 0, len(items))
+	for _, hit := range items {
+		out = append(out, RetrievalItem{
+			N:          hit.N,
 			DocumentID: hit.DocumentID,
 			ChunkID:    hit.ChunkID,
 			Title:      hit.Title,
@@ -528,7 +382,7 @@ func retrievalPayload(hits []knowledge.Hit, numbered []agent.Numbered) []Retriev
 			Snippet:    truncateRunes(hit.Content, snippetRunes),
 		})
 	}
-	return items
+	return out
 }
 
 // classifyRunError 把执行期错误翻成稳定的错误码 + 面向用户的一句话。
@@ -543,6 +397,10 @@ func classifyRunError(err error) (code, message string, retryable bool) {
 		return ReasonTimeout, "回答超时了，可以重试，或把问题拆小一些", true
 	case errors.Is(err, agent.ErrBudgetExceeded):
 		return ReasonBudget, "本次问答超出预算，已停止", false
+	case errors.Is(err, knowledge.ErrEmbeddingNotConfigured):
+		// 检索现在发生在工具里，没配向量模型会在 run 中途暴露：
+		// 不能像以前那样返回 503，但至少给出可操作的原因。
+		return "embedding_not_configured", "向量模型未配置，请先在 .env 配置 EMBEDDING_*", false
 	default:
 		return ReasonUpstreamError, "模型服务暂时不可用，请稍后重试", true
 	}

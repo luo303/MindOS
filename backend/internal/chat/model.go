@@ -1,8 +1,8 @@
 // Package chat 是问答模块：一次 ask 请求的编排、SSE 事件、运行记录。
 //
 // 它不认识 Eino（模型与会话由 internal/agent 提供），也不认识检索细节
-// （只调 knowledge.Searcher）。这样 SSE 协议、引用校验、落库这几件事
-// 可以脱离模型单独测试。
+// （检索发生在 agent 的 search_knowledge 工具里）。这样 SSE 协议、
+// 引用映射、落库这几件事可以脱离模型单独测试。
 package chat
 
 import (
@@ -11,27 +11,31 @@ import (
 	"time"
 )
 
-// 三个裁决结果。与迁移里的 CHECK 约束一一对应。
+// 裁决结果。与迁移里的 CHECK 约束一一对应。
 //
-// 为什么 refused 与 ungrounded 要分开：前者是"知识库里确实没有"（正常结果），
-// 后者是"模型没给依据或引用了不存在的东西"（我们的系统缺陷，要盯指标）。
-// 页面上两者文案相同，但库里必须分得清，否则永远不知道问题出在哪。
+// 2026-11-18 起只有 answered / failed 会被写入：judge 已删除，
+// 没有引用或引用越界都不再改判。refused / ungrounded 只用于读旧记录，
+// 保留常量是因为 CHECK 约束与历史数据还在。
 const (
-	VerdictAnswered   = "answered"
+	// VerdictAnswered 表示这次 run 正常结束（不代表回答一定正确）。
+	VerdictAnswered = "answered"
+	// VerdictRefused / VerdictUngrounded 是 2026-11-18 之前的旧裁决值。
 	VerdictRefused    = "refused"
 	VerdictUngrounded = "ungrounded"
 	// VerdictFailed 表示这次没有产出结果：模型 429/超时、客户端中途断开、
-	// token 超预算。它单独成一类而不是塞进 refused——拒答率是核心质量指标，
-	// 把"上游挂了"算成"库里没有依据"会让那个数字彻底失去意义。
+	// token 超预算。
 	VerdictFailed = "failed"
 )
 
-// 裁决原因。写进 verdict_reason，用来区分"哪一道闸拦下的"。
+// 裁决原因。写进 verdict_reason。
+//
+// 前四个是旧裁决（2026-11-18 前）的取值，只用于读历史记录；
+// 新代码只写后四个（执行失败的原因）。
 const (
-	ReasonNoEvidence      = "no_evidence"      // 检索最高相似度低于阈值，没调模型
-	ReasonNoCitation      = "no_citation"      // 模型输出里一个 [n] 都没有
-	ReasonUnknownCitation = "unknown_citation" // 引用了 registry 里不存在的编号
-	ReasonModelRefused    = "model_refused"    // 模型自己说无法回答
+	ReasonNoEvidence      = "no_evidence"      // 旧：检索低于阈值，没调模型
+	ReasonNoCitation      = "no_citation"      // 旧：模型输出里没有 [n]
+	ReasonUnknownCitation = "unknown_citation" // 旧：引用了未登记的编号
+	ReasonModelRefused    = "model_refused"    // 旧：模型自己说无法回答
 
 	// 下面四个与 VerdictFailed 配套：verdict 说"没有结果"，这里说"为什么"。
 	ReasonUpstreamError = "upstream_error"
@@ -46,7 +50,7 @@ type Run struct {
 	// OwnerID 是这次问答属于谁。会话记录按人隔离，复盘统计也按它分组。
 	OwnerID  int64  `gorm:"column:owner_id"`
 	Question string `gorm:"column:question"`
-	// Answer 是最终返回给用户的文本。判 ungrounded 时它已被换成拒答文案。
+	// Answer 是最终返回给用户的文本。现在原样保存模型输出，不再撤回。
 	Answer string `gorm:"column:answer"`
 	// RawAnswer 是模型原始输出，只有这里还能看到"模型到底写了什么"。
 	RawAnswer     *string `gorm:"column:raw_answer"`

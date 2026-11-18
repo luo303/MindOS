@@ -23,26 +23,25 @@ import (
 
 // RefusalSentence 是模型被要求输出的固定拒答句。
 //
-// 用固定句子而不是靠语义判断，是因为 chat 层要据此把 verdict 判成 refused。
-// 若模型换了个说法且没给引用，会被判成 ungrounded——那更保守：
-// 我们宁可认为自己这边有问题，也不把"模型自己不想答"记成"库里没有"。
+// 现在没有 judge 了，这句话不再被用来判定 verdict；它只是给用户一个
+// 一致、可预期的"没有依据"回复。是否拒答完全由模型按提示词决定。
 const RefusalSentence = "根据现有知识库无法回答该问题"
 
 // instruction 是系统提示词。
 //
-// 它只是第一道闸：真正起作用的是宿主侧的引用校验（编号必须登记过）。
-// 把规则写清楚的价值在于减少"校验失败→撤回"的概率，而不是靠它保证正确。
-const instruction = `你是 MindOS 的知识库问答助手。你只能依据本次提供的资料回答问题。
+// 这是本轮架构里**唯一的约束**：宿主不再预检索、不再校验引用。
+// 所以它必须把"先检索、只引用返回过的编号、没依据就拒答"写清楚，
+// 但也要知道：模型不照做时系统不会拦。
+const instruction = `你是 MindOS 的知识库问答助手。回答涉及用户资料、文档内容、知识库事实的问题前，
+必须先调用 search_knowledge 检索；可以换关键词多次检索，但不要无意义地重复。
 
 必须遵守：
-1. 只使用资料里的内容，不得引入外部知识、常识补全或推测。
-2. 每个事实性论断末尾必须标注来源编号，例如 [1]；一句话有多个来源写 [1][3]。
-3. 资料不足以回答时，只输出这一句：` + RefusalSentence + `。不要解释、不要给建议、不要猜。
-4. 不要照抄原文超过 30 字，用自己的话归纳。
-5. 不要提"资料""上下文""片段""根据提供的内容"这类词，直接回答问题。
-
-如果现有资料不够，可以调用 search_knowledge 换一组关键词再查一次；
-没有必要时不要重复检索，重复检索不会让答案更好。`
+1. 只依据 search_knowledge 返回的片段回答，不得引入外部知识、常识补全或推测。
+2. 每个来自片段的结论末尾必须标注返回的编号，例如 [1]；一句话有多个来源写 [1][3]。
+3. 只引用本次工具真正返回过的编号；不要编造编号。
+4. 返回的片段不足以回答时，只输出这一句：` + RefusalSentence + `。不要解释、不要给建议、不要猜。
+5. 不要照抄原文超过 30 字，用自己的话归纳。
+6. 不要提"资料""上下文""片段""根据提供的内容"这类词，直接回答问题。`
 
 // Retriever 是 agent 需要的全部检索能力。
 //
@@ -103,13 +102,18 @@ type Agent struct {
 	// 存在实例上而不是塞进 context，是因为每个请求本来就会构造一个新 Agent。
 	ownerID  int64
 	registry *Registry
-	limits   Limits
-	log      *zap.Logger
+	// maxResults 是单次检索的条数上限。
+	maxResults int
+	limits     Limits
+	// onHits 在每次工具检索并登记编号后回调，用来把"本次依据"推给前端。
+	// 没有预检索了，检索完全由模型决定，所以这里可能就是零次或多次。
+	onHits func([]Numbered)
+	log    *zap.Logger
 }
 
 // New 组装一次问答。registry 必须由调用方持有——问答结束后它还要用来
 // 生成引用列表与落库。
-func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerID int64, registry *Registry, limits Limits, log *zap.Logger) *Agent {
+func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerID int64, registry *Registry, maxResults int, limits Limits, onHits func([]Numbered), log *zap.Logger) *Agent {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -120,12 +124,14 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerI
 		limits.MaxIterations = DefaultLimits().MaxIterations
 	}
 	return &Agent{
-		chatModel: chatModel,
-		retriever: retriever,
-		ownerID:   ownerID,
-		registry:  registry,
-		limits:    limits,
-		log:       log,
+		chatModel:  chatModel,
+		retriever:  retriever,
+		ownerID:    ownerID,
+		registry:   registry,
+		maxResults: maxResults,
+		limits:     limits,
+		onHits:     onHits,
+		log:        log,
 	}
 }
 
@@ -135,7 +141,7 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, ownerI
 // 例如客户端已经断开）。它是唯一把正文送出去的口子——工具结果、思考过程
 // 都不经过这里，避免把不该给用户看的内容混进答案。
 func (a *Agent) Ask(ctx context.Context, question string, onDelta func(string) error) (*Result, error) {
-	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.limits.MaxToolCalls)
+	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.maxResults, a.limits.MaxToolCalls, a.onHits)
 	if err != nil {
 		return nil, fmt.Errorf("build search tool: %w", err)
 	}

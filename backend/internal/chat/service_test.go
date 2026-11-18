@@ -9,13 +9,10 @@ import (
 
 	"github.com/luo303/mindos/backend/internal/agent"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
-	"github.com/luo303/mindos/backend/internal/knowledge"
 )
 
 // fakeEmitter 记录事件顺序。断言顺序比断言单条内容更重要：
-// verdict 先于 citation 是前端状态机的前提，错了界面会先渲染出引用再撤回。
-// testOwner 是单测里统一的"当前用户"：隔离本身由真库用例验收，
-// 单测只关心 owner 是否被一路传下去。
+// verdict 先于 citation 是前端状态机的前提。
 const testOwner int64 = 7
 
 type fakeEmitter struct {
@@ -69,20 +66,6 @@ func (e *fakeEmitter) Error(code, message string, retryable bool) error {
 
 func (e *fakeEmitter) order() string { return strings.Join(e.events, ">") }
 
-type fakeSearcher struct {
-	result *knowledge.SearchResult
-	err    error
-	calls  int
-	// gotOwner 断言主检索带上了当前用户。
-	gotOwner int64
-}
-
-func (f *fakeSearcher) Search(_ context.Context, ownerID int64, _ string, _ int, _ knowledge.DocumentFilter) (*knowledge.SearchResult, error) {
-	f.gotOwner = ownerID
-	f.calls++
-	return f.result, f.err
-}
-
 type fakeResolver struct {
 	resolved *chatmodel.Resolved
 	err      error
@@ -115,17 +98,27 @@ func (f *fakeRunStore) Create(_ context.Context, run *Run) error {
 	return nil
 }
 
-// fakeRunner 按 answer 推送一到多段 delta，模拟流式。
+// fakeRunner 模拟一次 ReAct run：模型可以决定先"检索"（登记一条命中并回调），
+// 再流式输出正文。检索 0 次或 1 次都覆盖得到。
 type fakeRunner struct {
 	answer   string
 	err      error
+	hit      *agent.Hit
 	registry *agent.Registry
+	onHits   func([]agent.Numbered)
 }
 
 func (f *fakeRunner) Ask(_ context.Context, _ string, onDelta func(string) error) (*agent.Result, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
+	if f.hit != nil {
+		numbered := f.registry.Register([]agent.Hit{*f.hit})
+		if f.onHits != nil {
+			f.onHits(numbered)
+		}
+	}
+
 	// 切成两段推送：只推一段测不出"多 delta 累积是否正确"。
 	mid := len([]rune(f.answer)) / 2
 	runes := []rune(f.answer)
@@ -153,19 +146,19 @@ type fakeBuilder struct {
 	gotOwner int64
 }
 
-func (b *fakeBuilder) Build(_ context.Context, ownerID int64, _ *chatmodel.Resolved, registry *agent.Registry) (agent.Runner, error) {
+func (b *fakeBuilder) Build(_ context.Context, ownerID int64, _ *chatmodel.Resolved, registry *agent.Registry, onHits func([]agent.Numbered)) (agent.Runner, error) {
 	b.gotOwner = ownerID
 	b.calls++
 	if b.err != nil {
 		return nil, b.err
 	}
 	b.runner.registry = registry
+	b.runner.onHits = onHits
 	return b.runner, nil
 }
 
 // testDeps 把可选的替身收成一个结构体：调用处只写关心的那几项。
 type testDeps struct {
-	search  *fakeSearcher
 	models  *fakeResolver
 	runs    *fakeRunStore
 	builder *fakeBuilder
@@ -179,18 +172,14 @@ func newTestService(t *testing.T, opts testDeps) *Service {
 	if opts.runs == nil {
 		opts.runs = &fakeRunStore{}
 	}
-	return NewService(opts.search, opts.models, opts.runs, opts.builder, Settings{TopK: 5, MinSimilarity: 0.35, Timeout: 10 * time.Second}, nil)
+	return NewService(opts.models, opts.runs, opts.builder, Settings{Timeout: 10 * time.Second}, nil)
 }
 
-func hitsFixture(similarity float64) *knowledge.SearchResult {
-	return &knowledge.SearchResult{
-		Hits: []knowledge.Hit{{
-			DocumentID: 1, ChunkID: 42, Seq: 3, Title: "EasyV 多端",
-			Content: "同步靠 WebSocket 推送", StartOffset: 10, EndOffset: 30,
-			Similarity: similarity, RRFScore: 0.03,
-		}},
-		VectorHits:    1,
-		MaxSimilarity: similarity,
+func hitFixture() *agent.Hit {
+	return &agent.Hit{
+		DocumentID: 1, ChunkID: 42, Seq: 3, Title: "EasyV 多端",
+		Content: "同步靠 WebSocket 推送", StartOffset: 10, EndOffset: 30,
+		Similarity: 0.72, RRFScore: 0.03,
 	}
 }
 
@@ -209,49 +198,27 @@ func TestAskRejectsLongQuestion(t *testing.T) {
 	}
 }
 
-// 闸门最重要的性质：低相似度时**模型一次都不会被调用**。
-// 断言 builder.calls == 0 就是在验证这条，而不是只看返回的文案。
-func TestAskRefusesWithoutCallingModel(t *testing.T) {
-	builder := &fakeBuilder{runner: &fakeRunner{}}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{result: hitsFixture(0.2)},
-		builder: builder,
-	})
-
-	emit := &fakeEmitter{}
-	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "多端怎么同步"}, emit); err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	if builder.calls != 0 {
-		t.Errorf("model was called %d times below the threshold", builder.calls)
-	}
-	if got := emit.order(); got != "retrieval>verdict>done" {
-		t.Errorf("event order = %s", got)
-	}
-	if emit.verdicts[0] != VerdictRefused+"|"+ReasonNoEvidence {
-		t.Errorf("verdict = %v", emit.verdicts)
-	}
-}
-
 func TestAskAnswersWithCitations(t *testing.T) {
-	builder := &fakeBuilder{runner: &fakeRunner{answer: "靠 WebSocket 推送 [1]。"}}
+	builder := &fakeBuilder{runner: &fakeRunner{
+		answer: "靠 WebSocket 推送 [1]。",
+		hit:    hitFixture(),
+	}}
 	runs := &fakeRunStore{}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{result: hitsFixture(0.72)},
-		runs:    runs,
-		builder: builder,
-	})
+	svc := newTestService(t, testDeps{runs: runs, builder: builder})
 
 	emit := &fakeEmitter{}
 	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "多端怎么同步"}, emit); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
 
-	// 正文按 delta 到达，最后一定要有 done。
-	if !strings.Contains(emit.order(), "delta") || !strings.HasSuffix(emit.order(), "done") {
+	// 检索是模型在 run 里触发的：先 retrieval，再有正文。
+	if !strings.HasPrefix(emit.order(), "retrieval>") {
 		t.Fatalf("event order = %s", emit.order())
 	}
-	// verdict 必须先于 citation：否则前端会先渲染出引用，再被裁决撤掉。
+	if !strings.HasSuffix(emit.order(), "done") {
+		t.Fatalf("event order = %s", emit.order())
+	}
+	// verdict 必须先于 citation。
 	order := emit.order()
 	if strings.Index(order, "verdict") > strings.Index(order, "citation") {
 		t.Fatalf("citation arrived before verdict: %s", order)
@@ -276,85 +243,88 @@ func TestAskAnswersWithCitations(t *testing.T) {
 	if string(saved.Citations) == "[]" {
 		t.Error("citations should be persisted")
 	}
+	if string(saved.Retrieved) == "[]" {
+		t.Error("retrieved hits should be persisted")
+	}
 	if saved.PromptTokens != 100 || saved.CompletionTokens != 20 {
 		t.Errorf("usage = %d/%d", saved.PromptTokens, saved.CompletionTokens)
 	}
 }
 
-func TestAskWithdrawsAnswerWithoutCitation(t *testing.T) {
-	builder := &fakeBuilder{runner: &fakeRunner{answer: "多端共享靠 WebSocket 推送。"}}
+// 没有引用不再撤回：模型说了什么就展示什么。
+func TestAskWithoutCitationsKeepsAnswer(t *testing.T) {
+	builder := &fakeBuilder{runner: &fakeRunner{
+		answer: "多端共享靠 WebSocket 推送。",
+		hit:    hitFixture(),
+	}}
 	runs := &fakeRunStore{}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{result: hitsFixture(0.72)},
-		runs:    runs,
-		builder: builder,
-	})
+	svc := newTestService(t, testDeps{runs: runs, builder: builder})
 
 	emit := &fakeEmitter{}
 	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "多端怎么同步"}, emit); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if emit.verdicts[0] != VerdictUngrounded+"|"+ReasonNoCitation {
+	if emit.verdicts[0] != VerdictAnswered+"|" {
 		t.Fatalf("verdict = %v", emit.verdicts)
 	}
-	// 没有引用就不能给 citation 事件：否则界面上引用区是空的，正文却还在。
 	for _, e := range emit.events {
 		if e == "citation" {
-			t.Fatalf("citation must not be emitted for ungrounded answers: %s", emit.order())
+			t.Fatalf("citation must not be emitted without [n]: %s", emit.order())
 		}
 	}
-	// 落库的 answer 是撤回后的拒答文案，raw_answer 仍保留模型原话。
 	saved := runs.runs[0]
-	if saved.Answer != refusalAnswer {
-		t.Errorf("answer was not withdrawn: %q", saved.Answer)
-	}
-	if saved.RawAnswer == nil || !strings.Contains(*saved.RawAnswer, "WebSocket") {
-		t.Errorf("raw_answer should keep the model output: %v", saved.RawAnswer)
+	if saved.Answer != "多端共享靠 WebSocket 推送。" {
+		t.Errorf("answer was modified: %q", saved.Answer)
 	}
 }
 
-func TestAskRejectsUnknownCitation(t *testing.T) {
-	// 答案引用了 [7]，但 registry 里只有 [1]：这是编造引用。
-	builder := &fakeBuilder{runner: &fakeRunner{answer: "结论见 [7]。"}}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{result: hitsFixture(0.72)},
-		builder: builder,
-	})
+// 引用了没有登记过的编号：不发这条 citation，正文原样保留。
+func TestAskIgnoresUnknownCitation(t *testing.T) {
+	builder := &fakeBuilder{runner: &fakeRunner{
+		answer: "结论见 [7]。",
+		hit:    hitFixture(),
+	}}
+	runs := &fakeRunStore{}
+	svc := newTestService(t, testDeps{runs: runs, builder: builder})
 
 	emit := &fakeEmitter{}
 	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "q"}, emit); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if emit.verdicts[0] != VerdictUngrounded+"|"+ReasonUnknownCitation {
-		t.Fatalf("verdict = %v", emit.verdicts)
+	for _, e := range emit.events {
+		if e == "citation" {
+			t.Fatalf("unknown citation must not be emitted: %s", emit.order())
+		}
+	}
+	if runs.runs[0].Answer != "结论见 [7]。" {
+		t.Errorf("answer was modified: %q", runs.runs[0].Answer)
 	}
 }
 
-func TestAskKeepsModelRefusalAsRefused(t *testing.T) {
-	// 模型老实说"无法回答"：这是正常结果，不是系统缺陷。
-	builder := &fakeBuilder{runner: &fakeRunner{answer: agent.RefusalSentence}}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{result: hitsFixture(0.72)},
-		builder: builder,
-	})
+// 模型一次工具都没调：没有 retrieval、没有 citation，回答照常展示。
+func TestAskWithoutRetrieval(t *testing.T) {
+	builder := &fakeBuilder{runner: &fakeRunner{answer: "你好，我是 MindOS。"}}
+	runs := &fakeRunStore{}
+	svc := newTestService(t, testDeps{runs: runs, builder: builder})
 
 	emit := &fakeEmitter{}
-	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "q"}, emit); err != nil {
+	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "你是谁"}, emit); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if emit.verdicts[0] != VerdictRefused+"|"+ReasonModelRefused {
-		t.Fatalf("verdict = %v", emit.verdicts)
+	for _, e := range emit.events {
+		if e == "retrieval" || e == "citation" {
+			t.Fatalf("no tool call should produce no retrieval/citation: %s", emit.order())
+		}
+	}
+	if string(runs.runs[0].Retrieved) != "[]" {
+		t.Errorf("retrieved = %s, want []", runs.runs[0].Retrieved)
 	}
 }
 
 func TestAskRecordsFailure(t *testing.T) {
 	builder := &fakeBuilder{runner: &fakeRunner{err: context.DeadlineExceeded}}
 	runs := &fakeRunStore{}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{result: hitsFixture(0.72)},
-		runs:    runs,
-		builder: builder,
-	})
+	svc := newTestService(t, testDeps{runs: runs, builder: builder})
 
 	emit := &fakeEmitter{}
 	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "q"}, emit); err != nil {
@@ -373,11 +343,8 @@ func TestAskRecordsFailure(t *testing.T) {
 }
 
 func TestAskStopsWhenClientDisconnects(t *testing.T) {
-	builder := &fakeBuilder{runner: &fakeRunner{answer: "一段比较长的回答 [1]，会被切成两半推送。"}}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{result: hitsFixture(0.72)},
-		builder: builder,
-	})
+	builder := &fakeBuilder{runner: &fakeRunner{answer: "一段比较长的回答 [1]，会被切成两半推送。", hit: hitFixture()}}
+	svc := newTestService(t, testDeps{builder: builder})
 
 	emit := &fakeEmitter{failDelta: true}
 	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "q"}, emit); err != nil {
@@ -389,20 +356,13 @@ func TestAskStopsWhenClientDisconnects(t *testing.T) {
 	}
 }
 
-func TestAskWithoutEmbeddingPropagates(t *testing.T) {
-	// 未配置向量模型时检索层返回 ErrEmbeddingNotConfigured，handler 翻成 503。
-	builder := &fakeBuilder{runner: &fakeRunner{}}
-	svc := newTestService(t, testDeps{
-		search:  &fakeSearcher{err: knowledge.ErrEmbeddingNotConfigured},
-		builder: builder,
-	})
+// builder 在流开始前失败：Ask 返回错误，交给 handler 出 JSON。
+func TestAskReturnsBuilderErrorBeforeStream(t *testing.T) {
+	boom := errors.New("build failed")
+	svc := newTestService(t, testDeps{builder: &fakeBuilder{err: boom}})
 
-	err := svc.Ask(context.Background(), testOwner, AskInput{Question: "q"}, &fakeEmitter{})
-	if !errors.Is(err, knowledge.ErrEmbeddingNotConfigured) {
-		t.Fatalf("err = %v", err)
-	}
-	if builder.calls != 0 {
-		t.Error("model must not be built when retrieval is unavailable")
+	if err := svc.Ask(context.Background(), testOwner, AskInput{Question: "q"}, &fakeEmitter{}); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want build error", err)
 	}
 }
 
@@ -430,18 +390,6 @@ func TestParseCitations(t *testing.T) {
 				t.Errorf("parseCitations(%q) = %v, want %v", tc.in, got, tc.want)
 				break
 			}
-		}
-	}
-}
-
-func TestBuildPromptIncludesContext(t *testing.T) {
-	prompt := buildPrompt("怎么同步", []agent.Numbered{{
-		N:   1,
-		Hit: agent.Hit{Title: "EasyV 多端", Seq: 2, Content: "WebSocket 推送", Similarity: 0.71},
-	}})
-	for _, want := range []string{"<context>", "[1]", "EasyV 多端", "第 3 段", "0.71", "怎么同步"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
 }

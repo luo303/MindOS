@@ -169,24 +169,15 @@ func (c *Config) IsEmbeddingConfigured() bool {
 
 // RagConfig 是 RAG 问答的运行参数。
 //
-// 三项都是"部署差异"而不是产品约束：片段数取决于模型上下文有多大，
-// 阈值取决于语料与向量模型，超时取决于模型快慢。所以它们进 .env，
-// 而工具调用次数与 token 预算留在代码常量里（那两条放开只会烧钱）。
+// 两项都是"部署差异"：检索条数取决于模型上下文有多大，超时取决于模型快慢。
+// 阈值已随预检索一起删除（架构改成 agent 自主检索，见 docs/design/react-agent.md）。
 type RagConfig struct {
-	// TopK 是进上下文的片段数。
+	// TopK 是单次工具检索的默认条数与硬上限（工具内部还会压到 10）。
+	//
+	// 它不再是"宿主预检索进上下文的条数"：检索已经移进 agent，
+	// 由模型在 ReAct 循环里决定查几次、每次几条。
 	TopK int
-	// MinSimilarity 是拒答阈值：向量路最高相似度低于它就不调模型。
-	//
-	// 只能用余弦相似度来比，不能用 RRF 分数——后者只跟名次有关，
-	// 没有绝对含义，拿它比阈值会得到一个恒真或恒假的条件。
-	//
-	// 0.46 是按当前语料实测出来的分界，不是照搬的经验值：bge-m3 对完全
-	// 不相关的中文问题也有 0.4+ 的相似度（实测 8 个问题：库里有答案的四个
-	// 落在 0.492~0.647，库里没有的四个落在 0.422~0.452）。取 0.46 落在
-	// 两簇之间，且偏向"不误拒"一侧——误拒是用户直接感知的失败，漏过一次
-	// 只是多花一次模型调用，后面还有引用校验兜底。语料变杂后要重测。
-	MinSimilarity float64
-	// Timeout 覆盖检索 + 模型 + 工具调用的整段时间。
+	// Timeout 覆盖模型与工具调用的整段时间。
 	Timeout time.Duration
 }
 
@@ -320,9 +311,8 @@ func Load() (*Config, error) {
 			MasterKey: reader.text("MINDOS_MASTER_KEY", ""),
 		},
 		Rag: RagConfig{
-			TopK:          reader.integer("RAG_TOP_K", 8),
-			MinSimilarity: reader.decimal("RAG_MIN_SIMILARITY", 0.46),
-			Timeout:       reader.duration("RAG_TIMEOUT", 60*time.Second),
+			TopK:    reader.integer("RAG_TOP_K", 8),
+			Timeout: reader.duration("RAG_TIMEOUT", 60*time.Second),
 		},
 		Embedding: EmbeddingConfig{
 			APIBase: strings.TrimRight(reader.text("EMBEDDING_API_BASE", ""), "/"),
@@ -460,10 +450,6 @@ func (c *Config) validate() error {
 	}
 	if c.Rag.TopK < 1 || c.Rag.TopK > 20 {
 		errs = append(errs, fmt.Errorf("RAG_TOP_K must be between 1 and 20, got %d", c.Rag.TopK))
-	}
-	// 0 是合法值（永不拒答），越界说明写错了：相似度只有 0~1 这一个区间。
-	if c.Rag.MinSimilarity < 0 || c.Rag.MinSimilarity > 1 {
-		errs = append(errs, fmt.Errorf("RAG_MIN_SIMILARITY must be between 0 and 1, got %v", c.Rag.MinSimilarity))
 	}
 	if c.Rag.Timeout <= 0 {
 		errs = append(errs, errors.New("RAG_TIMEOUT must be greater than 0"))
