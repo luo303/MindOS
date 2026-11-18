@@ -1,6 +1,7 @@
 # 检索架构：PG + Elasticsearch + MinIO
 
-> 状态：方案（2026-11-18），待落地。
+> 状态：阶段 1（基础设施 + ES Searcher）已落地（2026-11-18）；
+> indexer/回填/消息索引仍待实现（见 §11）。
 > 本文取代 `docs/design/conversation-memory.md` 中"gse + tsvector"的关键词检索方案；
 > 会话记忆的摘要/冷层设计仍以该文档为准，只是检索后端换成 ES。
 > 核心分工：**PG 存事实，ES 存检索副本，MinIO 存原文；LLM 只通过工具间接访问。**
@@ -134,7 +135,8 @@ PUT _index_template/mindos-chunks
 }
 ```
 
-- IK 是 ES 插件，版本必须与 ES 匹配；没有 IK 时退回 `standard` 会让中文退化，不能上线；
+- 实现用 Elastic 官方 `smartcn` 插件（免费、版本随发行版匹配）；IK 质量略好，
+  需要精确版本匹配，后续可替换，查询 DSL 不变；
 - `owner_id` 用 `long`，所有查询都作为 filter；
 - 建议 `routing = owner_id`，同租户数据落同分片；
 - messages 索引字段：`message_id / conversation_id / owner_id / role / content / seq / embedding / created_at`。
@@ -308,7 +310,7 @@ score(chunk) = 1/(60 + rank_kw) + 1/(60 + rank_vec)
 
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
-| 1 | ES 集群 + IK + 模板/别名 | 集群健康、IK 分词验证 |
+| 1 | ES 集群 + smartcn + 模板/别名（**已落地**） | 集群健康、分词验证 |
 | 2 | outbox 事件 + indexer + 全量回填 | PG 行数 = ES 文档数（分块/消息） |
 | 3 | 影子读：同时查 PG 原生与 ES，记录差异 | 评测集 Recall/MRR 不低于基线 |
 | 4 | 切换 `search_knowledge` 到 ES | 线上错误率/延迟达标 |
@@ -350,6 +352,14 @@ score(chunk) = 1/(60 + rank_kw) + 1/(60 + rank_vec)
 | mapping/分词器变更 | 新索引 + 别名切换；不在原地改 |
 | 运维/许可证 | 3 节点集群、快照到 MinIO；Elastic 2.0 评估，或 OpenSearch |
 | 内容副本 | 删除同步、保留策略、ES 访问控制 |
+
+### 13.1 落地记录（阶段 1）
+
+- compose 增加单节点 ES + 官方 `analysis-smartcn`；`SEARCH_BACKEND=es` 时启动连接并确保索引/别名。
+- `knowledge.SearcherAPI` 抽象出原生/ES 两种实现；ES 版做 BM25 + kNN + 应用侧 RRF，
+  `owner_id/status/embed_model` 过滤集中在 `esFilters`。
+- 单测覆盖 RRF、降级、租户过滤；后端全量测试通过。
+- 未完成：ES 镜像在本机下载过慢，尚未做真实集群验证；indexer/回填、消息索引未实现。
 
 **开放问题**
 
