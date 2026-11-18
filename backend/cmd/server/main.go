@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
@@ -141,6 +142,23 @@ func run() error {
 		log.Info("sql query tool enabled", zap.String("db_user", cfg.AI.DBUser))
 	} else {
 		log.Info("sql query tool disabled: AI_DB_USER not set")
+	}
+
+	// 检索读模型是可选的：SEARCH_BACKEND=es 时连 ES 并确保索引/别名存在。
+	// 现在只建基础设施；search_knowledge 的 ES 实现随后接入。
+	var esClient *elasticsearch.Client
+	if cfg.Elastic.Enabled() {
+		var err error
+		esClient, err = platform.NewElasticsearch(ctx, cfg.Elastic)
+		if err != nil {
+			return err
+		}
+		if err := knowledge.EnsureSearchIndexes(ctx, esClient, cfg.Elastic.IndexPrefix); err != nil {
+			return err
+		}
+		log.Info("elasticsearch ready", zap.Strings("urls", cfg.Elastic.URLs), zap.String("prefix", cfg.Elastic.IndexPrefix))
+	} else {
+		log.Info("search backend: native postgres")
 	}
 
 	// 5. HTTP 组件装配。
@@ -304,7 +322,11 @@ func run() error {
 	// Searcher 只给 agent 的 search_knowledge 工具用：宿主不再预检索，
 	// 是否检索、检索几次由模型在 ReAct 循环里决定。
 	// embedding 为 nil 时 Search 直接报"未配置"，不会悄悄退化成全文检索。
-	searcher := knowledge.NewSearcher(knowledge.NewRepository(db), embedding)
+	// SEARCH_BACKEND=es 时换成 ES 读模型；否则保持 PG 原生检索。
+	var searcher knowledge.SearcherAPI = knowledge.NewSearcher(knowledge.NewRepository(db), embedding)
+	if esClient != nil {
+		searcher = knowledge.NewESSearcher(esClient, embedding, cfg.Elastic.IndexPrefix)
+	}
 
 	agentBuilder := agent.NewBuilder(
 		knowledgeRetriever{searcher: searcher},
@@ -603,7 +625,7 @@ func (p relayPublisher) Publish(ctx context.Context, m outbox.Message) error {
 // 适配放在 main 而不是任一包里：agent 不该为了一个方法认识 knowledge 的类型，
 // knowledge 也不该知道有人要拿它喂模型。这层转换只有一行循环，
 // 却让 agent 包可以脱离数据库测试。
-type knowledgeRetriever struct{ searcher *knowledge.Searcher }
+type knowledgeRetriever struct{ searcher knowledge.SearcherAPI }
 
 func (r knowledgeRetriever) Search(ctx context.Context, ownerID int64, query string, limit int) ([]agent.Hit, error) {
 	result, err := r.searcher.Search(ctx, ownerID, query, limit, knowledge.DocumentFilter{})

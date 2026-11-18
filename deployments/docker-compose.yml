@@ -65,6 +65,32 @@ services:
       retries: 12
       start_period: 10s
 
+  elasticsearch:
+    # 检索读模型：只给应用侧 search_knowledge 用，不暴露给 LLM。
+    # 本地单节点、关闭 security；生产要开 TLS/账号并至少 3 节点。
+    build:
+      context: ./elasticsearch
+    image: mindos-elasticsearch:8.15.3
+    container_name: mindos-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ingest.geoip.downloader.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      # 官方镜像不一定带 curl；用 bash 的 /dev/tcp 探端口。
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/9200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
   redis:
     # 7-alpine 是 7.x 的滚动标签：本地已有该镜像时不必再拉一次。
     # 代价是重建容器可能悄悄带上新的小版本；要复现某个具体版本时改回 7.4-alpine。
@@ -106,3 +132,4 @@ volumes:
   redis_data:
   rabbitmq_data:
   minio_data:
+  elasticsearch_data:

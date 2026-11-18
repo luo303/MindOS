@@ -27,6 +27,7 @@ type Config struct {
 	Log       LogConfig
 	DB        DBConfig
 	AI        AIConfig
+	Elastic   ElasticConfig
 	Redis     RedisConfig
 	Storage   StorageConfig
 	Crypto    CryptoConfig
@@ -107,6 +108,21 @@ type AIConfig struct {
 
 // Enabled 报告是否配置了 SQL 工具账号。
 func (c AIConfig) Enabled() bool { return c.DBUser != "" }
+
+// ElasticConfig 是检索读模型的连接配置。
+//
+// Backend=native 时走 PG 原生 FTS，不建 ES 客户端；=es 时启动必须能连上 ES，
+// 并确保索引/别名存在。ES 只给 search_knowledge 用，不暴露给 LLM。
+type ElasticConfig struct {
+	Backend     string
+	URLs        []string
+	Username    string
+	Password    string
+	IndexPrefix string
+}
+
+// Enabled 报告是否使用 Elasticsearch 作为检索后端。
+func (c ElasticConfig) Enabled() bool { return c.Backend == "es" }
 
 // DSN 返回 gorm.io/driver/postgres 需要的连接串（key=value 形式）。
 // 敏感字段只在内存中拼装，不要打日志。
@@ -308,6 +324,13 @@ func Load() (*Config, error) {
 			DBUser:     reader.text("AI_DB_USER", ""),
 			DBPassword: reader.text("AI_DB_PASSWORD", ""),
 		},
+		Elastic: ElasticConfig{
+			Backend:     strings.ToLower(reader.text("SEARCH_BACKEND", "native")),
+			URLs:        splitList(reader.text("ELASTICSEARCH_URLS", "http://localhost:9200")),
+			Username:    reader.text("ELASTICSEARCH_USERNAME", ""),
+			Password:    reader.text("ELASTICSEARCH_PASSWORD", ""),
+			IndexPrefix: reader.text("ELASTICSEARCH_INDEX_PREFIX", "mindos"),
+		},
 		Redis: RedisConfig{
 			Addr:     reader.text("REDIS_ADDR", "localhost:6379"),
 			Password: reader.text("REDIS_PASSWORD", ""),
@@ -472,6 +495,17 @@ func (c *Config) validate() error {
 		// 主库账号通常是 owner 甚至 superuser，用它跑模型 SQL 等于没有 RLS。
 		errs = append(errs, errors.New("AI_DB_USER must differ from DB_USER"))
 	}
+	switch c.Elastic.Backend {
+	case "native", "es":
+	default:
+		errs = append(errs, fmt.Errorf("SEARCH_BACKEND must be native or es, got %q", c.Elastic.Backend))
+	}
+	if c.Elastic.Enabled() && len(c.Elastic.URLs) == 0 {
+		errs = append(errs, errors.New("ELASTICSEARCH_URLS is required when SEARCH_BACKEND=es"))
+	}
+	if strings.TrimSpace(c.Elastic.IndexPrefix) == "" {
+		errs = append(errs, errors.New("ELASTICSEARCH_INDEX_PREFIX must not be empty"))
+	}
 	if c.Rag.TopK < 1 || c.Rag.TopK > 20 {
 		errs = append(errs, fmt.Errorf("RAG_TOP_K must be between 1 and 20, got %d", c.Rag.TopK))
 	}
@@ -524,6 +558,18 @@ func (c *Config) validate() error {
 //
 // 逗号分隔而不是 JSON：与 .env 里其他列表型配置（标签、队列）的写法一致，
 // 且出错时人能直接看出是哪一项写错了。
+// splitList 解析逗号分隔的配置项，去空白、丢空项。
+func splitList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func parseOriginList(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
