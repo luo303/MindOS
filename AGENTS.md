@@ -24,7 +24,7 @@
 
 技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
 
-**当前状态（2026-11-18）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答，以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`；`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ 混合检索（RRF）+ SSE 流式回答；引用只做展示映射，不做强制校验（无阈值、无 judge），对话模型配置存库（密钥 AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md` 与 `docs/design/rag.md`。
+**当前状态（2026-11-18）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答、多轮会话（阶段 1：会话/消息/热层历史），以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`；`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ 混合检索（RRF）+ SSE 流式回答；引用只做展示映射，不做强制校验（无阈值、无 judge），对话模型配置存库（密钥 AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md` 与 `docs/design/rag.md`。
 
 ## 2. 仓库结构与命令
 

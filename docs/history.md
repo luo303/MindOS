@@ -488,6 +488,28 @@ ReAct 循环，为后续挂记忆、任务、统计等工具留出扩展点。�
 跨租户、`SELECT *`、`content`、`users`、`set_config`、DELETE/多语句/超时/行数；
 迁移 up/down 断言角色、策略与列权限。
 
+### 多轮会话（阶段 1，2026-11-18）
+
+**目标**：把单轮 `/ask` 扩展成可持久化的多轮会话，为后续摘要/冷层召回打基础。
+
+**改动**
+
+- 迁移 0015：`conversations` / `messages`；`qa_runs` 增加 `conversation_id`。
+- 后端：会话 CRUD、按会话发消息（SSE）、消息按 `seq` 原子追加、标题取首条用户消息；
+  `agent.Runner` 改为接收 `HistoryMessage` 列表，用 Eino `Runner.Run` 带最近 16 条历史。
+- 单轮 `/ask` 保留为一次性问答；两种入口共用执行体与失败落库。
+- 前端：对话页加载会话与历史、按会话发送；新增 `conversations` API 与通用 `streamSSE`。
+- 测试：会话仓储、热层历史拼接、跨租户 404、迁移 up/down；前端 65 用例全绿。
+
+**未做**
+
+- 消息 embedding、滚动摘要、冷层双路召回、gse 分词（阶段 2/3）；
+- 消息分页只做了 `limit/before_seq` 接口，前端一次加载最近 50 条；
+- 会话删除/重命名暂未做。
+
+**验证**：后端 `build` / `vet` / `test -race` 全绿；前端 `lint` / 65 用例 / `build` 全绿；
+真实 HTTP 冒烟：建会话 → 发消息（模型不可达时 SSE `error`+`done`，user 消息落库）→ 读消息列表。
+
 ---
 
 ## 4. 未做的事与结论
