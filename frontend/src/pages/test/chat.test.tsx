@@ -126,6 +126,27 @@ describe('问答页', () => {
     expect(screen.getByText(/1\.2s · 输入 10 \/ 输出 5 tokens · #7/)).toBeInTheDocument()
   })
 
+  it('模型多次检索时，依据面板合并各批次而不是覆盖', async () => {
+    const second = { ...hit, n: 2, chunk_id: 12, seq: 1, title: '第二篇笔记' }
+    stubChatFetch(
+      sseResponse([
+        { type: 'retrieval', seq: 1, payload: { hits: [hit] } },
+        { type: 'retrieval', seq: 2, payload: { hits: [second] } },
+        { type: 'delta', seq: 3, payload: { text: '综合两篇笔记。' } },
+        { type: 'verdict', seq: 4, payload: { status: 'answered', reason: '' } },
+        doneEvent(11),
+      ]),
+    )
+    const user = userEvent.setup()
+    renderApp('/chat')
+
+    await ask(user, '两篇笔记分别说了什么')
+
+    // 第一次检索的结果不能被第二次覆盖：依据面板要同时出现两篇。
+    expect(await screen.findByText('第二篇笔记')).toBeInTheDocument()
+    expect(screen.getByText('集成测试笔记')).toBeInTheDocument()
+  })
+
   it('检索没过阈值时直接拒答，不展示任何生成内容', async () => {
     stubChatFetch(
       sseResponse([

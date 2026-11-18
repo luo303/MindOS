@@ -100,7 +100,18 @@ export function ChatPage() {
       await askStream(
         { question, chatModelId: selectedId ?? undefined },
         {
-          onRetrieval: (hits) => patch((turn) => ({ ...turn, hits })),
+          // 模型可以多次检索，retrieval 事件会分批到达：按编号合并，不要覆盖。
+          onRetrieval: (hits) =>
+            patch((turn) => {
+              const byNumber = new Map(turn.hits.map((item) => [item.n, item]))
+              for (const item of hits) {
+                byNumber.set(item.n, item)
+              }
+              return {
+                ...turn,
+                hits: [...byNumber.values()].sort((a, b) => a.n - b.n),
+              }
+            }),
           onDelta: (text) => patch((turn) => ({ ...turn, answer: turn.answer + text })),
           onVerdict: (status, reason) => patch((turn) => applyVerdict(turn, status, reason)),
           onCitation: (items) => patch((turn) => ({ ...turn, citations: items })),
