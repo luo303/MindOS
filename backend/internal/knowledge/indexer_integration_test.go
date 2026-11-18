@@ -88,6 +88,31 @@ func TestSearchIndexerIntegration(t *testing.T) {
 		t.Errorf("keyword hits = %d, want 2", got)
 	}
 
+	queryVector := make([]float32, EmbeddingDimensions)
+	queryVector[0] = 0.1
+	if got := esCount(t, ctx, client, prefix+"-chunks", map[string]any{
+		"size": 2,
+		"knn": map[string]any{
+			"field":          "embedding",
+			"query_vector":   queryVector,
+			"k":              2,
+			"num_candidates": 10,
+			"filter":         []any{map[string]any{"term": map[string]any{"owner_id": owner}}},
+		},
+	}); got != 2 {
+		t.Errorf("knn hits = %d, want 2", got)
+	}
+
+	embedder := &fakeEmbedder{model: "test-model", dim: EmbeddingDimensions, vectors: [][]float32{queryVector}}
+	searcher := NewESSearcher(client, embedder, prefix)
+	result, err := searcher.Search(ctx, owner, "正文", 5, DocumentFilter{})
+	if err != nil {
+		t.Fatalf("es searcher: %v", err)
+	}
+	if len(result.Hits) != 2 || result.VectorHits != 2 || result.TextHits != 2 || result.Degraded {
+		t.Errorf("search result = %+v", result)
+	}
+
 	other := testsupport.NewUser(t, db, fmt.Sprintf("other-%d@test.local", time.Now().UnixNano()))
 	if got := esCount(t, ctx, client, prefix+"-chunks", map[string]any{
 		"query": map[string]any{"term": map[string]any{"owner_id": other}},
