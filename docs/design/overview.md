@@ -112,7 +112,7 @@ MindOS 是一个**多用户、本地优先的 AI 个人知识与行动工作空�
 
 下图是完整形态。Phase 13 先实现无工具对话与事件流，Phase 14 接工具与自动记忆提炼，Phase 15 接审批恢复，Phase 19 才收口完整的上下文组装。
 
-**当前已实现（2026-11-16）**：单轮 RAG 问答 `POST /ask`——宿主预检索 → 阈值闸门 → Eino ADK Agent（带 `search_knowledge` 工具）→ SSE 流式回答 → 引用校验与裁决 → 落 `qa_runs`。对话模型由用户在设置页配置（`chat_models` 表，密钥 AES-256-GCM 加密）。多轮会话（`conversations` / `messages`）、审批恢复、记忆提炼仍未做，链路设计与验收见 `docs/design/rag.md`。
+**当前已实现（2026-11-18）**：`POST /ask` 是一个 ReAct agent——模型自主决定何时调用 `search_knowledge`、调用几次，宿主只负责编号、SSE 推送与落库；不做预检索、不做阈值拒答、不做引用裁决（见 `docs/design/react-agent.md`）。对话模型由用户在设置页配置（`chat_models` 表，密钥 AES-256-GCM 加密）。多轮会话（`conversations` / `messages`）、审批恢复、记忆提炼仍未做，链路设计与验收见 `docs/design/rag.md`。
 
 ```text
 用户发消息（POST /conversations/:id/messages，SSE 响应）
@@ -338,7 +338,7 @@ Eino 的 `CheckPointStore` 接口就是 `Set/Get(ctx, key, []byte)`，状态用 
 
 - 取 top 5–8 块进上下文（`RAG_TOP_K`，默认 8），按文档聚合后按相关度排序，避免同一篇文档的碎片挤满窗口。
 - 回答必须带引用编号，格式 `[n]`，编号由宿主按检索顺序分配；前端把 `[n]` 渲染成跳回知识页对应分块的深链。
-- **检索不到就直说检索不到**：两道闸——检索层阈值闸门（max similarity < `RAG_MIN_SIMILARITY` 直接拒答、不调模型），输出层引用校验（无引用或编号越界判 `ungrounded`、正文撤回）。
+- **检索不到就直说检索不到**：这条现在只靠 prompt 约束（要求模型先检索、没依据就输出固定拒答句）。宿主不再设阈值闸门，也不再校验引用——这是 2026-11-18 评审后的取舍，代价与理由见 `docs/design/react-agent.md`。
 - 完整链路、事件契约与验收数据见 `docs/design/rag.md`。
 
 ## 7. 记忆设计（Memory）
