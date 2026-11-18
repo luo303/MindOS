@@ -32,8 +32,8 @@
    与 `BEGIN READ ONLY` 双重挡住。
 4. **行级隔离由 RLS 负责**。策略读 `current_setting('app.tenant_id')`，未设置时默认拒绝；
    模型能改 GUC 的唯一函数 `set_config` 已从该角色收回。
-5. **可查询对象是白名单**。当前只有 `documents`（按列授）；新增表必须同时加授权与策略，
-   并由 schema 测试兜底，不存在"授了库就全都能查"。
+5. **可查询对象是白名单**。当前是 `documents` + `document_chunks`（都按列授）；
+   新增表必须同时加授权与策略，并由 schema 测试兜底，不存在"授了库就全都能查"。
 
 > 注意：代码设置租户用的是 `SET LOCAL app.tenant_id = '<int64>'`（工具语句），
 > 不是 `set_config()` 函数。原因就是第 4 条——函数被收回后模型调不动，工具仍然能设。
@@ -605,24 +605,46 @@ ALTER ROLE mindos_ai_reader SET search_path = public;
 -- 关掉"模型自己改租户"的入口；工具改用 SET LOCAL（工具语句，不经过这个函数）
 REVOKE EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) FROM PUBLIC;
 
--- 只授"统计需要的列"：content / storage_path / content_hash / owner_id 都不给。
+-- 只授"统计需要的列"：content / storage_path / content_hash 都不给。
+-- owner_id 必须授：document_chunks 的策略要在子查询里读它。它是调用者自己的 ID
+-- （而且 current_setting('app.tenant_id') 本来就对 PUBLIC 可读），不是秘密。
 -- 实测：列级授权下 count(*) 可用、select 列可用、select * 被权限拒绝。
 GRANT SELECT (id, title, source_type, mime, collection, tags, status,
-              chunk_count, size_bytes, embed_status, created_at, updated_at)
+              chunk_count, size_bytes, embed_status, created_at, updated_at,
+              owner_id)
   ON documents TO mindos_ai_reader;
+
+-- 分块表没有 owner_id，行归属通过父表判断；content / embedding / tsv 都不给。
+GRANT SELECT (id, document_id, seq, heading, start_offset, end_offset,
+              token_count, embed_model, embedded_at, created_at)
+  ON document_chunks TO mindos_ai_reader;
 
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 CREATE POLICY documents_ai_read ON documents
     FOR SELECT TO mindos_ai_reader
     USING (owner_id = current_setting('app.tenant_id', true)::bigint);
+
+ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY document_chunks_ai_read ON document_chunks
+    FOR SELECT TO mindos_ai_reader
+    USING (EXISTS (
+        SELECT 1 FROM documents d
+        WHERE d.id = document_chunks.document_id
+          AND d.owner_id = current_setting('app.tenant_id', true)::bigint
+    ));
 ```
 
 回滚：
 
 ```sql
+DROP POLICY IF EXISTS document_chunks_ai_read ON document_chunks;
+ALTER TABLE document_chunks DISABLE ROW LEVEL SECURITY;
+REVOKE SELECT ON document_chunks FROM mindos_ai_reader;
+
 DROP POLICY IF EXISTS documents_ai_read ON documents;
 ALTER TABLE documents DISABLE ROW LEVEL SECURITY;
 REVOKE SELECT ON documents FROM mindos_ai_reader;
+
 GRANT EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) TO PUBLIC;
 DROP ROLE IF EXISTS mindos_ai_reader;
 ```
@@ -709,26 +731,29 @@ func (e *Executor) Run(ctx context.Context, tenantID int64, raw string) (Result,
 -- 1. 不是超级用户、没有 BYPASSRLS
 SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user;
 
--- 2. 不是 documents 的 owner
+-- 2. 不是 documents / document_chunks 的 owner
 SELECT count(*)
   FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner
- WHERE c.relname = 'documents' AND r.rolname = current_user;
+ WHERE c.relname IN ('documents', 'document_chunks') AND r.rolname = current_user;
 
--- 3. documents 开了 RLS 且至少一条策略
-SELECT c.relrowsecurity,
+-- 3. 两张表都开了 RLS 且各有策略
+SELECT c.relname, c.relrowsecurity,
        (SELECT count(*) FROM pg_policies p
-         WHERE p.schemaname = 'public' AND p.tablename = 'documents') AS policies
+         WHERE p.schemaname = 'public' AND p.tablename = c.relname) AS policies
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname = 'public' AND c.relname = 'documents';
+ WHERE n.nspname = 'public' AND c.relname IN ('documents', 'document_chunks');
 
--- 4. set_config 不可执行、敏感表不可读
+-- 4. set_config 不可执行、敏感表不可读、正文列不可读
 SELECT has_function_privilege(current_user, 'pg_catalog.set_config(text,text,boolean)', 'EXECUTE');
 SELECT has_table_privilege(current_user, 'public.users', 'SELECT');
+SELECT has_table_privilege(current_user, 'public.sessions', 'SELECT');
 SELECT has_table_privilege(current_user, 'public.chat_models', 'SELECT');
+SELECT has_column_privilege(current_user, 'public.documents', 'content', 'SELECT');
+SELECT has_column_privilege(current_user, 'public.document_chunks', 'content', 'SELECT');
 ```
 
-期望值：第一行 `(false,false)`；第二行 `0`；第三行 `(true, 大于等于 1)`；
-后三行都是 `false`。
+期望值：第一行 `(false,false)`；第二行 `0`；第三行两行都是 `(true, 大于等于 1)`；
+其余权限检查全部 `false`。
 
 
 ### A.8 RLS 专项测试矩阵
@@ -746,9 +771,14 @@ SELECT has_table_privilege(current_user, 'public.chat_models', 'SELECT');
 | 用例 | 期望 |
 |---|---|
 | 设 tenant=1 后查 `documents` | 只有 tenant 1 的行 |
+| 设 tenant=1 后查 `document_chunks` | 只有属于 tenant 1 文档的分块 |
+| `documents JOIN document_chunks` | 只返回本人的行 |
 | `SELECT count(*) FROM documents` | 正常返回本人文档数 |
+| `SELECT count(*) FROM document_chunks` | 正常返回本人分块数 |
 | `SELECT * FROM documents` | 权限拒绝（列未授权），提示改用显式列名 |
 | `SELECT content FROM documents` | 权限拒绝 |
+| `SELECT content FROM document_chunks` | 权限拒绝 |
+| `SELECT embedding FROM document_chunks` | 权限拒绝 |
 | 显式 `WHERE owner_id = 2` | 0 行（策略覆盖 WHERE） |
 | 不设 tenant_id 直接查 | 0 行（默认拒绝） |
 | 先查 tenant 1，回滚后再查 | 0 行（SET LOCAL 未泄漏） |
