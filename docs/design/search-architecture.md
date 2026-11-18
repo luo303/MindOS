@@ -1,7 +1,7 @@
 # 检索架构：PG + Elasticsearch + MinIO
 
-> 状态：阶段 1（基础设施 + ES Searcher）已落地（2026-11-18）；
-> indexer/回填/消息索引仍待实现（见 §11）。
+> 状态：阶段 1（基础设施 + ES Searcher）与文档索引器已落地（2026-11-18）；
+> 全量回填、消息索引仍待实现（见 §11）。
 > 本文取代 `docs/design/conversation-memory.md` 中"gse + tsvector"的关键词检索方案；
 > 会话记忆的摘要/冷层设计仍以该文档为准，只是检索后端换成 ES。
 > 核心分工：**PG 存事实，ES 存检索副本，MinIO 存原文；LLM 只通过工具间接访问。**
@@ -311,7 +311,7 @@ score(chunk) = 1/(60 + rank_kw) + 1/(60 + rank_vec)
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
 | 1 | ES 集群 + smartcn + 模板/别名（**已落地**） | 集群健康、分词验证 |
-| 2 | outbox 事件 + indexer + 全量回填 | PG 行数 = ES 文档数（分块/消息） |
+| 2 | outbox 事件 + indexer（**已落地**）+ 全量回填（待做） | PG 行数 = ES 文档数（分块） |
 | 3 | 影子读：同时查 PG 原生与 ES，记录差异 | 评测集 Recall/MRR 不低于基线 |
 | 4 | 切换 `search_knowledge` 到 ES | 线上错误率/延迟达标 |
 | 5 | 消息索引 + 会话记忆冷层 | 长会话评测通过 |
@@ -359,7 +359,11 @@ score(chunk) = 1/(60 + rank_kw) + 1/(60 + rank_vec)
 - `knowledge.SearcherAPI` 抽象出原生/ES 两种实现；ES 版做 BM25 + kNN + 应用侧 RRF，
   `owner_id/status/embed_model` 过滤集中在 `esFilters`。
 - 单测覆盖 RRF、降级、租户过滤；后端全量测试通过。
-- 未完成：ES 镜像在本机下载过慢，尚未做真实集群验证；indexer/回填、消息索引未实现。
+- **索引器已落地**：切分完成/向量写回/删除文档时写 `search.*` 事件；
+  indexer 按 `document_id` 清理旧分块后 bulk 写 ES，worker 注册 upsert/delete。
+- 真实 ES 集成测试通过：写入、owner 隔离、中文关键词、删除清理、outbox 事件。
+- 测试数据已清空（documents/chunks/conversations/messages/tasks/outbox），ES 索引为空。
+- 未完成：全量回填命令、消息索引、索引与 PG 的对账。
 
 **开放问题**
 
