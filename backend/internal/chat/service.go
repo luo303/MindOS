@@ -123,6 +123,10 @@ type DonePayload struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	LatencyMS        int64 `json:"latency_ms"`
+	// 会话模式才有；一次性 /ask 时为零值，前端按 omitempty 忽略。
+	ConversationID     int64 `json:"conversation_id,omitempty"`
+	UserMessageID      int64 `json:"user_message_id,omitempty"`
+	AssistantMessageID int64 `json:"assistant_message_id,omitempty"`
 }
 
 // AskInput 是一次问答的输入。
@@ -146,12 +150,13 @@ type Service struct {
 	models   ModelResolver
 	runs     RunStore
 	builder  AnswererBuilder
+	convs    *ConversationRepository
 	settings Settings
 	log      *zap.Logger
 }
 
 // NewService 组装编排层。依赖全部由 cmd/server 注入。
-func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, settings Settings, log *zap.Logger) *Service {
+func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, convs *ConversationRepository, settings Settings, log *zap.Logger) *Service {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -159,42 +164,94 @@ func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, se
 		models:   models,
 		runs:     runs,
 		builder:  builder,
+		convs:    convs,
 		settings: settings,
 		log:      log,
 	}
 }
 
-// Ask 跑一次问答并向 emit 推送事件。
-//
-// 返回 error 只表示"还没开始推送就失败了"（handler 据此返回 JSON 错误）；
-// 一旦第一个事件发出去，后续失败都通过 Error 事件表达并返回 nil——
-// 那时 HTTP 状态码已经定死，再返回 error 也没人能用了。
-func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emitter) error {
-	start := time.Now()
+// historyLimit 是热层带进模型的最大消息条数。
+// 多轮的第一阶段还没有摘要/冷层，先只做"最近 N 条"。
+const historyLimit = 16
 
-	question := strings.TrimSpace(in.Question)
+// Ask 跑一次单轮问答：不读历史，也不写 messages。
+func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emitter) error {
+	if err := validateQuestion(in.Question); err != nil {
+		return err
+	}
+	resolved, err := s.models.Resolve(ctx, ownerID, in.ChatModelID)
+	if err != nil {
+		return err
+	}
+	return s.execute(ctx, ownerID, in, resolved, nil, nil, 0, emit)
+}
+
+// AskInConversation 在指定会话里跑一轮：先落 user 消息，再带最近 historyLimit 条历史。
+func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID int64, in AskInput, emit Emitter) error {
+	if err := validateQuestion(in.Question); err != nil {
+		return err
+	}
+	if s.convs == nil {
+		return ErrConversationNotFound
+	}
+	// 先确认会话属于当前用户：不存在/越权都返回同一个 404。
+	if _, err := s.convs.Get(ctx, ownerID, conversationID); err != nil {
+		return err
+	}
+	resolved, err := s.models.Resolve(ctx, ownerID, in.ChatModelID)
+	if err != nil {
+		return err
+	}
+
+	userMsg, err := s.convs.AppendMessage(ctx, ownerID, conversationID, RoleUser, strings.TrimSpace(in.Question), RawJSON("[]"))
+	if err != nil {
+		return err
+	}
+
+	history := make([]agent.HistoryMessage, 0, historyLimit)
+	if msgs, err := s.convs.MessagesBefore(ctx, ownerID, conversationID, userMsg.Seq, historyLimit); err != nil {
+		// 历史读失败不该让这一轮直接失败：至少还能回答当前问题。
+		s.log.Warn("load conversation history failed", zap.Int64("conversation_id", conversationID), zap.Error(err))
+	} else {
+		for _, msg := range msgs {
+			history = append(history, agent.HistoryMessage{Role: msg.Role, Content: msg.Content})
+		}
+	}
+
+	return s.execute(ctx, ownerID, in, resolved, history, &conversationID, userMsg.ID, emit)
+}
+
+// validateQuestion 是单轮与多轮共用的输入校验。
+func validateQuestion(raw string) error {
+	question := strings.TrimSpace(raw)
 	if question == "" {
 		return ErrEmptyQuestion
 	}
 	if utf8.RuneCountInString(question) > maxQuestionRunes {
 		return ErrQuestionTooLong
 	}
+	return nil
+}
+
+// execute 是两种入口共用的执行体。
+//
+// 单轮传 conversationID=nil；多轮传会话 id 与已落库的 user 消息 id，
+// 成功后会把 assistant 消息也写进 messages。
+func (s *Service) execute(
+	ctx context.Context, ownerID int64, in AskInput, resolved *chatmodel.Resolved,
+	history []agent.HistoryMessage, conversationID *int64, userMessageID int64, emit Emitter,
+) error {
+	start := time.Now()
+	question := strings.TrimSpace(in.Question)
 
 	settings := s.settings.normalized()
 	runCtx, cancel := context.WithTimeout(ctx, settings.Timeout)
 	defer cancel()
 
-	// 1. 选模型。这一步在任何事件之前，失败可以让 handler 返回 503/400。
-	resolved, err := s.models.Resolve(runCtx, ownerID, in.ChatModelID)
-	if err != nil {
-		return err
-	}
-
-	// 2. 本次 run 的编号表。检索已经移进 agent，这里只负责收集工具返回的片段；
-	//    模型可能检索 0 次或多次，编号随每次工具调用增长。
+	// 本次 run 的编号表。检索已经移进 agent，这里只负责收集工具返回的片段。
 	registry := agent.NewRegistry()
 
-	// 3. 构造执行体。onHits 在每次工具检索并登记编号后把"本次依据"推给前端。
+	// onHits 在每次工具检索并登记编号后把"本次依据"推给前端。
 	answerer, err := s.builder.Build(runCtx, ownerID, resolved, registry, func(hits []agent.Numbered) {
 		if err := emit.Retrieval(retrievalPayload(hits)); err != nil {
 			// 客户端可能已经断开；真正的停止由 onDelta 返回错误负责。
@@ -205,18 +262,21 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 		return err
 	}
 
-	// 4. 流式跑。问题原样交给模型：要不要检索、检索几次由它决定。
+	// 历史 + 当前问题。当前问题永远是最后一条 user。
+	msgs := make([]agent.HistoryMessage, 0, len(history)+1)
+	msgs = append(msgs, history...)
+	msgs = append(msgs, agent.HistoryMessage{Role: RoleUser, Content: question})
+
 	var answer strings.Builder
-	result, runErr := answerer.Ask(runCtx, question, func(delta string) error {
+	result, runErr := answerer.Ask(runCtx, msgs, func(delta string) error {
 		answer.WriteString(delta)
 		return emit.Delta(delta)
 	})
 	if runErr != nil {
-		return s.finishFailed(ctx, ownerID, emit, start, question, resolved, answer.String(), runErr)
+		return s.finishFailed(ctx, ownerID, emit, start, question, resolved, answer.String(), runErr, conversationID, userMessageID)
 	}
 
-	// 5. 引用只做映射：正文里出现、且这次真的登记过的编号。
-	//    不做校验、不撤回——这里没有 judge。
+	// 引用只做映射：正文里出现、且这次真的登记过的编号。
 	citations := citationsFromAnswer(result.Answer, registry)
 	finalAnswer := result.Answer
 	if strings.TrimSpace(finalAnswer) == "" {
@@ -228,13 +288,25 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 		_ = emit.Citation(citations)
 	}
 
-	// 6. 落库。用 WithoutCancel：客户端断开时 request ctx 已取消，
-	// 但这次问答已经算完了，记录不该因此丢掉。
 	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer persistCancel()
 
+	// 多轮：把 assistant 消息也写进会话。写失败只记日志，不把已经生成的回答报成失败。
+	var assistantMessageID int64
+	if conversationID != nil {
+		saved, saveErr := s.convs.AppendMessage(
+			persistCtx, ownerID, *conversationID, RoleAssistant, finalAnswer, marshalJSON(citations))
+		if saveErr != nil {
+			s.log.Warn("save assistant message failed",
+				zap.Int64("conversation_id", *conversationID), zap.Error(saveErr))
+		} else {
+			assistantMessageID = saved.ID
+		}
+	}
+
 	run := &Run{
 		OwnerID:          ownerID,
+		ConversationID:   conversationID,
 		Question:         question,
 		Answer:           finalAnswer,
 		RawAnswer:        stringPtr(result.Answer),
@@ -249,16 +321,20 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 	}
 	runID := s.saveRun(persistCtx, run)
 
-	_ = emit.Done(DonePayload{
-		RunID:            runID,
-		ChatModelID:      resolved.ID,
-		PromptTokens:     result.PromptTokens,
-		CompletionTokens: result.CompletionTokens,
-		LatencyMS:        int64(run.LatencyMS),
-	})
+	done := DonePayload{
+		RunID:              runID,
+		ChatModelID:        resolved.ID,
+		PromptTokens:       result.PromptTokens,
+		CompletionTokens:   result.CompletionTokens,
+		LatencyMS:          int64(run.LatencyMS),
+		UserMessageID:      userMessageID,
+		AssistantMessageID: assistantMessageID,
+	}
+	if conversationID != nil {
+		done.ConversationID = *conversationID
+	}
+	_ = emit.Done(done)
 
-	// 最近使用时间失败只记 warn：它影响的是一个展示字段，不该让一次
-	// 已经完成的问答返回错误。
 	if err := s.models.Touch(persistCtx, ownerID, resolved.ID); err != nil {
 		s.log.Warn("touch chat model failed", zap.Int64("chat_model_id", resolved.ID), zap.Error(err))
 	}
@@ -268,7 +344,11 @@ func (s *Service) Ask(ctx context.Context, ownerID int64, in AskInput, emit Emit
 // finishFailed 处理执行期失败：落一行 failed，并把可读原因推给前端。
 //
 // 上游原始错误只进日志，不进响应：它可能带 URL、账号片段或厂商的内部描述。
-func (s *Service) finishFailed(ctx context.Context, ownerID int64, emit Emitter, start time.Time, question string, resolved *chatmodel.Resolved, partial string, runErr error) error {
+func (s *Service) finishFailed(
+	ctx context.Context, ownerID int64, emit Emitter, start time.Time,
+	question string, resolved *chatmodel.Resolved, partial string, runErr error,
+	conversationID *int64, userMessageID int64,
+) error {
 	code, message, retryable := classifyRunError(runErr)
 	s.log.Warn("agent run failed",
 		zap.Int64("chat_model_id", resolved.ID),
@@ -280,23 +360,28 @@ func (s *Service) finishFailed(ctx context.Context, ownerID int64, emit Emitter,
 	defer persistCancel()
 
 	run := &Run{
-		OwnerID:       ownerID,
-		Question:      question,
-		Answer:        partial,
-		RawAnswer:     stringPtr(partial),
-		Verdict:       VerdictFailed,
-		VerdictReason: stringPtr(code),
-		Citations:     marshalJSON(nil),
-		Retrieved:     marshalJSON(nil),
-		ChatModelID:   int64Ptr(resolved.ID),
-		Model:         stringPtr(resolved.Model),
-		LatencyMS:     int(time.Since(start).Milliseconds()),
-		ErrorCode:     stringPtr(code),
+		OwnerID:        ownerID,
+		ConversationID: conversationID,
+		Question:       question,
+		Answer:         partial,
+		RawAnswer:      stringPtr(partial),
+		Verdict:        VerdictFailed,
+		VerdictReason:  stringPtr(code),
+		Citations:      marshalJSON(nil),
+		Retrieved:      marshalJSON(nil),
+		ChatModelID:    int64Ptr(resolved.ID),
+		Model:          stringPtr(resolved.Model),
+		LatencyMS:      int(time.Since(start).Milliseconds()),
+		ErrorCode:      stringPtr(code),
 	}
 	runID := s.saveRun(persistCtx, run)
 
+	done := DonePayload{RunID: runID, ChatModelID: resolved.ID, LatencyMS: int64(run.LatencyMS), UserMessageID: userMessageID}
+	if conversationID != nil {
+		done.ConversationID = *conversationID
+	}
 	_ = emit.Error(code, message, retryable)
-	_ = emit.Done(DonePayload{RunID: runID, ChatModelID: resolved.ID, LatencyMS: int64(run.LatencyMS)})
+	_ = emit.Done(done)
 	return nil
 }
 

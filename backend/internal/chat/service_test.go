@@ -23,6 +23,7 @@ type fakeEmitter struct {
 	errors    []string
 	deltas    strings.Builder
 	doneCalls int
+	done      DonePayload
 	failDelta bool
 }
 
@@ -52,9 +53,10 @@ func (e *fakeEmitter) Citation(items []CitationItem) error {
 	return nil
 }
 
-func (e *fakeEmitter) Done(_ DonePayload) error {
+func (e *fakeEmitter) Done(payload DonePayload) error {
 	e.events = append(e.events, "done")
 	e.doneCalls++
+	e.done = payload
 	return nil
 }
 
@@ -106,9 +108,12 @@ type fakeRunner struct {
 	hit      *agent.Hit
 	registry *agent.Registry
 	onHits   func([]agent.Numbered)
+	// gotHistory 记录服务层传进来的历史 + 当前问题，用来断言多轮拼接。
+	gotHistory []agent.HistoryMessage
 }
 
-func (f *fakeRunner) Ask(_ context.Context, _ string, onDelta func(string) error) (*agent.Result, error) {
+func (f *fakeRunner) Ask(_ context.Context, history []agent.HistoryMessage, onDelta func(string) error) (*agent.Result, error) {
+	f.gotHistory = history
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -172,7 +177,7 @@ func newTestService(t *testing.T, opts testDeps) *Service {
 	if opts.runs == nil {
 		opts.runs = &fakeRunStore{}
 	}
-	return NewService(opts.models, opts.runs, opts.builder, Settings{Timeout: 10 * time.Second}, nil)
+	return NewService(opts.models, opts.runs, opts.builder, nil, Settings{Timeout: 10 * time.Second}, nil)
 }
 
 func hitFixture() *agent.Hit {

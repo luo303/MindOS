@@ -189,8 +189,19 @@ func TestAIReaderMigrationIntegration(t *testing.T) {
 		t.Error("set_config must not be executable")
 	}
 
-	if err := runner.Down(ctx); err != nil {
-		t.Fatalf("Down: %v", err)
+	// 回滚到 0013（0014 之前）：0015 的会话表也要先退掉，
+	// 否则 0014 的 down 还没执行。
+	for {
+		st, err := runner.Version(ctx)
+		if err != nil {
+			t.Fatalf("Version: %v", err)
+		}
+		if st.Version <= 13 {
+			break
+		}
+		if err := runner.Down(ctx); err != nil {
+			t.Fatalf("Down at %d: %v", st.Version, err)
+		}
 	}
 	if err := runner.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM pg_policies WHERE tablename IN ('documents', 'document_chunks')`,

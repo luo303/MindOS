@@ -318,6 +318,7 @@ func run() error {
 		chatModelSvc,
 		chat.NewRepository(db),
 		agentBuilder,
+		chat.NewConversationRepository(db),
 		chat.Settings{
 			Timeout: cfg.Rag.Timeout,
 		},

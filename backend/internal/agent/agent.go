@@ -160,7 +160,7 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRun
 // onDelta 每收到一段正文调用一次；返回错误会中止本次问答（上层据此停止推送，
 // 例如客户端已经断开）。它是唯一把正文送出去的口子——工具结果、思考过程
 // 都不经过这里，避免把不该给用户看的内容混进答案。
-func (a *Agent) Ask(ctx context.Context, question string, onDelta func(string) error) (*Result, error) {
+func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(string) error) (*Result, error) {
 	// 一次 run 一个预算：检索与 SQL 共享 3 次，而不是各 3 次。
 	budget := newToolBudget(a.limits.MaxToolCalls)
 
@@ -213,7 +213,16 @@ func (a *Agent) Ask(ctx context.Context, question string, onDelta func(string) e
 		}
 	}()
 
-	iter := runner.Query(ctx, question, cancelOpt)
+	// 历史消息按原样交给 Eino：user/assistant 交替，当前问题由调用方放在最后。
+	msgs := make([]*schema.Message, 0, len(history))
+	for _, item := range history {
+		if item.Role == "assistant" {
+			msgs = append(msgs, schema.AssistantMessage(item.Content, nil))
+			continue
+		}
+		msgs = append(msgs, schema.UserMessage(item.Content))
+	}
+	iter := runner.Run(ctx, msgs, cancelOpt)
 
 	var answer strings.Builder
 	var promptTokens, completionTokens int64

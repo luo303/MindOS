@@ -48,8 +48,10 @@ const (
 type Run struct {
 	ID int64 `gorm:"column:id;primaryKey"`
 	// OwnerID 是这次问答属于谁。会话记录按人隔离，复盘统计也按它分组。
-	OwnerID  int64  `gorm:"column:owner_id"`
-	Question string `gorm:"column:question"`
+	OwnerID int64 `gorm:"column:owner_id"`
+	// ConversationID 为 nil 表示一次性 /ask，不属于任何会话。
+	ConversationID *int64 `gorm:"column:conversation_id"`
+	Question       string `gorm:"column:question"`
 	// Answer 是最终返回给用户的文本。现在原样保存模型输出，不再撤回。
 	Answer string `gorm:"column:answer"`
 	// RawAnswer 是模型原始输出，只有这里还能看到"模型到底写了什么"。

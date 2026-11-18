@@ -128,4 +128,11 @@ func Register(e *gin.Engine, deps Deps) {
 	// 问答：SSE 流式。用 POST 而不是 GET，因为问题在 body 里，
 	// 而且它不该被浏览器或代理缓存。
 	authed.POST("/ask", deps.Ask.Ask)
+
+	// 多轮会话：会话 CRUD + 按会话发消息（SSE）。
+	authed.POST("/conversations", deps.Ask.CreateConversation)
+	authed.GET("/conversations", deps.Ask.ListConversations)
+	authed.GET("/conversations/:id", deps.Ask.GetConversation)
+	authed.GET("/conversations/:id/messages", deps.Ask.ListMessages)
+	authed.POST("/conversations/:id/messages", deps.Ask.PostMessage)
 }

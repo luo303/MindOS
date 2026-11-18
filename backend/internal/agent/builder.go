@@ -14,8 +14,17 @@ import (
 // 抽成接口是为了让 internal/chat 不认识 Eino：它只要"能 Ask 的东西"，
 // 具体怎么构造模型、怎么装工具都留在这个包。测试里塞一个返回固定
 // 结果的假实现就能测完整个 SSE 编排。
+// HistoryMessage 是会话里已经发生的一条消息。
+//
+// 用 chat 自己的结构而不是 *schema.Message：chat 不该 import eino。
+// agent 负责把 role/content 翻成 Eino 的消息类型。
+type HistoryMessage struct {
+	Role    string // user | assistant
+	Content string
+}
+
 type Runner interface {
-	Ask(ctx context.Context, question string, onDelta func(string) error) (*Result, error)
+	Ask(ctx context.Context, history []HistoryMessage, onDelta func(string) error) (*Result, error)
 }
 
 // 编译期确认 *Agent 满足 Runner：接口与实现分开写时，最容易出现的

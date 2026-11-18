@@ -256,7 +256,7 @@ func TestAskCollectsAnswerAndUsage(t *testing.T) {
 	a := New(bot, &fakeRetriever{}, nil, 42, registry, 8, DefaultLimits(), nil, nil)
 
 	var streamed strings.Builder
-	result, err := a.Ask(context.Background(), "多端共享怎么做的", func(delta string) error {
+	result, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "多端共享怎么做的"}}, func(delta string) error {
 		streamed.WriteString(delta)
 		return nil
 	})
@@ -280,7 +280,7 @@ func TestAskCollectsAnswerAndUsage(t *testing.T) {
 func TestAskPropagatesModelError(t *testing.T) {
 	bot := &fakeChatModel{err: errors.New("upstream exploded")}
 	a := New(bot, &fakeRetriever{}, nil, 42, NewRegistry(), 8, DefaultLimits(), nil, nil)
-	if _, err := a.Ask(context.Background(), "q", nil); err == nil {
+	if _, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "q"}}, nil); err == nil {
 		t.Fatal("model error should be returned")
 	}
 }
@@ -290,7 +290,7 @@ func TestAskStopsWhenDeltaHandlerFails(t *testing.T) {
 	a := New(bot, &fakeRetriever{}, nil, 42, NewRegistry(), 8, DefaultLimits(), nil, nil)
 
 	wantErr := errors.New("client gone")
-	_, err := a.Ask(context.Background(), "q", func(string) error { return wantErr })
+	_, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "q"}}, func(string) error { return wantErr })
 	// 客户端断开时 onDelta 返回错误，Ask 必须立刻停下并把错误带出去，
 	// 否则会继续读到模型说完，白白烧掉剩下的 token。
 	if !errors.Is(err, wantErr) {
@@ -307,7 +307,7 @@ func TestAskReportsBudgetExceeded(t *testing.T) {
 	limits.MaxTokens = 60000
 	a := New(bot, &fakeRetriever{}, nil, 42, NewRegistry(), 8, limits, nil, nil)
 
-	if _, err := a.Ask(context.Background(), "q", nil); !errors.Is(err, ErrBudgetExceeded) {
+	if _, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "q"}}, nil); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
 }

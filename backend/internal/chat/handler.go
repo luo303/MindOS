@@ -165,6 +165,8 @@ func mapAskError(err error) error {
 	switch {
 	case errors.Is(err, ErrEmptyQuestion), errors.Is(err, ErrQuestionTooLong):
 		return httpx.ErrInvalidArgument.WithMessage("%s", err.Error())
+	case errors.Is(err, ErrConversationNotFound):
+		return httpx.ErrNotFound.WithMessage("会话不存在")
 	case errors.Is(err, chatmodel.ErrNotConfigured):
 		return httpx.ErrModelNotConfigured.WithMessage("先在设置页添加一条对话模型配置")
 	case errors.Is(err, chatmodel.ErrNotSelected):
