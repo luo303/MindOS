@@ -1,7 +1,7 @@
-# 只读 SQL 查询工具方案（待评审）
+# 只读 SQL 查询工具方案（已落地）
 
 > **2026-11-18 更新**：问答层已移除 judge（见 `react-agent.md`），本文 §6 的裁决分流保留为
-> 设计记录；若将来恢复强制校验再参考。SQL 工具与 RLS 尚未实现。
+> 设计记录；若将来恢复强制校验再参考。SQL 工具已按附录 A 落地，验收见 §11。
 
 > 目标：让模型能回答"知识库有多少篇文档""哪些文档还没向量化"这类**结构化统计**问题，
 > 不再因为只有语义检索工具而靠猜。本文只描述方案，评审通过后再落地。
@@ -596,11 +596,9 @@ BEGIN
 END
 $$;
 
-ALTER ROLE mindos_ai_reader SET default_transaction_read_only = on;
-ALTER ROLE mindos_ai_reader SET statement_timeout = '3s';
-ALTER ROLE mindos_ai_reader SET lock_timeout = '1s';
-ALTER ROLE mindos_ai_reader SET idle_in_transaction_session_timeout = '5s';
-ALTER ROLE mindos_ai_reader SET search_path = public;
+-- 不在迁移里 ALTER ROLE ... SET：那是集群级共享行，多个库并行迁移会撞
+-- "tuple concurrently updated"（XX000）。会话级限制由执行器在每个事务里
+-- SET LOCAL（见 A.6），只读由 BeginTx(ReadOnly) 保证。
 
 -- 关掉"模型自己改租户"的入口；工具改用 SET LOCAL（工具语句，不经过这个函数）
 REVOKE EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) FROM PUBLIC;
@@ -646,7 +644,10 @@ ALTER TABLE documents DISABLE ROW LEVEL SECURITY;
 REVOKE SELECT ON documents FROM mindos_ai_reader;
 
 GRANT EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) TO PUBLIC;
-DROP ROLE IF EXISTS mindos_ai_reader;
+
+-- 不在这里 DROP ROLE：角色是集群级的，别的库可能还引用它。
+-- 全部库都回滚后再手工执行：
+--   DROP ROLE IF EXISTS mindos_ai_reader;
 ```
 
 密码一次性设置（不进仓库、不进 shell 历史）：
@@ -679,6 +680,7 @@ AI_DB_PASSWORD=<上一步设置的密码>
 1. validate(sql)          单条 SELECT/WITH，禁分号，≤2000 字符
 2. BeginTx(ReadOnly)      database/sql 的 ReadOnly=true，发 BEGIN READ ONLY
 3. SET LOCAL app.tenant_id = '<int64>'   由代码拼 int64，不接受字符串
+3.1 SET LOCAL statement_timeout='3s' / lock_timeout='1s' / search_path=public
 4. 执行 SELECT * FROM ( <sql> ) AS q LIMIT 200
 5. 读最多 201 行判断截断；单元格截 500 字
 6. defer Rollback()       SET LOCAL 随事务结束失效，连接归还池子
@@ -707,6 +709,15 @@ func (e *Executor) Run(ctx context.Context, tenantID int64, raw string) (Result,
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return Result{}, err
 	}
+	for _, setting := range []string{
+		"SET LOCAL statement_timeout = '3s'",
+		"SET LOCAL lock_timeout = '1s'",
+		"SET LOCAL search_path = public",
+	} {
+		if _, err := tx.ExecContext(ctx, setting); err != nil {
+			return Result{}, err
+		}
+	}
 
 	rows, err := tx.QueryContext(ctx, "SELECT * FROM ("+raw+") AS q LIMIT 201")
 	_ = rows
@@ -725,7 +736,7 @@ func (e *Executor) Run(ctx context.Context, tenantID int64, raw string) (Result,
 
 ### A.7 启动自检（配了 AI_DB_USER 才做）
 
-四项全部满足才启动，否则报错退出：
+全部满足才启动，否则报错退出：
 
 ```sql
 -- 1. 不是超级用户、没有 BYPASSRLS
@@ -748,8 +759,11 @@ SELECT has_function_privilege(current_user, 'pg_catalog.set_config(text,text,boo
 SELECT has_table_privilege(current_user, 'public.users', 'SELECT');
 SELECT has_table_privilege(current_user, 'public.sessions', 'SELECT');
 SELECT has_table_privilege(current_user, 'public.chat_models', 'SELECT');
+SELECT has_table_privilege(current_user, 'public.qa_runs', 'SELECT');
 SELECT has_column_privilege(current_user, 'public.documents', 'content', 'SELECT');
+SELECT has_column_privilege(current_user, 'public.documents', 'storage_path', 'SELECT');
 SELECT has_column_privilege(current_user, 'public.document_chunks', 'content', 'SELECT');
+SELECT has_column_privilege(current_user, 'public.document_chunks', 'embedding', 'SELECT');
 ```
 
 期望值：第一行 `(false,false)`；第二行 `0`；第三行两行都是 `(true, 大于等于 1)`；
@@ -763,7 +777,7 @@ SELECT has_column_privilege(current_user, 'public.document_chunks', 'content', '
 | 用例 | 期望 |
 |---|---|
 | 角色属性 | `rolsuper=false`、`rolbypassrls=false`、非表 owner |
-| 策略 | `documents` 的 `relrowsecurity=true`，`pg_policies` 有 `documents_ai_read` |
+| 策略 | 两张表 `relrowsecurity=true`，各有 `*_ai_read` 策略 |
 | 授权 | `documents` 只授了统计列；`users` / `chat_models` / `sessions` 没有 SELECT |
 
 运行层（以 AI 角色连接）：
@@ -790,14 +804,28 @@ SELECT has_column_privilege(current_user, 'public.document_chunks', 'content', '
 | `SELECT pg_sleep(10)` | 约 3s 超时 |
 | `generate_series(1,1000000)` | 最多 200 行 |
 
-判定层（单元，配合 6.2）：
+审计层（单元）：
 
 | 场景 | 期望 |
 |---|---|
-| 只用 SQL，命中单值 | `answered/stat_grounded`，无 citation |
-| 只用 SQL，正文写错数字 | `ungrounded/stat_mismatch`，正文撤回 |
-| 只用 SQL，正文含拒答句 | `refused` |
-| 用过检索、无 `[n]` | `ungrounded/no_citation`（现状不变） |
-| 用过检索、引用越界 | `ungrounded/unknown_citation` |
-| 两者都用、检索引用合法 | `answered`（保持现状） |
+| SQL 成功 | `qa_runs.retrieved` 追加 `kind:"sql"` + digest / 行数 / 耗时 |
+| SQL 失败 | 追加 `error`，不中断 run，模型可改写法重试 |
+| 检索 + SQL 混合 | 两者都进 `retrieved`，citation 只映射检索编号 |
+| 工具调用超过 3 次 | 两种工具共享预算，第 4 次返回 `ErrToolCallLimit` |
+
+## 11. 落地记录（2026-11-18）
+
+- **迁移 0014**：角色 + 两张表的列授权 + 两条 RLS 策略 + 收回 `set_config`。
+  down 只拆本库的策略/授权，不删集群级角色（别的库可能还在引用）。
+- **配置**：`AI_DB_USER` / `AI_DB_PASSWORD`，两者必须同时设置且不能等于主库账号；
+  未配置时工具不注册。
+- **连接**：独立只读池（最多 4 连接，与角色的 `CONNECTION LIMIT` 对齐）；
+  启动自检不过直接拒绝启动。
+- **执行器**：单条 SELECT/WITH、只读事务、`SET LOCAL` 设租户/超时/search_path、
+  200 行 / 64KB / 500 字单元格、错误分"拒绝"与"可修正"两类。
+- **工具**：`query_knowledge`，与 `search_knowledge` 共享 3 次工具预算；
+  SQL 审计写 `qa_runs.retrieved`，SQL 原文不落库。
+- **测试**：校验/预算/审计单测；真库集成（启动参数切角色）覆盖 RLS、列授权、
+  跨租户、`SELECT *`、`content`、`users`、`set_config`、DELETE 与多语句；
+  迁移 up/down 断言角色属性、策略与列权限。
 

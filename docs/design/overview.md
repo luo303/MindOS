@@ -112,7 +112,7 @@ MindOS 是一个**多用户、本地优先的 AI 个人知识与行动工作空�
 
 下图是完整形态。Phase 13 先实现无工具对话与事件流，Phase 14 接工具与自动记忆提炼，Phase 15 接审批恢复，Phase 19 才收口完整的上下文组装。
 
-**当前已实现（2026-11-18）**：`POST /ask` 是一个 ReAct agent——模型自主决定何时调用 `search_knowledge`、调用几次，宿主只负责编号、SSE 推送与落库；不做预检索、不做阈值拒答、不做引用裁决（见 `docs/design/react-agent.md`）。对话模型由用户在设置页配置（`chat_models` 表，密钥 AES-256-GCM 加密）。多轮会话（`conversations` / `messages`）、审批恢复、记忆提炼仍未做，链路设计与验收见 `docs/design/rag.md`。
+**当前已实现（2026-11-18）**：`POST /ask` 是一个 ReAct agent——模型自主决定何时调用 `search_knowledge`（以及可选的 `query_knowledge` 只读 SQL）、调用几次，宿主只负责编号、SSE 推送与落库；不做预检索、不做阈值拒答、不做引用裁决（见 `docs/design/react-agent.md`）。对话模型由用户在设置页配置（`chat_models` 表，密钥 AES-256-GCM 加密）。多轮会话（`conversations` / `messages`）、审批恢复、记忆提炼仍未做，链路设计与验收见 `docs/design/rag.md`。
 
 ```text
 用户发消息（POST /conversations/:id/messages，SSE 响应）
@@ -419,6 +419,7 @@ recency = exp(-days_since_last_recall / 30)
 | 工具 | 风险 | 说明 |
 |---|---|---|
 | `search_knowledge` | read | 混合检索，返回带引用的片段 |
+| `query_knowledge` | read | 只读 SQL（独立角色 + RLS），仅文档/分块统计列；可选 |
 | `read_document` | read | 读指定文档的正文/分块，带长度上限 |
 | `search_memory` | read | 按语义 + `kind` 召回记忆 |
 | `list_tasks` / `get_task` | read | 查任务与进度 |

@@ -462,6 +462,32 @@ ReAct 循环，为后续挂记忆、任务、统计等工具留出扩展点。�
 **验证**：后端 `build` / `vet` / `test -race` 全绿；前端 `lint` / 64 用例 / `build` 全绿。
 编排单测覆盖：带引用、无引用不撤回、未知编号忽略、零检索、执行失败、客户端断开。
 
+### 只读 SQL 查询工具（2026-11-18）
+
+**目标**：让模型回答"有多少篇文档""按分类统计""哪些还没向量化"这类无法预先封装成工具的
+统计问题，由模型自主写一条只读 SELECT。
+
+**边界**
+
+- 独立只读角色 `mindos_ai_reader`：非 superuser、无 BYPASSRLS、不是表 owner；
+  只授 `documents` / `document_chunks` 的统计列，`content` / `storage_path` /
+  `embedding` 都不给；`users` / `sessions` / `chat_models` / `qa_runs` 零权限。
+- 行由 RLS 控制：`owner_id = current_setting('app.tenant_id')`；分块表没有 owner_id，
+  用父表 EXISTS。未设置租户时默认拒绝。
+- 租户由执行器代码 `SET LOCAL`，不是模型参数；`set_config` 已从角色收回。
+- 执行器：单条 SELECT/WITH、只读事务、3s 超时、200 行、单元格/总字节截断。
+
+**取舍**
+
+- 列级授权导致 `SELECT *` 被拒，模型必须显式列名；
+- 统计回答没有可点引用（judge 已删），审计进 `qa_runs.retrieved`；
+- 迁移不在角色上写会话默认值：那是集群级共享行，多个库并行迁移会撞
+  `tuple concurrently updated`；改由执行器每个事务 `SET LOCAL`。
+
+**验证**：后端全量 `build` / `vet` / `test -race` 全绿；真库集成覆盖 RLS、列授权、
+跨租户、`SELECT *`、`content`、`users`、`set_config`、DELETE/多语句/超时/行数；
+迁移 up/down 断言角色、策略与列权限。
+
 ---
 
 ## 4. 未做的事与结论

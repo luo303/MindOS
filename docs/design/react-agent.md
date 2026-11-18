@@ -55,7 +55,7 @@ POST /api/v1/ask
 | `chat/handler.go` | SSE 协议、启动期错误映射 | eino、检索 |
 | `chat/service.go` | 选模型、创建 registry、调 agent、发 citation、落库 | 检索细节、eino 内部 |
 | `agent/agent.go` | Eino ChatModelAgent + Runner；收集正文与 usage；持有 registry | gin、knowledge |
-| `agent/tools.go` | `search_knowledge`：调 Retriever、登记编号、回调 onHits | gin、chat |
+| `agent/tools.go` | `search_knowledge`：调 Retriever、登记编号、回调 onHits；可选 `query_knowledge`（独立只读角色 + RLS） | gin、chat |
 | `agent/hit.go` | `Registry`：编号分配、按 chunk 去重、按号取回 | HTTP |
 | `knowledge/Searcher` | 混合检索（owner 隔离） | 模型、会话 |
 | `chatmodel` | 用户配置的模型（解密后交给 agent） | 检索 |
@@ -79,7 +79,7 @@ POST /api/v1/ask
 代码只保证：owner 隔离、工具条数上限、超时、SSE 协议、落库。
 以下全部是 prompt 要求，**不是强制**：
 
-- 回答知识类问题前必须先调用 `search_knowledge`；
+- 回答知识类问题前必须先调用 `search_knowledge`；数量/分布/筛选类问题用 `query_knowledge`；
 - 只引用本次工具返回过的编号；
 - 检索不到或没有把握时，输出固定拒答句，不要编；
 - 统计类问题用 `query_knowledge`（后续加）。
