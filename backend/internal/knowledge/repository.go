@@ -125,6 +125,16 @@ func appendTaskAndOutbox(ctx context.Context, tx *gorm.DB, documentID int64, kin
 	return msg.MessageID, nil
 }
 
+// appendSearchEventTx 在业务事务里排一条检索索引事件。
+//
+// 事件失败必须让业务事务回滚：分块写成功但索引事件丢了，用户会"导入成功却搜不到"。
+func appendSearchEventTx(ctx context.Context, tx *gorm.DB, topic string, documentID int64) error {
+	msg := outbox.New(topic, strconv.FormatInt(documentID, 10), map[string]any{
+		"document_id": documentID,
+	})
+	return outbox.AppendTx(ctx, tx, msg)
+}
+
 // MarkIndexingWithJob 在同一个事务里把文档置为 indexing 并建一条重索引任务。
 //
 // 为什么要事务：只改状态不建任务，页面会永远停在"索引中"；只建任务不改状态，
@@ -377,14 +387,17 @@ func (r *Repository) CountChunks(ctx context.Context, ownerID, documentID int64)
 // 返回受影响行数是否为 0 来判断"本来就没有这条"：这样并发下两次删除里
 // 只有一次成功，另一次得到 ErrNotFound，而不是两边都以为删掉了。
 func (r *Repository) Delete(ctx context.Context, ownerID, id int64) error {
-	res := r.db.WithContext(ctx).Delete(&Document{}, "owner_id = ? AND id = ?", ownerID, id)
-	if res.Error != nil {
-		return translateError("delete document", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Delete(&Document{}, "owner_id = ? AND id = ?", ownerID, id)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return appendSearchEventTx(ctx, tx, SearchTopicDocumentDelete, id)
+	})
+	return translateError("delete document", err)
 }
 
 // StoragePathRefs 返回还有多少条文档引用同一个原文对象。
@@ -407,6 +420,14 @@ func (r *Repository) StoragePathRefs(ctx context.Context, storagePath string) (i
 	return total, nil
 }
 
+// 检索读模型的 outbox topic。
+//
+// 事件只带 document_id：indexer 从 PG 读最新分块，避免消息里是旧正文。
+const (
+	SearchTopicDocumentUpsert = "search.document.upsert"
+	SearchTopicDocumentDelete = "search.document.delete"
+)
+
 // ReplaceChunks 用新分块整体替换某个文档的分块，并同步 chunk_count。
 //
 // 必须在同一事务里"先删后插"：中途失败时如果旧分块已经删掉，文档就变成
@@ -414,7 +435,10 @@ func (r *Repository) StoragePathRefs(ctx context.Context, storagePath string) (i
 // 事务保证失败后旧数据完整保留，用户重试即可。
 func (r *Repository) ReplaceChunks(ctx context.Context, documentID int64, chunks []Chunk) error {
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return replaceChunks(tx, documentID, chunks)
+		if err := replaceChunks(tx, documentID, chunks); err != nil {
+			return err
+		}
+		return appendSearchEventTx(ctx, tx, SearchTopicDocumentUpsert, documentID)
 	})
 	return translateError("replace chunks", err)
 }
@@ -469,7 +493,10 @@ func (r *Repository) FinishImport(ctx context.Context, documentID int64, chunks 
 			updates["embed_error_code"] = EmbedNotConfiguredCode
 			updates["embed_error_message"] = "未配置向量模型，本次只做切分"
 		}
-		return tx.Model(&Document{}).Where("id = ?", documentID).Updates(updates).Error
+		if err := tx.Model(&Document{}).Where("id = ?", documentID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return appendSearchEventTx(ctx, tx, SearchTopicDocumentUpsert, documentID)
 	})
 	return translateError("finish import", err)
 }
@@ -548,7 +575,7 @@ func (r *Repository) SaveEmbeddings(ctx context.Context, documentID int64, model
 				return ErrStaleChunks
 			}
 		}
-		return tx.Model(&Document{}).Where("id = ?", documentID).
+		if err := tx.Model(&Document{}).Where("id = ?", documentID).
 			Updates(map[string]any{
 				"embed_status":        EmbedStatusDone,
 				"embed_model":         model,
@@ -558,7 +585,10 @@ func (r *Repository) SaveEmbeddings(ctx context.Context, documentID int64, model
 				"embed_error_code":    nil,
 				"embed_error_message": nil,
 				"updated_at":          now,
-			}).Error
+			}).Error; err != nil {
+			return err
+		}
+		return appendSearchEventTx(ctx, tx, SearchTopicDocumentUpsert, documentID)
 	})
 	return translateError("save embeddings", err)
 }

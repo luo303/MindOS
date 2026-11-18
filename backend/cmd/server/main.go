@@ -147,6 +147,7 @@ func run() error {
 	// 检索读模型是可选的：SEARCH_BACKEND=es 时连 ES 并确保索引/别名存在。
 	// 现在只建基础设施；search_knowledge 的 ES 实现随后接入。
 	var esClient *elasticsearch.Client
+	var searchIndexer *knowledge.SearchIndexer
 	if cfg.Elastic.Enabled() {
 		var err error
 		esClient, err = platform.NewElasticsearch(ctx, cfg.Elastic)
@@ -156,6 +157,7 @@ func run() error {
 		if err := knowledge.EnsureSearchIndexes(ctx, esClient, cfg.Elastic.IndexPrefix); err != nil {
 			return err
 		}
+		searchIndexer = knowledge.NewSearchIndexer(db, esClient, cfg.Elastic.IndexPrefix, log.Named("search"))
 		log.Info("elasticsearch ready", zap.Strings("urls", cfg.Elastic.URLs), zap.String("prefix", cfg.Elastic.IndexPrefix))
 	} else {
 		log.Info("search backend: native postgres")
@@ -453,6 +455,43 @@ func run() error {
 	consumer.Register(string(knowledge.KindDocumentImport), handle(knowledge.KindDocumentImport))
 	consumer.Register(string(knowledge.KindDocumentReindex), handle(knowledge.KindDocumentReindex))
 	consumer.Register(string(knowledge.KindDocumentEmbed), handle(knowledge.KindDocumentEmbed))
+
+	// 检索索引事件：ES 未启用时注册空处理器，避免 outbox 里的 search.*
+	// 被当成未知 topic 丢弃并刷错误日志。
+	decodeDocumentID := func(env platform.Envelope) (int64, error) {
+		var payload struct {
+			DocumentID int64 `json:"document_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			return 0, fmt.Errorf("decode %s payload: %w", env.Topic, err)
+		}
+		if payload.DocumentID <= 0 {
+			return 0, fmt.Errorf("%s payload has invalid document_id %d", env.Topic, payload.DocumentID)
+		}
+		return payload.DocumentID, nil
+	}
+	searchUpsert := func(ctx context.Context, env platform.Envelope) error {
+		if searchIndexer == nil {
+			return nil
+		}
+		id, err := decodeDocumentID(env)
+		if err != nil {
+			return err
+		}
+		return searchIndexer.UpsertDocument(ctx, id)
+	}
+	searchDelete := func(ctx context.Context, env platform.Envelope) error {
+		if searchIndexer == nil {
+			return nil
+		}
+		id, err := decodeDocumentID(env)
+		if err != nil {
+			return err
+		}
+		return searchIndexer.DeleteDocument(ctx, id)
+	}
+	consumer.Register(knowledge.SearchTopicDocumentUpsert, searchUpsert)
+	consumer.Register(knowledge.SearchTopicDocumentDelete, searchDelete)
 
 	relay := outbox.NewRelay(outboxRepo, relayPublisher{rabbit: rabbit}, log.Named("relay"), outbox.RelayOptions{})
 
