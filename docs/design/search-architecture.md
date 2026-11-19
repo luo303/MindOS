@@ -1,7 +1,7 @@
 # 检索架构：PG + Elasticsearch + MinIO
 
-> 状态：阶段 1（基础设施 + ES Searcher）与文档索引器已落地（2026-11-18）；
-> 全量回填、消息索引仍待实现（见 §11）。
+> 状态：阶段 1/2/3 已落地（2026-11-19）：基础设施、文档索引器、消息索引、
+> 会话滚动摘要与冷层召回；全量回填仍待实现（见 §11）。
 > 本文取代 `docs/design/conversation-memory.md` 中"gse + tsvector"的关键词检索方案；
 > 会话记忆的摘要/冷层设计仍以该文档为准，只是检索后端换成 ES。
 > 核心分工：**PG 存事实，ES 存检索副本，MinIO 存原文；LLM 只通过工具间接访问。**
@@ -314,7 +314,7 @@ score(chunk) = 1/(60 + rank_kw) + 1/(60 + rank_vec)
 | 2 | outbox 事件 + indexer（**已落地**）+ 全量回填（待做） | PG 行数 = ES 文档数（分块） |
 | 3 | 影子读：同时查 PG 原生与 ES，记录差异 | 评测集 Recall/MRR 不低于基线 |
 | 4 | 切换 `search_knowledge` 到 ES | 线上错误率/延迟达标 |
-| 5 | 消息索引 + 会话记忆冷层 | 长会话评测通过 |
+| 5 | 消息索引 + 会话记忆冷层（**已落地**） | 长会话评测通过 |
 | 6 | 下线原生 FTS（保留 embedding） | 稳定一个版本后 |
 
 建议保留 `SEARCH_BACKEND=es|native` 开关至少一个版本，便于回滚。
@@ -363,7 +363,9 @@ score(chunk) = 1/(60 + rank_kw) + 1/(60 + rank_vec)
   indexer 按 `document_id` 清理旧分块后 bulk 写 ES，worker 注册 upsert/delete。
 - 真实 ES 集成测试通过：写入、owner 隔离、中文关键词、删除清理、outbox 事件。
 - 测试数据已清空（documents/chunks/conversations/messages/tasks/outbox），ES 索引为空。
-- 未完成：全量回填命令、消息索引、索引与 PG 的对账。
+- 消息索引已落地：`mindos-messages`，消息落库后 upsert + 异步 embedding；
+  冷层 `MessageSearcher` 走 BM25 + kNN + RRF，摘要由 `conversation.summarize` 生成。
+- 未完成：全量回填命令、索引与 PG 的对账、长会话评测。
 
 **开放问题**
 

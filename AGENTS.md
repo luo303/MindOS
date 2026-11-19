@@ -22,9 +22,9 @@
 所有面向用户的查询必须带它，且条件**不可选**——写成 `if ownerID > 0` 视同越权漏洞。
 组织/团队空间、角色权限矩阵仍是后置能力；提前引入 `workspace_id` 与成员表算越界。
 
-技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
+技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ Elasticsearch（检索读模型）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
 
-**当前状态（2026-11-18）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答、多轮会话（阶段 1：会话/消息/热层历史），以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；导入/重索引经事务写 outbox → RabbitMQ → 消费端更新 tasks，reaper 兜底重投与清理；切分后另排 `document.embed` 任务算向量（`vector(1024)` + HNSW），未配置模型则标 `skipped`；`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ 混合检索（RRF）+ SSE 流式回答；引用只做展示映射，不做强制校验（无阈值、无 judge），对话模型配置存库（密钥 AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md` 与 `docs/design/rag.md`。
+**当前状态（2026-11-19）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答、多轮会话（阶段 1/2/3：热层 + 滚动摘要 + ES 冷层召回），以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；PG 是事实库，Elasticsearch 是检索读模型（`mindos-chunks` / `mindos-messages`，BM25 + kNN + 应用侧 RRF）；文档切分/向量化/删除经 outbox → RabbitMQ → indexer 写 ES，消息落库后排 upsert + 异步 embedding，冷层按 `seq < hotStart` 召回原文并补相邻消息；摘要每 12 条积压触发，认领/提交/释放防并发。`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ SSE 流式回答；引用只做展示映射，对话模型配置存库（AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md`、`docs/design/rag.md`、`docs/design/search-architecture.md` 与 `docs/design/conversation-memory.md`。
 
 ## 2. 仓库结构与命令
 
@@ -89,7 +89,7 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 
 ## 4. 硬性约束（必须）
 
-1. **单一主库**：只用 PostgreSQL（含 pgvector）。不引入独立向量数据库、不引入第二种 ORM。
+1. **单一主库**：事实只写 PostgreSQL（含 pgvector）；Elasticsearch 仅作检索读模型，不承载事务/事实。不引入独立向量数据库、不引入第二种 ORM。
 2. **GORM 只用链式 API**（`db.WithContext(ctx).Where(...)`），不混用 `gorm.G[T]` 泛型 API。
 3. **依赖手工装配**：全部在 `cmd/server/main.go` 用 `NewXxx()` 逐层传参，不引入 Wire / Dig / 反射容器。
 4. **构造函数返回具体类型**，接口由**使用方**按需定义。

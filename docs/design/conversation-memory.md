@@ -1,7 +1,8 @@
 # 会话记忆与混合召回技术方案
 
-> 状态：阶段 1（会话/消息/热层历史）已落地（2026-11-18）；阶段 2/3 待实现。
-> 本文是最终形态：三张表、热/冷/摘要三层、写入时计算 embedding、摘要只吃最新一版。
+> 状态：阶段 1/2/3 已落地（2026-11-19）；冷层的向量与关键词检索改走
+> Elasticsearch `mindos-messages`（BM25 + kNN + 应用侧 RRF），PG 只存事实与 embedding。
+> 本文是最终形态：三张表、热/冷/摘要三层、写入后异步计算 embedding、摘要只吃最新一版。
 
 ## 0. 一句话
 
@@ -22,7 +23,7 @@
 
 1. 不把整段对话向量化后当成"记忆摘要"——摘要是一条压缩文本，冷层是原文；
 2. 不做跨会话记忆（用户级长期记忆），本期冷层只查当前会话；
-3. 不引入第二套向量库、外部检索服务或 Postgres 扩展；中文分词用纯 Go 的 gse；
+3. 不引入第二套向量库；冷层检索使用 Elasticsearch 读模型，PG 仍保留 embedding 供重建；
 4. 不做消息编辑/删除后的增量修正（第一期不支持编辑）。
 
 ## 2. 三层与预算
@@ -96,22 +97,19 @@ CREATE TABLE messages (
     content         text   NOT NULL,
     citations       jsonb  NOT NULL DEFAULT '[]',
     seq             integer NOT NULL,          -- 会话内从 1 开始
-    -- 冷层语义检索；写入后立即计算，失败时为 NULL
+    -- 冷层语义检索；写入后异步计算，失败时为 NULL
     embedding       vector(1024),
     embedding_model text,
     embedded_at     timestamptz,
-    -- 冷层关键词检索；写入时用 gse 分词生成
-    search_tokens   tsvector NOT NULL,
-    tokenizer_version smallint NOT NULL DEFAULT 1,
+    -- 热层/摘要预算的启发式估算
     token_count     integer NOT NULL DEFAULT 0,
     created_at      timestamptz NOT NULL DEFAULT now(),
     UNIQUE (conversation_id, seq)
 );
 CREATE INDEX messages_conv_seq_idx ON messages (conversation_id, seq);
 CREATE INDEX messages_owner_idx ON messages (owner_id, conversation_id, seq);
-CREATE INDEX messages_search_tokens_idx ON messages USING gin (search_tokens);
-CREATE INDEX messages_embedding_idx ON messages
-    USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL;
+-- 关键词/向量检索在 ES 的 mindos-messages；PG 不建 tsvector / HNSW。
+-- embedding 列保留，用于 ES 重建时不必重新调用向量模型。
 
 CREATE TABLE conversation_summaries (
     id                bigserial PRIMARY KEY,
@@ -154,7 +152,7 @@ CREATE INDEX conversation_summaries_latest_idx
 assistant 回复完成后，在一个事务里：
 
 1. `INSERT messages`（`seq = message_count + 1`，更新 `conversations.message_count / last_message_at`）；
-2. 计算 `search_tokens`（gse 分词，纯本地，插入时算）；
+2. 同一事务写 `search.message.upsert` 与 `search.message.embed` 事件；
 3. 提交。
 
 ### 4.2 embedding 写入时计算
@@ -299,68 +297,51 @@ SELECT content
 
 ### 7.1 范围
 
-```sql
-WHERE owner_id = $owner
-  AND conversation_id = $conv
-  AND seq < $hotStart
-  AND embedding IS NOT NULL          -- 语义路
-```
+所有冷层查询都带三条过滤：
+
+~~~text
+owner_id = $owner
+conversation_id = $conv
+seq < $hotStart
+~~~
 
 - 只查当前会话（本期不做跨会话）；
 - 只查比热层更早的消息；
-- 所有消息都有 embedding（写入时算）；失败为 NULL 的只走关键词路。
+- 向量路只召回 `embedding` 非空的消息；失败为 NULL 的只走关键词路。
 
 ### 7.2 语义路
 
-```sql
-SELECT id, seq, role, content, embedding <=> $1 AS distance
-  FROM messages
- WHERE owner_id = $2
-   AND conversation_id = $3
-   AND seq < $4
-   AND embedding IS NOT NULL
- ORDER BY embedding <=> $1
- LIMIT 20;
-```
+ES 的 kNN 查询（过滤条件同时下推）：
 
-HNSW + `seq` 过滤需要迭代扫描（与知识检索一致）：
+~~~json
+{
+  "size": 20,
+  "knn": {
+    "field": "embedding",
+    "query_vector": [ ... ],
+    "k": 20,
+    "num_candidates": 100,
+    "filter": [
+      { "term": { "owner_id": 1 } },
+      { "term": { "conversation_id": 7 } },
+      { "range": { "seq": { "lt": 100 } } }
+    ]
+  }
+}
+~~~
 
-```sql
-SET LOCAL hnsw.iterative_scan = 'relaxed_order';
-SET LOCAL hnsw.ef_search = '100';
-```
+### 7.3 关键词路：Elasticsearch
 
-### 7.3 关键词路：gse 分词
+PG 不再存 `search_tokens` / tsvector，也不引入 gse：
 
-为什么不用 PostgreSQL 内置方案：
+- 消息写入时发 `search.message.upsert`，indexer 写 `mindos-messages`；
+- 关键词路用 ES 的 `match` 查 `content`，分析器为官方 `smartcn`；
+- 过滤条件固定为 `owner_id`、`conversation_id`、`seq < hotStart`；
+- 向量路用 `embedding` 的 kNN，同样带这三条过滤；
+- 两路各取 20 条，在 Go 里做 RRF，取 top 5。
 
-- `simple` 不切中文，整句是一个 token；
-- 当前 PostgreSQL 的 `pg_trgm` 对中文 `show_trgm('如何申请退款')` 返回空集合，
-  `similarity` / `word_similarity` 恒为 0（已实测）；
-- `zhparser` / `pg_bigm` 当前镜像没有，且要改镜像。
-
-用纯 Go 的 `github.com/go-ego/gse`（v1.3.1，无 CGO）：
-
-- 启动时 `gse.NewEmbed("zh")` 加载内置词典；
-- 写入和查询统一用 `CutSearch(text, true)`：对复合词同时输出子词；
-- 过滤标点/空白和停用词，只保留中文/字母/数字 token；
-- **写入**：不去重（保留词频供 `ts_rank_cd` 用），上限 4000；
-- **查询**：去重，上限 64；
-- `to_tsvector('simple', strings.Join(tokens, " "))` 写入 `search_tokens`。
-
-实测：
-
-```text
-"如何申请退款"        → 如何 申请 退款
-"timeout怎么排查"     → timeout 怎么 排查
-"Redis集群3节点"      → redis 集群 3 节点
-"中华人民共和国"      → 中华 华人 人民 共和 共和国 中华人民共和国
-"订单一直没发货，怎么办？" → 订单 一直 没 发货 怎么办（标点被过滤）
-```
-
-查询 SQL 不变，`$1` 是 `strings.Join(tokens, " | ")`；token 只含中文/字母/数字，没有 tsquery 元字符。
-
-升级词典或分词算法时，按 `tokenizer_version` 重算历史 `search_tokens` 并重建 GIN 索引。
+消息 embedding 由 `search.message.embed` 异步写入 PG，再刷新 ES 文档：
+失败时 `messages.embedding` 为 NULL，关键词路仍可用。
 
 ### 7.4 RRF 融合
 
@@ -503,8 +484,8 @@ dispatcher 发布到 RabbitMQ；consumer 按 `conversation.summarize` 注册到 
 | 阶段 | 内容 | 前置 |
 |---|---|---|
 | 1 | `conversations` / `messages` + 会话 CRUD + 热层历史 + 前端会话列表（**已完成**） | 无 |
-| 2 | 写入时 embedding + 摘要任务 + 最新摘要 + 认领/重建 | 阶段 1 |
-| 3 | 冷层双路召回（gse 分词）+ RRF + 相邻补齐 | 阶段 2 |
+| 2 | 写入时 embedding + 摘要任务 + 最新摘要 + 认领/重建（**已完成**） | 阶段 1 |
+| 3 | 冷层双路召回（ES）+ RRF + 相邻补齐（**已完成**） | 阶段 2 |
 | 4 | 评测集、消融、预算调参、文档 | 阶段 3 |
 
 建议提交：
@@ -522,7 +503,12 @@ dispatcher 发布到 RabbitMQ；consumer 按 `conversation.summarize` 注册到 
   `agent.Runner` 改为接收 `HistoryMessage` 列表，用 Eino `Runner.Run` 带最近 16 条。
 - 前端：对话页加载会话与历史，按会话发送；`/ask` 保留为一次性问答。
 - 测试：会话仓储、历史拼接、跨租户 404、迁移 up/down。
-- 尚未做：embedding 写入、滚动摘要、冷层召回、gse 分词。
+- 阶段 2/3（2026-11-19）：
+  - 迁移 0016：消息 `embedding/embedding_model/embedded_at/token_count`、`conversation_summaries`、会话摘要水位；
+  - 消息写入排 `search.message.upsert` / `search.message.embed`；indexer 写 `mindos-messages`；
+  - 冷层 `MessageSearcher`：BM25 + kNN + RRF，`seq < hotStart`；
+  - `ConversationMemory`：最新摘要 + 冷层原文 + `seq±1`，作为 system 上下文；
+  - 每 12 条积压触发 `conversation.summarize`，认领/提交/释放防并发。
 
 ## 16. 风险与取舍
 
@@ -530,11 +516,11 @@ dispatcher 发布到 RabbitMQ；consumer 按 `conversation.summarize` 注册到 
 |---|---|---|
 | 摘要漂移/丢细节 | 旧事实答不出 | 冷层保留全部原文 + 可重建 + 版本 |
 | embedding 成本（2 条/轮） | 调用费用/延迟 | 同轮批量、异步、失败不阻塞 |
-| HNSW + seq 过滤召回不足 | 冷层漏召回 | 迭代扫描 + ef_search，必要时扩大候选 |
+| ES 过滤 + kNN 召回不足 | 冷层漏召回 | num_candidates/k 调参、关键词路兜底 |
 | token 估算不准 | 超预算 | 20% 余量 + 实际 usage 校准 |
 | 历史注入 | 模型被旧消息带偏 | "历史是数据" + 工具/权限边界不变 |
 | 摘要任务积压 | 摘要滞后 | 认领/重试/积压指标；冷层不依赖摘要 |
-| gse 词典/OOV/版本 | 新词切错、升级后索引不一致 | CutSearch + 自定义词典 + tokenizer_version 重算 |
+| ES 分词/索引版本 | 新词切错、升级后索引不一致 | 固定 smartcn/IK 版本；新索引 + 别名切换 |
 
 ## 17. 开放问题
 
@@ -546,71 +532,9 @@ dispatcher 发布到 RabbitMQ；consumer 按 `conversation.summarize` 注册到 
 
 ## 18. 附录：关键实现片段
 
-### 18.1 关键词分词
+### 18.1 关键词
 
-```go
-type Tokenizer struct {
-    seg *gse.Segmenter
-}
-
-// NewTokenizer 在启动时加载内置词典；加载后只读，可并发使用。
-func NewTokenizer() (*Tokenizer, error) {
-    seg, err := gse.NewEmbed("zh")
-    if err != nil {
-        return nil, err
-    }
-    return &Tokenizer{seg: &seg}, nil
-}
-
-// IndexTokens 用于写入：保留词频，上限 4000。
-func (t *Tokenizer) IndexTokens(text string) []string {
-    return t.tokens(text, 4000, false)
-}
-
-// QueryTokens 用于查询：去重，上限 64。
-func (t *Tokenizer) QueryTokens(text string) []string {
-    return t.tokens(text, 64, true)
-}
-
-func (t *Tokenizer) tokens(text string, max int, dedupe bool) []string {
-    out := make([]string, 0, 32)
-    seen := make(map[string]struct{})
-    for _, token := range t.seg.CutSearch(text, true) {
-        token = strings.TrimSpace(strings.ToLower(token))
-        if !isWordToken(token) || stopWords[token] {
-            continue
-        }
-        if dedupe {
-            if _, ok := seen[token]; ok {
-                continue
-            }
-            seen[token] = struct{}{}
-        }
-        out = append(out, token)
-        if len(out) >= max {
-            break
-        }
-    }
-    return out
-}
-
-func isWordToken(s string) bool {
-    if s == "" {
-        return false
-    }
-    for _, r := range s {
-        if !(unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r)) {
-            return false
-        }
-    }
-    return true
-}
-```
-
-> `stopWords` 是一个很小的静态集合（的/了/是/在/和/与/及/或/而/就/都/也/很/吗/呢/吧/啊/哦/嗯），
-> 不要过滤“没/没有/不”这类否定词。
-> `CutSearch` 对复合词会同时输出子词（“中华人民共和国” → 中华/华人/人民/共和/共和国/…），
-> 这是检索想要的召回；tokenizer 版本变化时要重算 `search_tokens`。
+关键词由 ES 的 `smartcn` 分析器处理，见 `search-architecture.md`。PG 不再保存 `search_tokens`。
 
 ### 18.2 RRF
 
