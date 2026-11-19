@@ -152,10 +152,14 @@ PG 事务里写 outbox：
 | `search.document.upsert` | 导入、重索引、embedding 完成 | `document_id, owner_id` |
 | `search.document.delete` | 删除文档 | `document_id, owner_id` |
 | `search.message.upsert` | 消息落库 | `message_id, conversation_id, owner_id` |
-| `search.message.delete` | 删除会话/消息 | 同上 |
+| `search.message.embed` | 消息落库后异步补向量 | 同上 |
+| `search.message.delete` | 单条消息删除（预留） | 同上 |
+| `search.conversation.delete` | 删除会话 | `conversation_id, owner_id` |
 
 - 同事务写 outbox：文档写成功但事件丢失会造成"搜不到"，outbox 消除这个窗口；
-- `MsgKey = document_id` / `conversation_id`，保证同一对象的索引事件按序消费；
+- `MsgKey = document_id` / `conversation_id`：同一业务对象的**分组键**。当前默认 exchange + 固定队列、
+  多 worker 消费，不保证严格顺序；handler 都从 PG 读最新状态，乱序也幂等。将来要严格顺序时，
+  再按 `MsgKey` 做 consistent-hash 分区；
 - payload 只放 ID，不搬运正文；indexer 从 PG 读最新数据，避免消息里是旧内容。
 
 ### 5.2 indexer
@@ -170,7 +174,7 @@ PG 事务里写 outbox：
 ```
 
 - `_id` 用全局主键，天然幂等；重复消费只是覆盖；
-- 每条 `_source` 带 `updated_at`；同一对象的乱序事件由 `MsgKey` 顺序消费兜底；
+- 每条 `_source` 带 `updated_at`；同一对象的乱序事件靠"读最新 PG + 同 `_id` 覆盖"兜底；
 - 删除文档必须按 `document_id` 清理所有分块，避免孤儿命中。
 
 ### 5.3 重建
