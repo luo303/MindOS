@@ -19,7 +19,7 @@ import (
 // 用 chat 自己的结构而不是 *schema.Message：chat 不该 import eino。
 // agent 负责把 role/content 翻成 Eino 的消息类型。
 type HistoryMessage struct {
-	Role    string // user | assistant
+	Role    string // system | user | assistant
 	Content string
 }
 

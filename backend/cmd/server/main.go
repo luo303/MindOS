@@ -338,11 +338,23 @@ func run() error {
 		log.Named("agent"),
 	)
 
+	// 会话冷层：消息索引器负责写 ES，MessageSearcher 负责召回。
+	// embedding 为 nil 时只走关键词，摘要仍可用。
+	var messageIndexer *chat.MessageIndexer
+	var chatMemory *chat.ConversationMemory
+	if esClient != nil {
+		conversationRepo := chat.NewConversationRepository(db)
+		messageSearcher := chat.NewMessageSearcher(esClient, embedding, cfg.Elastic.IndexPrefix)
+		chatMemory = chat.NewConversationMemory(conversationRepo, messageSearcher, log.Named("memory"))
+		messageIndexer = chat.NewMessageIndexer(db, esClient, cfg.Elastic.IndexPrefix, embedding, log.Named("search"))
+	}
+
 	chatSvc := chat.NewService(
 		chatModelSvc,
 		chat.NewRepository(db),
 		agentBuilder,
 		chat.NewConversationRepository(db),
+		chatMemory,
 		chat.Settings{
 			Timeout: cfg.Rag.Timeout,
 		},
@@ -492,6 +504,65 @@ func run() error {
 	}
 	consumer.Register(knowledge.SearchTopicDocumentUpsert, searchUpsert)
 	consumer.Register(knowledge.SearchTopicDocumentDelete, searchDelete)
+
+	decodeMessageID := func(env platform.Envelope) (int64, error) {
+		var payload struct {
+			MessageID int64 `json:"message_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			return 0, fmt.Errorf("decode %s payload: %w", env.Topic, err)
+		}
+		if payload.MessageID <= 0 {
+			return 0, fmt.Errorf("%s payload has invalid message_id %d", env.Topic, payload.MessageID)
+		}
+		return payload.MessageID, nil
+	}
+	messageUpsert := func(ctx context.Context, env platform.Envelope) error {
+		if messageIndexer == nil {
+			return nil
+		}
+		id, err := decodeMessageID(env)
+		if err != nil {
+			return err
+		}
+		return messageIndexer.Upsert(ctx, id)
+	}
+	messageEmbed := func(ctx context.Context, env platform.Envelope) error {
+		if messageIndexer == nil {
+			return nil
+		}
+		id, err := decodeMessageID(env)
+		if err != nil {
+			return err
+		}
+		return messageIndexer.Embed(ctx, id)
+	}
+	messageDelete := func(ctx context.Context, env platform.Envelope) error {
+		if messageIndexer == nil {
+			return nil
+		}
+		id, err := decodeMessageID(env)
+		if err != nil {
+			return err
+		}
+		return messageIndexer.Delete(ctx, id)
+	}
+	consumer.Register(chat.SearchMessageUpsert, messageUpsert)
+	consumer.Register(chat.SearchMessageEmbed, messageEmbed)
+	consumer.Register(chat.SearchMessageDelete, messageDelete)
+	consumer.Register(chat.SummaryTopic, func(ctx context.Context, env platform.Envelope) error {
+		var payload struct {
+			ConversationID int64 `json:"conversation_id"`
+			OwnerID        int64 `json:"owner_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			return fmt.Errorf("decode summary payload: %w", err)
+		}
+		if payload.ConversationID <= 0 || payload.OwnerID <= 0 {
+			return fmt.Errorf("summary payload has invalid ids: %+v", payload)
+		}
+		return chatSvc.SummarizeConversation(ctx, payload.OwnerID, payload.ConversationID)
+	})
 
 	relay := outbox.NewRelay(outboxRepo, relayPublisher{rabbit: rabbit}, log.Named("relay"), outbox.RelayOptions{})
 

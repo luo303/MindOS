@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/luo303/mindos/backend/internal/outbox"
 )
 
 // ConversationRepository 是会话与消息的数据访问层。
@@ -101,17 +104,31 @@ func (r *ConversationRepository) AppendMessage(
 			Content:        content,
 			Citations:      citations,
 			Seq:            seq,
+			TokenCount:     estimateTokens(content),
 		}
 		if err := tx.Create(&msg).Error; err != nil {
 			return err
 		}
-		return tx.Model(&Conversation{}).
+		if err := tx.Model(&Conversation{}).
 			Where("owner_id = ? AND id = ?", ownerID, conversationID).
 			Updates(map[string]any{
 				"message_count": seq,
 				"title":         title,
 				"updated_at":    time.Now().UTC(),
-			}).Error
+			}).Error; err != nil {
+			return err
+		}
+		// 先索引正文（关键词立即可用），再异步补向量。
+		payload := map[string]any{
+			"message_id":      msg.ID,
+			"conversation_id": conversationID,
+			"owner_id":        ownerID,
+		}
+		msgKey := strconv.FormatInt(msg.ID, 10)
+		if err := outbox.AppendTx(ctx, tx, outbox.New(SearchMessageUpsert, msgKey, payload)); err != nil {
+			return err
+		}
+		return outbox.AppendTx(ctx, tx, outbox.New(SearchMessageEmbed, msgKey, payload))
 	})
 	if err != nil {
 		if errors.Is(err, ErrConversationNotFound) {
@@ -141,6 +158,40 @@ func (r *ConversationRepository) MessagesBefore(
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
 	reverseMessages(out)
+	return out, nil
+}
+
+// LatestSummary 读最新一版摘要；没有摘要时返回 (nil, nil)。
+func (r *ConversationRepository) LatestSummary(ctx context.Context, ownerID, conversationID int64) (*ConversationSummary, error) {
+	var summary ConversationSummary
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND conversation_id = ?", ownerID, conversationID).
+		Order("version DESC").
+		Take(&summary).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("latest summary: %w", err)
+	}
+	return &summary, nil
+}
+
+// MessagesBySeqs 按 seq 批量取消息，只返回属于该会话/用户的行。
+//
+// 冷层命中单条消息后用它补 seq±1，不依赖派生轮次表。
+func (r *ConversationRepository) MessagesBySeqs(ctx context.Context, ownerID, conversationID int64, seqs []int) ([]Message, error) {
+	if len(seqs) == 0 {
+		return nil, nil
+	}
+	var out []Message
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND conversation_id = ? AND seq IN ?", ownerID, conversationID, seqs).
+		Order("seq ASC").
+		Find(&out).Error
+	if err != nil {
+		return nil, fmt.Errorf("list messages by seqs: %w", err)
+	}
 	return out, nil
 }
 

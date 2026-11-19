@@ -177,7 +177,7 @@ func newTestService(t *testing.T, opts testDeps) *Service {
 	if opts.runs == nil {
 		opts.runs = &fakeRunStore{}
 	}
-	return NewService(opts.models, opts.runs, opts.builder, nil, Settings{Timeout: 10 * time.Second}, nil)
+	return NewService(opts.models, opts.runs, opts.builder, nil, nil, Settings{Timeout: 10 * time.Second}, nil)
 }
 
 func hitFixture() *agent.Hit {

@@ -216,11 +216,15 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 	// 历史消息按原样交给 Eino：user/assistant 交替，当前问题由调用方放在最后。
 	msgs := make([]*schema.Message, 0, len(history))
 	for _, item := range history {
-		if item.Role == "assistant" {
+		switch item.Role {
+		case "system":
+			// 会话摘要/冷层历史由 chat 组装成 system，放在最前面。
+			msgs = append(msgs, schema.SystemMessage(item.Content))
+		case "assistant":
 			msgs = append(msgs, schema.AssistantMessage(item.Content, nil))
-			continue
+		default:
+			msgs = append(msgs, schema.UserMessage(item.Content))
 		}
-		msgs = append(msgs, schema.UserMessage(item.Content))
 	}
 	iter := runner.Run(ctx, msgs, cancelOpt)
 

@@ -150,6 +150,7 @@ const messagesIndexBody = `{
       "role":            { "type": "keyword" },
       "content":         { "type": "text", "analyzer": "smartcn", "search_analyzer": "smartcn" },
       "seq":             { "type": "integer" },
+      "embed_model":     { "type": "keyword" },
       "embedding":       { "type": "dense_vector", "dims": 1024, "index": true, "similarity": "cosine" },
       "created_at":      { "type": "date" }
     }

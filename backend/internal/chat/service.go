@@ -151,12 +151,13 @@ type Service struct {
 	runs     RunStore
 	builder  AnswererBuilder
 	convs    *ConversationRepository
+	memory   *ConversationMemory
 	settings Settings
 	log      *zap.Logger
 }
 
-// NewService 组装编排层。依赖全部由 cmd/server 注入。
-func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, convs *ConversationRepository, settings Settings, log *zap.Logger) *Service {
+// NewService 组装编排层。依赖全部由 cmd/server 注入；memory 允许为 nil。
+func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, convs *ConversationRepository, memory *ConversationMemory, settings Settings, log *zap.Logger) *Service {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -165,6 +166,7 @@ func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, co
 		runs:     runs,
 		builder:  builder,
 		convs:    convs,
+		memory:   memory,
 		settings: settings,
 		log:      log,
 	}
@@ -208,7 +210,12 @@ func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID
 		return err
 	}
 
-	history := make([]agent.HistoryMessage, 0, historyLimit)
+	// 热层保留最近 historyLimit 条；冷层只看比热层更早的 seq。
+	hotStart := userMsg.Seq - historyLimit
+	if hotStart < 1 {
+		hotStart = 1
+	}
+	history := make([]agent.HistoryMessage, 0, historyLimit+1)
 	if msgs, err := s.convs.MessagesBefore(ctx, ownerID, conversationID, userMsg.Seq, historyLimit); err != nil {
 		// 历史读失败不该让这一轮直接失败：至少还能回答当前问题。
 		s.log.Warn("load conversation history failed", zap.Int64("conversation_id", conversationID), zap.Error(err))
@@ -217,8 +224,47 @@ func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID
 			history = append(history, agent.HistoryMessage{Role: msg.Role, Content: msg.Content})
 		}
 	}
+	if s.memory != nil {
+		if block := s.memory.Context(ctx, ownerID, conversationID, hotStart, strings.TrimSpace(in.Question)); block != "" {
+			history = append([]agent.HistoryMessage{{Role: "system", Content: block}}, history...)
+		}
+	}
 
 	return s.execute(ctx, ownerID, in, resolved, history, &conversationID, userMsg.ID, emit)
+}
+
+// SummarizeConversation 执行一次滚动摘要任务。
+//
+// 认领在短事务里完成；模型调用在事务外；提交前再次校验认领，
+// 防止两个 worker 同时写同一版本。
+func (s *Service) SummarizeConversation(ctx context.Context, ownerID, conversationID int64) error {
+	claim, err := s.convs.ClaimSummary(ctx, ownerID, conversationID)
+	if err != nil {
+		return err
+	}
+	if claim == nil {
+		return nil
+	}
+	target, err := s.models.Resolve(ctx, ownerID, nil)
+	if err != nil {
+		_ = s.convs.ReleaseSummary(ctx, conversationID, int64(claim.BatchToSeq))
+		s.log.Warn("summary model unavailable", zap.Int64("conversation_id", conversationID), zap.Error(err))
+		return nil
+	}
+	messages := make([]agent.SummaryMessage, 0, len(claim.Messages))
+	for _, msg := range claim.Messages {
+		messages = append(messages, agent.SummaryMessage{Role: msg.Role, Content: msg.Content})
+	}
+	summary, err := agent.Summarize(ctx, target, claim.Previous, messages)
+	if err != nil {
+		_ = s.convs.ReleaseSummary(ctx, conversationID, int64(claim.BatchToSeq))
+		return err
+	}
+	if err := s.convs.CommitSummary(ctx, claim, summary, estimateTokens(summary), target.Model); err != nil {
+		_ = s.convs.ReleaseSummary(ctx, conversationID, int64(claim.BatchToSeq))
+		return err
+	}
+	return nil
 }
 
 // validateQuestion 是单轮与多轮共用的输入校验。
@@ -301,6 +347,9 @@ func (s *Service) execute(
 				zap.Int64("conversation_id", *conversationID), zap.Error(saveErr))
 		} else {
 			assistantMessageID = saved.ID
+			if err := s.convs.MaybeEnqueueSummary(persistCtx, ownerID, *conversationID); err != nil {
+				s.log.Warn("enqueue summary failed", zap.Int64("conversation_id", *conversationID), zap.Error(err))
+			}
 		}
 	}
 
