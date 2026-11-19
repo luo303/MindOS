@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 
 import {
   authQueryKeys,
@@ -31,12 +31,26 @@ export function useMe() {
   })
 }
 
+/**
+ * 清掉上一个账号留下的业务缓存。
+ *
+ * 退出/登录/注册时只改 auth.me 不够：会话、消息、文档这些 query key
+ * 不带用户 id，新账号会先渲染旧账号的缓存（也会把旧数据展示给新账号）。
+ * 保留 auth.me 自己，由调用方紧接着写入新值或 null。
+ */
+function clearUserScopedQueries(queryClient: QueryClient) {
+  queryClient.removeQueries({
+    predicate: (query) => query.queryKey[0] !== authQueryKeys.me[0],
+  })
+}
+
 /** 登录成功后把用户写进缓存，守卫与侧栏立即生效，不用再请求一次 /auth/me。 */
 export function useLogin() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (input: LoginInput) => login(input),
     onSuccess: (result) => {
+      clearUserScopedQueries(queryClient)
       queryClient.setQueryData(authQueryKeys.me, result.user)
     },
   })
@@ -47,6 +61,7 @@ export function useRegister() {
   return useMutation({
     mutationFn: (input: RegisterInput) => register(input),
     onSuccess: (result) => {
+      clearUserScopedQueries(queryClient)
       queryClient.setQueryData(authQueryKeys.me, result.user)
     },
   })
@@ -64,6 +79,7 @@ export function useLogout() {
   return useMutation({
     mutationFn: logout,
     onSettled: () => {
+      clearUserScopedQueries(queryClient)
       queryClient.setQueryData(authQueryKeys.me, null)
     },
   })

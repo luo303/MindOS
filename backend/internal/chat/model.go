@@ -7,6 +7,7 @@ package chat
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -88,6 +89,20 @@ func (j RawJSON) Value() (driver.Value, error) {
 		return "[]", nil
 	}
 	return string(j), nil
+}
+
+// MarshalJSON 让 citations / retrieved 以真正的 JSON 数组出参。
+//
+// 只实现 Scan / Value 只解决数据库往返；encoding/json 遇到 []byte 仍会
+// 编成 base64 字符串，前端拿到 string 后调用 citations.map 就会 TypeError。
+func (j RawJSON) MarshalJSON() ([]byte, error) {
+	if len(j) == 0 {
+		return []byte("[]"), nil
+	}
+	if !json.Valid(j) {
+		return nil, fmt.Errorf("chat: invalid raw json")
+	}
+	return []byte(j), nil
 }
 
 // Scan 从驱动读回 jsonb。
