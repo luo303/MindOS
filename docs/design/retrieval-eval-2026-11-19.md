@@ -155,10 +155,9 @@ prompt=3950, completion=511, latency=20.4s
 - 关注星火延迟：单轮 20 s 左右，交互上需要流式/超时提示；
 - 摘要后续补多批次、漂移与人工评分。
 
-## 8. 复现线索
+## 8. 复现说明
 
-- 问题集：`.tmp/eval_cases.json`（50 条，含 expected chunk）
-- 检索明细：`.tmp/eval_retrieval.json`
-- 长会话冷层：`.tmp/eval_long_cold.json`
-- 长会话摘要：`conversation_summaries` 中 `conversation_id=2`
-- 对话 usage：`qa_runs` 中 `run_id=2`
+- 本轮测评使用的是一次性脚本（问题生成、ES 查询、长会话构造），未提交到仓库；
+- 临时脚本、日志与本地测试 PG 已清理，报告保留指标与结论；
+- 关键数据仍可从开发库复核：`conversation_summaries`（conversation_id=2）、`qa_runs`（run_id=2）；
+- 后续把测评整理成正式的 `cmd/eval` 命令时，再用固定问题集重跑。
