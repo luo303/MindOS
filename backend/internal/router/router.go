@@ -133,6 +133,7 @@ func Register(e *gin.Engine, deps Deps) {
 	authed.POST("/conversations", deps.Ask.CreateConversation)
 	authed.GET("/conversations", deps.Ask.ListConversations)
 	authed.GET("/conversations/:id", deps.Ask.GetConversation)
+	authed.DELETE("/conversations/:id", deps.Ask.DeleteConversation)
 	authed.GET("/conversations/:id/messages", deps.Ask.ListMessages)
 	authed.POST("/conversations/:id/messages", deps.Ask.PostMessage)
 }

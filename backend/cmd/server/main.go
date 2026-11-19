@@ -550,6 +550,22 @@ func run() error {
 	consumer.Register(chat.SearchMessageUpsert, messageUpsert)
 	consumer.Register(chat.SearchMessageEmbed, messageEmbed)
 	consumer.Register(chat.SearchMessageDelete, messageDelete)
+	consumer.Register(chat.SearchConversationDelete, func(ctx context.Context, env platform.Envelope) error {
+		if messageIndexer == nil {
+			return nil
+		}
+		var payload struct {
+			ConversationID int64 `json:"conversation_id"`
+			OwnerID        int64 `json:"owner_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			return fmt.Errorf("decode conversation delete payload: %w", err)
+		}
+		if payload.ConversationID <= 0 || payload.OwnerID <= 0 {
+			return fmt.Errorf("conversation delete payload has invalid ids: %+v", payload)
+		}
+		return messageIndexer.DeleteConversation(ctx, payload.OwnerID, payload.ConversationID)
+	})
 	consumer.Register(chat.SummaryTopic, func(ctx context.Context, env platform.Envelope) error {
 		var payload struct {
 			ConversationID int64 `json:"conversation_id"`

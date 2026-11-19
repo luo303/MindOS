@@ -7,9 +7,10 @@ import "unicode"
 // 消息写入时同时排两条事件：一条先把正文写进 ES（关键词可立即召回），
 // 一条异步算 embedding 后重写同一条（补上向量）。两条都幂等。
 const (
-	SearchMessageUpsert = "search.message.upsert"
-	SearchMessageEmbed  = "search.message.embed"
-	SearchMessageDelete = "search.message.delete"
+	SearchMessageUpsert      = "search.message.upsert"
+	SearchMessageEmbed       = "search.message.embed"
+	SearchMessageDelete      = "search.message.delete"
+	SearchConversationDelete = "search.conversation.delete"
 )
 
 // estimateTokens 是上下文预算用的启发式估算。

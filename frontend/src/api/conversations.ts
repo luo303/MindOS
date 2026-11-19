@@ -39,6 +39,13 @@ export function createConversation(title?: string): Promise<Conversation> {
   })
 }
 
+/** 删除会话；PG 级联消息，ES 副本由后端 outbox 清理。 */
+export function deleteConversation(conversationId: number): Promise<{ deleted: boolean }> {
+  return apiRequest<{ deleted: boolean }>(`/conversations/${conversationId}`, {
+    method: 'DELETE',
+  })
+}
+
 export async function fetchMessages(conversationId: number, signal?: AbortSignal): Promise<ChatMessage[]> {
   const data = await apiRequest<{ items: ChatMessage[] | null }>(
     `/conversations/${conversationId}/messages?limit=50`,

@@ -68,6 +68,24 @@ func (h *Handler) GetConversation(c *gin.Context) {
 	httpx.OK(c, conv)
 }
 
+// DeleteConversation 是 DELETE /conversations/:id。
+func (h *Handler) DeleteConversation(c *gin.Context) {
+	p, ok := auth.PrincipalFrom(c)
+	if !ok {
+		httpx.Fail(c, httpx.ErrAuthRequired)
+		return
+	}
+	id, ok := conversationID(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteConversation(c.Request.Context(), p.UserID, id); err != nil {
+		httpx.Fail(c, mapAskError(err))
+		return
+	}
+	httpx.OK(c, gin.H{"deleted": true})
+}
+
 // ListMessages 是 GET /conversations/:id/messages。
 func (h *Handler) ListMessages(c *gin.Context) {
 	p, ok := auth.PrincipalFrom(c)

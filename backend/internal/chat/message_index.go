@@ -129,6 +129,32 @@ func (m *MessageIndexer) Delete(ctx context.Context, messageID int64) error {
 	return nil
 }
 
+// DeleteConversation 按 owner + conversation 清掉 ES 里的全部消息。
+func (m *MessageIndexer) DeleteConversation(ctx context.Context, ownerID, conversationID int64) error {
+	body, err := json.Marshal(map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []any{
+					map[string]any{"term": map[string]any{"owner_id": ownerID}},
+					map[string]any{"term": map[string]any{"conversation_id": conversationID}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	status, resp, err := esCall(ctx, m.client, http.MethodPost,
+		"/"+m.index+"/_delete_by_query?conflicts=proceed&refresh=true", "application/json", body)
+	if err != nil {
+		return err
+	}
+	if status >= 300 && status != http.StatusNotFound {
+		return fmt.Errorf("delete conversation %d from es: status %d: %s", conversationID, status, clipText(resp, 300))
+	}
+	return nil
+}
+
 // Embed 计算一条消息的向量并写回 PG，然后刷新 ES 文档。
 //
 // 失败只返回错误，messages.embedding 保持 NULL；关键词路仍然可用。

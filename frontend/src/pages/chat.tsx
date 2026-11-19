@@ -1,5 +1,5 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, SendHorizontal, Settings2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Loader2, Plus, SendHorizontal, Settings2, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -7,6 +7,7 @@ import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
 import {
   conversationKeys,
   createConversation,
+  deleteConversation,
   fetchConversations,
   fetchMessages,
   sendConversationMessage,
@@ -99,10 +100,25 @@ export function ChatPage() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [input, setInput] = useState('')
   const [pending, setPending] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const creatingRef = useRef(false)
   // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
   const syncedConversationRef = useRef<number | null>(null)
+
+  const deleteMutation = useMutation({
+    mutationFn: (conversationId: number) => deleteConversation(conversationId),
+    onSuccess: (_result, conversationId) => {
+      queryClient.removeQueries({ queryKey: conversationKeys.messages(conversationId) })
+      setActiveId(null)
+      setTurns([])
+      setConfirmDelete(false)
+      void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+    },
+    onError: (error) => {
+      console.warn('delete conversation failed', error)
+    },
+  })
 
   const conversationsQuery = useQuery({
     queryKey: conversationKeys.all,
@@ -110,6 +126,10 @@ export function ChatPage() {
     enabled: models.length > 0,
     staleTime: 10_000,
   })
+  useEffect(() => {
+    setConfirmDelete(false)
+  }, [activeId])
+
   const messagesQuery = useQuery({
     queryKey: conversationKeys.messages(activeId ?? 0),
     queryFn: ({ signal }) => fetchMessages(activeId ?? 0, signal),
@@ -311,6 +331,38 @@ export function ChatPage() {
                 </option>
               ))}
             </select>
+            {activeId !== null ? (
+              confirmDelete ? (
+                <>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => deleteMutation.mutate(activeId)}
+                    disabled={pending || deleteMutation.isPending}
+                  >
+                    确认删除
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setConfirmDelete(false)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    取消
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={pending}
+                >
+                  <Trash2 aria-hidden="true" />
+                  删除
+                </Button>
+              )
+            ) : null}
             <Button
               variant="outline"
               size="sm"

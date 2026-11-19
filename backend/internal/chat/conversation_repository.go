@@ -34,6 +34,37 @@ func (r *ConversationRepository) Create(ctx context.Context, conv *Conversation)
 	return nil
 }
 
+// DeleteConversation 删除会话、级联消息与摘要，并排一条 ES 清理事件。
+//
+// 消息/摘要的删除靠数据库外键 ON DELETE CASCADE；ES 是副本，
+// 只能在事务提交后由 indexer 按 conversation_id 异步清理。
+func (r *ConversationRepository) DeleteConversation(ctx context.Context, ownerID, conversationID int64) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("owner_id = ? AND id = ?", ownerID, conversationID).Delete(&Conversation{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrConversationNotFound
+		}
+		return outbox.AppendTx(ctx, tx, outbox.New(
+			SearchConversationDelete,
+			strconv.FormatInt(conversationID, 10),
+			map[string]any{
+				"conversation_id": conversationID,
+				"owner_id":        ownerID,
+			},
+		))
+	})
+	if errors.Is(err, ErrConversationNotFound) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("delete conversation: %w", err)
+	}
+	return nil
+}
+
 // List 按最近更新时间倒序列出会话，最多 100 条。
 func (r *ConversationRepository) List(ctx context.Context, ownerID int64, limit int) ([]Conversation, error) {
 	if limit <= 0 || limit > 100 {

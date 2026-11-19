@@ -109,4 +109,21 @@ func TestMessageMemoryIntegration(t *testing.T) {
 	if !strings.Contains(block, "退款时效") || !strings.Contains(block, "相关历史原文") {
 		t.Fatalf("memory block missing summary/cold: %s", block)
 	}
+
+	// 删除会话：PG 级联 + ES 按 conversation 清理。
+	if err := repo.DeleteConversation(ctx, owner, conv.ID); err != nil {
+		t.Fatalf("delete conversation: %v", err)
+	}
+	if err := indexer.DeleteConversation(ctx, owner, conv.ID); err != nil {
+		t.Fatalf("delete conversation from es: %v", err)
+	}
+	status, body, err := esCall(ctx, client, http.MethodPost,
+		"/"+prefix+"-messages/_count", "application/json",
+		[]byte(fmt.Sprintf(`{"query":{"term":{"conversation_id":%d}}}`, conv.ID)))
+	if err != nil {
+		t.Fatalf("count es messages: %v", err)
+	}
+	if status != http.StatusOK || !strings.Contains(string(body), `"count":0`) {
+		t.Fatalf("es messages after delete: status=%d body=%s", status, body)
+	}
 }

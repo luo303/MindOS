@@ -29,6 +29,11 @@ func (s *Service) GetConversation(ctx context.Context, ownerID, id int64) (*Conv
 	return s.convs.Get(ctx, ownerID, id)
 }
 
+// DeleteConversation 删除会话及其消息；ES 副本由 outbox 异步清理。
+func (s *Service) DeleteConversation(ctx context.Context, ownerID, id int64) error {
+	return s.convs.DeleteConversation(ctx, ownerID, id)
+}
+
 // ListMessages 返回会话最近的消息，按时间顺序。
 // 先校验会话归属，避免把别人的消息列表读出来。
 func (s *Service) ListMessages(ctx context.Context, ownerID, conversationID int64, limit, beforeSeq int) ([]Message, error) {
