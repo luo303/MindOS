@@ -24,6 +24,16 @@ func TestSummaryClaimAndCommitIntegration(t *testing.T) {
 		}
 	}
 
+	var messageEvents int64
+	if err := gdb.Model(&outbox.Message{}).
+		Where("topic IN ?", []string{SearchMessageUpsert, SearchMessageEmbed}).
+		Count(&messageEvents).Error; err != nil {
+		t.Fatalf("count message events: %v", err)
+	}
+	if messageEvents != 60 {
+		t.Fatalf("message events = %d, want 60", messageEvents)
+	}
+
 	if err := repo.MaybeEnqueueSummary(ctx, owner, conv.ID); err != nil {
 		t.Fatalf("enqueue summary: %v", err)
 	}
