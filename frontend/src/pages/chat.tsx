@@ -381,7 +381,14 @@ export function ChatPage() {
         title="对话"
         actions={
           <>
-            <Button variant="outline" size="sm" onClick={() => setApprovalOpen(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setApprovalOpen(true)
+                void approvalsQuery.refetch()
+              }}
+            >
               审批{pendingCount > 0 ? ` ${pendingCount}` : ''}
             </Button>
             <select
