@@ -24,7 +24,7 @@
 
 技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ Elasticsearch（检索读模型）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
 
-**当前状态（2026-11-19）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答、多轮会话（阶段 1/2/3：热层 + 滚动摘要 + ES 冷层召回），以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；PG 是事实库，Elasticsearch 是检索读模型（`mindos-chunks` / `mindos-messages`，BM25 + kNN + 应用侧 RRF）；文档切分/向量化/删除经 outbox → RabbitMQ → indexer 写 ES，消息落库后排 upsert + 异步 embedding，冷层按 `seq < hotStart` 召回原文并补相邻消息；摘要每 12 条积压触发，认领/提交/释放防并发。`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ SSE 流式回答；引用只做展示映射，对话模型配置存库（AES-256-GCM 加密），问答落 `qa_runs`。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md`、`docs/design/rag.md`、`docs/design/search-architecture.md` 与 `docs/design/conversation-memory.md`。
+**当前状态（2026-11-19）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答、多轮会话（阶段 1/2/3：热层 + 滚动摘要 + ES 冷层召回），以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；PG 是事实库，Elasticsearch 是检索读模型（`mindos-chunks` / `mindos-messages`，BM25 + kNN + 应用侧 RRF）；文档切分/向量化/删除经 outbox → RabbitMQ → indexer 写 ES，消息落库后排 upsert + 异步 embedding，冷层按 `seq < hotStart` 召回原文并补相邻消息；摘要每 12 条积压触发，认领/提交/释放防并发。`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ SSE 流式回答；引用只做展示映射，对话模型配置存库（AES-256-GCM 加密），问答落 `qa_runs`。**2026-11-20 追加：** 用户待办（todos）与 AI 写工具已完成；create/update/delete_todo 通过 Eino StatefulInterrupt + PG agent_checkpoints 暂停，审批后 ResumeWithParams 恢复模型继续生成；待审批记录在 agent_approvals，任务页可跨刷新处理。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md`、`docs/design/rag.md`、`docs/design/search-architecture.md` 与 `docs/design/conversation-memory.md`。
 
 ## 2. 仓库结构与命令
 
