@@ -86,6 +86,55 @@ func (h *Handler) DeleteConversation(c *gin.Context) {
 	httpx.OK(c, gin.H{"deleted": true})
 }
 
+// ListApprovals 是 GET /approvals?status=pending&conversation_id=。
+func (h *Handler) ListApprovals(c *gin.Context) {
+	p, ok := auth.PrincipalFrom(c)
+	if !ok {
+		httpx.Fail(c, httpx.ErrAuthRequired)
+		return
+	}
+	conversationID, _ := strconv.ParseInt(c.Query("conversation_id"), 10, 64)
+	items, err := h.svc.ListApprovals(c.Request.Context(), p.UserID, conversationID)
+	if err != nil {
+		httpx.Fail(c, httpx.ErrInternal.Wrap(err))
+		return
+	}
+	httpx.OK(c, gin.H{"items": items})
+}
+
+type approvalDecisionRequest struct {
+	Decision string `json:"decision" binding:"required"`
+}
+
+// DecideApproval 是 POST /approvals/:id/decision。
+func (h *Handler) DecideApproval(c *gin.Context) {
+	p, ok := auth.PrincipalFrom(c)
+	if !ok {
+		httpx.Fail(c, httpx.ErrAuthRequired)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("invalid approval id"))
+		return
+	}
+	var req approvalDecisionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("decision is required"))
+		return
+	}
+	if req.Decision != "approve" && req.Decision != "reject" {
+		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("decision must be approve or reject"))
+		return
+	}
+	result, err := h.svc.DecideApproval(c.Request.Context(), p.UserID, id, req.Decision == "approve")
+	if err != nil {
+		httpx.Fail(c, mapAskError(err))
+		return
+	}
+	httpx.OK(c, result)
+}
+
 // ListMessages 是 GET /conversations/:id/messages。
 func (h *Handler) ListMessages(c *gin.Context) {
 	p, ok := auth.PrincipalFrom(c)

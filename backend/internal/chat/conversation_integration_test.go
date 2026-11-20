@@ -97,6 +97,8 @@ func TestAskInConversationIntegration(t *testing.T) {
 		&fakeBuilder{runner: runner},
 		repo,
 		nil,
+		nil,
+		nil,
 		Settings{Timeout: 10 * time.Second},
 		nil,
 	)
@@ -156,6 +158,8 @@ func TestAskInConversationIntegration(t *testing.T) {
 		&fakeRunStore{},
 		&fakeBuilder{runner: &fakeRunner{answer: "x"}},
 		repo,
+		nil,
+		nil,
 		nil,
 		Settings{Timeout: 10 * time.Second},
 		nil,

@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/luo303/mindos/backend/internal/agent"
+	"github.com/luo303/mindos/backend/internal/approval"
 	"github.com/luo303/mindos/backend/internal/auth"
 	"github.com/luo303/mindos/backend/internal/chat"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
@@ -331,9 +332,14 @@ func run() error {
 		searcher = knowledge.NewESSearcher(esClient, embedding, cfg.Elastic.IndexPrefix)
 	}
 
+	todoSvc := todo.NewService(todo.NewRepository(db))
+	approvalSvc := approval.NewService(approval.NewRepository(db))
+
 	agentBuilder := agent.NewBuilder(
 		knowledgeRetriever{searcher: searcher},
 		sqlExecutor,
+		todoSvc,
+		approvalSvc,
 		agent.DefaultLimits(),
 		cfg.Rag.TopK,
 		log.Named("agent"),
@@ -356,14 +362,13 @@ func run() error {
 		agentBuilder,
 		chat.NewConversationRepository(db),
 		chatMemory,
+		approvalSvc,
+		todoSvc,
 		chat.Settings{
 			Timeout: cfg.Rag.Timeout,
 		},
 		log.Named("chat"),
 	)
-
-	// 待办：手动 API 与后续 Agent 工具共用同一个 service。
-	todoSvc := todo.NewService(todo.NewRepository(db))
 
 	// 任务表在业务层之前创建：knowledge 需要它判断"取消时任务排着队还是在跑"，
 	// 消费端需要它写进度，两者共用同一个对象。

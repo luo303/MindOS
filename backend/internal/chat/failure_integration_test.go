@@ -17,6 +17,8 @@ func TestAskFailurePersistsAssistantMessage(t *testing.T) {
 		&fakeBuilder{runner: &fakeRunner{err: context.DeadlineExceeded}},
 		repo,
 		nil,
+		nil,
+		nil,
 		Settings{Timeout: 10 * time.Second},
 		nil,
 	)
@@ -55,6 +57,8 @@ func TestStopPersistsNormalAssistantMessage(t *testing.T) {
 		&fakeRunStore{},
 		&fakeBuilder{runner: &fakeRunner{err: context.Canceled}},
 		repo,
+		nil,
+		nil,
 		nil,
 		Settings{Timeout: 10 * time.Second},
 		nil,

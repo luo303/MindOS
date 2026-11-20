@@ -19,8 +19,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/luo303/mindos/backend/internal/agent"
+	"github.com/luo303/mindos/backend/internal/approval"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/knowledge"
+	"github.com/luo303/mindos/backend/internal/todo"
 )
 
 const (
@@ -151,28 +153,32 @@ type RunStore interface {
 
 // Service 编排一次问答。
 type Service struct {
-	models   ModelResolver
-	runs     RunStore
-	builder  AnswererBuilder
-	convs    *ConversationRepository
-	memory   *ConversationMemory
-	settings Settings
-	log      *zap.Logger
+	models    ModelResolver
+	runs      RunStore
+	builder   AnswererBuilder
+	convs     *ConversationRepository
+	memory    *ConversationMemory
+	approvals *approval.Service
+	todos     *todo.Service
+	settings  Settings
+	log       *zap.Logger
 }
 
 // NewService 组装编排层。依赖全部由 cmd/server 注入；memory 允许为 nil。
-func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, convs *ConversationRepository, memory *ConversationMemory, settings Settings, log *zap.Logger) *Service {
+func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, convs *ConversationRepository, memory *ConversationMemory, approvals *approval.Service, todos *todo.Service, settings Settings, log *zap.Logger) *Service {
 	if log == nil {
 		log = zap.NewNop()
 	}
 	return &Service{
-		models:   models,
-		runs:     runs,
-		builder:  builder,
-		convs:    convs,
-		memory:   memory,
-		settings: settings,
-		log:      log,
+		models:    models,
+		runs:      runs,
+		builder:   builder,
+		convs:     convs,
+		memory:    memory,
+		approvals: approvals,
+		todos:     todos,
+		settings:  settings,
+		log:       log,
 	}
 }
 
@@ -297,6 +303,13 @@ func (s *Service) execute(
 	settings := s.settings.normalized()
 	runCtx, cancel := context.WithTimeout(ctx, settings.Timeout)
 	defer cancel()
+
+	// 写工具需要知道当前会话/用户消息/模型；通过 context 传，不改 Runner 接口。
+	meta := agent.RunMeta{UserMessageID: userMessageID, ChatModelID: resolved.ID}
+	if conversationID != nil {
+		meta.ConversationID = *conversationID
+	}
+	runCtx = agent.WithRunMeta(runCtx, meta)
 
 	// 本次 run 的编号表。检索已经移进 agent，这里只负责收集工具返回的片段。
 	registry := agent.NewRegistry()

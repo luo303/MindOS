@@ -1,0 +1,75 @@
+package approval
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"gorm.io/gorm"
+)
+
+var ErrNotFound = errors.New("approval not found")
+
+type Repository struct{ db *gorm.DB }
+
+func NewRepository(db *gorm.DB) *Repository { return &Repository{db: db} }
+
+func (r *Repository) Create(ctx context.Context, req *Request) error {
+	if err := r.db.WithContext(ctx).Create(req).Error; err != nil {
+		return fmt.Errorf("create approval: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) Get(ctx context.Context, ownerID, id int64) (*Request, error) {
+	var req Request
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND id = ?", ownerID, id).
+		Take(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get approval %d: %w", id, err)
+	}
+	return &req, nil
+}
+
+func (r *Repository) ListPending(ctx context.Context, ownerID int64, conversationID int64) ([]Request, error) {
+	query := r.db.WithContext(ctx).
+		Where("owner_id = ? AND status = ? AND expires_at > now()", ownerID, StatusPending)
+	if conversationID > 0 {
+		query = query.Where("conversation_id = ?", conversationID)
+	}
+	var out []Request
+	if err := query.Order("created_at DESC").Limit(100).Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("list pending approvals: %w", err)
+	}
+	return out, nil
+}
+
+// Decide 条件更新 pending -> approved/rejected，只有一个请求能抢到。
+func (r *Repository) Decide(ctx context.Context, ownerID, id int64, status string) (*Request, error) {
+	now := time.Now().UTC()
+	res := r.db.WithContext(ctx).Model(&Request{}).
+		Where("owner_id = ? AND id = ? AND status = ? AND expires_at > now()", ownerID, id, StatusPending).
+		Updates(map[string]any{"status": status, "decided_at": now, "updated_at": now})
+	if res.Error != nil {
+		return nil, fmt.Errorf("decide approval %d: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+	return r.Get(ctx, ownerID, id)
+}
+
+func (r *Repository) Complete(ctx context.Context, ownerID, id int64, status string, result JSON) error {
+	return r.db.WithContext(ctx).Model(&Request{}).
+		Where("owner_id = ? AND id = ?", ownerID, id).
+		Updates(map[string]any{
+			"status":     status,
+			"result":     result,
+			"updated_at": time.Now().UTC(),
+		}).Error
+}

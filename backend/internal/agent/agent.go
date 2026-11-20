@@ -19,6 +19,9 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
+
+	"github.com/luo303/mindos/backend/internal/approval"
+	"github.com/luo303/mindos/backend/internal/todo"
 )
 
 // RefusalSentence 是模型被要求输出的固定拒答句。
@@ -118,6 +121,8 @@ type Agent struct {
 	retriever Retriever
 	// sqlRunner 为 nil 表示没有配置只读 SQL 工具，本次 run 只挂检索。
 	sqlRunner SQLRunner
+	todos     *todo.Service
+	approvals *approval.Service
 	audits    *auditLog
 	// ownerID 是本次问答的用户：工具检索只能看到这个人的文档。
 	// 存在实例上而不是塞进 context，是因为每个请求本来就会构造一个新 Agent。
@@ -134,7 +139,7 @@ type Agent struct {
 
 // New 组装一次问答。registry 必须由调用方持有——问答结束后它还要用来
 // 生成引用列表与落库。
-func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRunner SQLRunner, ownerID int64, registry *Registry, maxResults int, limits Limits, onHits func([]Numbered), log *zap.Logger) *Agent {
+func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRunner SQLRunner, todos *todo.Service, approvals *approval.Service, ownerID int64, registry *Registry, maxResults int, limits Limits, onHits func([]Numbered), log *zap.Logger) *Agent {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -148,6 +153,8 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRun
 		chatModel:  chatModel,
 		retriever:  retriever,
 		sqlRunner:  sqlRunner,
+		todos:      todos,
+		approvals:  approvals,
 		audits:     &auditLog{},
 		ownerID:    ownerID,
 		registry:   registry,
@@ -172,6 +179,30 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 		return nil, fmt.Errorf("build search tool: %w", err)
 	}
 	tools := []tool.BaseTool{searchTool}
+	if a.todos != nil {
+		listTool, err := newListTodosTool(a.todos, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build list_todos tool: %w", err)
+		}
+		tools = append(tools, listTool)
+	}
+	if a.todos != nil && a.approvals != nil {
+		createTool, err := newCreateTodoTool(a.todos, a.approvals, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build create_todo tool: %w", err)
+		}
+		tools = append(tools, createTool)
+		updateTool, err := newUpdateTodoTool(a.approvals, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build update_todo tool: %w", err)
+		}
+		tools = append(tools, updateTool)
+		deleteTool, err := newDeleteTodoTool(a.approvals, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build delete_todo tool: %w", err)
+		}
+		tools = append(tools, deleteTool)
+	}
 	if a.sqlRunner != nil {
 		sqlTool, err := newSQLTool(a.sqlRunner, a.ownerID, budget, a.audits)
 		if err != nil {
@@ -184,6 +215,9 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 	instr := instruction
 	if a.sqlRunner != nil {
 		instr = instructionWithSQL
+	}
+	if a.todos != nil && a.approvals != nil {
+		instr += todoInstruction
 	}
 
 	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
