@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 type Props = {
   approval: Approval
   deciding: boolean
-  streamText: string
   error: string
   onDecision: (decision: 'approve' | 'reject') => void
 }
@@ -14,7 +13,7 @@ type Props = {
  * 审批面板与输入框同一层级：有待审批时直接占据底部输入区，
  * 不允许继续对话。审批完成后面板卸载，输入框恢复。
  */
-export function ApprovalPanel({ approval, deciding, streamText, error, onDecision }: Props) {
+export function ApprovalPanel({ approval, deciding, error, onDecision }: Props) {
   return (
     <section
       aria-label="待审批操作"
@@ -37,11 +36,6 @@ export function ApprovalPanel({ approval, deciding, streamText, error, onDecisio
         </p>
       ) : null}
 
-      {streamText ? (
-        <div className="bg-background max-h-48 overflow-y-auto rounded-md border p-2 text-sm whitespace-pre-wrap">
-          {streamText}
-        </div>
-      ) : null}
       {error ? <p className="text-destructive text-sm">{error}</p> : null}
 
       <div className="flex gap-2">

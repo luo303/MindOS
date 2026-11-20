@@ -113,7 +113,6 @@ export function ChatPage() {
   const [pending, setPending] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [decidingId, setDecidingId] = useState<number | null>(null)
-  const [decisionText, setDecisionText] = useState('')
   const [decisionError, setDecisionError] = useState('')
   const [createError, setCreateError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
@@ -164,13 +163,38 @@ export function ChatPage() {
       return
     }
     const id = pendingApproval.id
+    const messageId = pendingApproval.user_message_id ?? undefined
     setDecidingId(id)
-    setDecisionText('')
     setDecisionError('')
+    const patchApprovalTurn = (next: (turn: Turn) => Turn) => {
+      setTurns((prev) => {
+        const index = prev.findIndex((turn) => turn.messageId === messageId)
+        if (index >= 0) {
+          return prev.map((turn, i) => (i === index ? next({ ...turn, phase: 'streaming' }) : turn))
+        }
+        const question =
+          messagesQuery.data?.find((message) => message.id === messageId)?.content ?? '审批操作'
+        return [
+          ...prev,
+          next({
+            id: 'approval-' + id,
+            messageId,
+            question,
+            answer: '',
+            phase: 'streaming',
+            hits: [],
+            citations: [],
+          }),
+        ]
+      })
+    }
+    // 先建立/切换到流式轮次，首个 delta 之前显示骨架，而不是把正文塞进审批框。
+    patchApprovalTurn((turn) => turn)
     try {
       await streamApprovalDecision(id, decision, {
-        onDelta: (text) => setDecisionText((prev) => prev + text),
-        onDone: () => {
+        onDelta: (text) => patchApprovalTurn((turn) => ({ ...turn, answer: turn.answer + text })),
+        onDone: (payload) => {
+          patchApprovalTurn((turn) => ({ ...turn, done: payload, phase: 'settled' }))
           void queryClient.invalidateQueries({
             queryKey: approvalKeys.conversation(activeId ?? 0),
           })
@@ -180,6 +204,11 @@ export function ChatPage() {
         onError: (_code, message) => setDecisionError(message),
       })
     } catch (error) {
+      patchApprovalTurn((turn) => ({
+        ...turn,
+        phase: 'failed',
+        error: { code: 'approval', message: describeError(error) },
+      }))
       setDecisionError(describeError(error))
     } finally {
       setDecidingId(null)
@@ -474,7 +503,6 @@ export function ChatPage() {
         <ApprovalPanel
           approval={pendingApproval}
           deciding={decidingId === pendingApproval.id}
-          streamText={decisionText}
           error={decisionError}
           onDecision={decide}
         />
