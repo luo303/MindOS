@@ -1,9 +1,11 @@
-import { screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AskEvent } from '@/api/types'
 import { REFUSAL_TEXT, WITHDRAWN_TEXT } from '@/pages/chat/format'
+import { MarkdownAnswer } from '@/pages/chat/markdown-answer'
 import { chatModelFixture, envelope, jsonResponse } from '@/test/fixtures'
 import { renderApp } from '@/test/render-app'
 
@@ -103,6 +105,22 @@ async function ask(user: ReturnType<typeof userEvent.setup>, question: string) {
   await user.click(screen.getByRole('button', { name: '发送' }))
 }
 
+describe('Markdown 回答', () => {
+  it('渲染 GFM，并把引用编号变成知识页链接', () => {
+    render(
+      <MemoryRouter>
+        <MarkdownAnswer text={'**加粗**\n\n- 列表项 [1]'} citations={[citation]} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('加粗')).toBeInTheDocument()
+    expect(screen.getByText('列表项')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '[1]' })).toHaveAttribute(
+      'href',
+      '/knowledge?doc=1&chunk=0',
+    )
+  })
+})
+
 describe('问答页', () => {
   it('没有配置对话模型时给出引导，输入框不可用', async () => {
     vi.stubGlobal(
@@ -135,7 +153,7 @@ describe('问答页', () => {
 
     // 正文完整拼出，且 [1] 被渲染成指向知识页深链的链接
     expect(await screen.findByText(/答案是/)).toBeInTheDocument()
-    const links = screen.getAllByRole('link', { name: '[1]' })
+    const links = await screen.findAllByRole('link', { name: '[1]' })
     expect(links.length).toBeGreaterThan(0)
     for (const link of links) {
       expect(link).toHaveAttribute('href', '/knowledge?doc=1&chunk=0')

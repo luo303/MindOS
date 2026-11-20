@@ -12,6 +12,7 @@ import {
   similarityLabel,
   type Turn,
 } from './format'
+import { MarkdownAnswer } from './markdown-answer'
 import { useTypewriter } from './use-typewriter'
 
 type Props = {
@@ -100,47 +101,7 @@ function AnswerBody({ turn }: { turn: Turn }) {
     )
   }
 
-  return (
-    <p className="text-sm leading-relaxed whitespace-pre-wrap">
-      {renderAnswer(answer, turn.citations)}
-    </p>
-  )
-}
-
-/**
- * 把正文里的 [n] 渲染成可点 chip。
- *
- * 只有 citation 事件到过之后才有 mapping，所以 streaming 期间 [n] 仍是纯文本——
- * 这也正好符合"裁决之前没有任何引用是可信的"这条规则。
- */
-function renderAnswer(text: string, citations: AskCitationItem[]) {
-  if (citations.length === 0) {
-    return text
-  }
-  const byNumber = new Map(citations.map((item) => [item.n, item]))
-  // 用捕获组切分，split 会把分隔符本身也保留在结果里。
-  const parts = text.split(/(\[\d{1,3}\])/g)
-  return parts.map((part, index) => {
-    const matched = /^\[(\d{1,3})\]$/.exec(part)
-    if (!matched) {
-      return <span key={index}>{part}</span>
-    }
-    const n = Number(matched[1])
-    const citation = byNumber.get(n)
-    if (!citation) {
-      return <span key={index}>{part}</span>
-    }
-    return (
-      <Link
-        key={index}
-        to={knowledgeHref(citation.document_id, citation.seq)}
-        className="text-primary hover:bg-primary/10 mx-0.5 rounded px-1 text-xs font-medium no-underline"
-        title={citation.title}
-      >
-        [{n}]
-      </Link>
-    )
-  })
+  return <MarkdownAnswer text={answer} citations={turn.citations} />
 }
 
 function CitationList({ items }: { items: AskCitationItem[] }) {
