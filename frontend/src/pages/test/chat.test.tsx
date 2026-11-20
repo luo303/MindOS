@@ -238,16 +238,10 @@ describe('问答页', () => {
     expect(screen.getByText('原因：回答引用了不存在的来源')).toBeInTheDocument()
   })
 
-  it('流中途出错时标记失败，点重试用同一问题再来一次', async () => {
+  it('流中途出错时标记失败，不显示重试按钮', async () => {
     stubChatFetch(
       sseResponse([
         { type: 'error', seq: 1, payload: { code: 'MODEL_TIMEOUT', message: '模型响应超时', retryable: true } },
-      ]),
-      sseResponse([
-        { type: 'delta', seq: 1, payload: { text: '重试成功' } },
-        { type: 'verdict', seq: 2, payload: { status: 'answered', reason: '' } },
-        { type: 'citation', seq: 3, payload: { items: [citation] } },
-        doneEvent(10),
       ]),
     )
     const user = userEvent.setup()
@@ -257,9 +251,6 @@ describe('问答页', () => {
 
     expect(await screen.findByText('没有拿到回答')).toBeInTheDocument()
     expect(screen.getByText('模型响应超时')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: '重试' }))
-
-    expect(await screen.findByText(/重试成功/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '重试' })).not.toBeInTheDocument()
   })
 })

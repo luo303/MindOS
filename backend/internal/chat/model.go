@@ -23,9 +23,11 @@ const (
 	// VerdictRefused / VerdictUngrounded 是 2026-11-18 之前的旧裁决值。
 	VerdictRefused    = "refused"
 	VerdictUngrounded = "ungrounded"
-	// VerdictFailed 表示这次没有产出结果：模型 429/超时、客户端中途断开、
-	// token 超预算。
+	// VerdictFailed 表示这次没有产出结果：模型 429/超时、token 超预算。
 	VerdictFailed = "failed"
+	// VerdictCancelled 表示用户主动停止：内容按正常 assistant 消息保存，
+	// 运行记录用 cancelled 与真正的 failed 区分。
+	VerdictCancelled = "cancelled"
 )
 
 // 裁决原因。写进 verdict_reason。

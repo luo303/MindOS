@@ -17,11 +17,10 @@ import { useTypewriter } from './use-typewriter'
 
 type Props = {
   turn: Turn
-  onRetry: () => void
   onStop: () => void
 }
 
-export function TurnCard({ turn, onRetry, onStop }: Props) {
+export function TurnCard({ turn, onStop }: Props) {
   const streaming = turn.phase === 'streaming'
 
   return (
@@ -40,11 +39,6 @@ export function TurnCard({ turn, onRetry, onStop }: Props) {
             <Button variant="outline" size="sm" onClick={onStop}>
               <StopCircle aria-hidden="true" />
               停止
-            </Button>
-          ) : null}
-          {turn.phase === 'failed' ? (
-            <Button variant="outline" size="sm" onClick={onRetry}>
-              重试
             </Button>
           ) : null}
           {turn.done ? (

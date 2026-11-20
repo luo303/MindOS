@@ -417,7 +417,7 @@ export function ChatPage() {
         ) : null}
 
         {turns.map((turn) => (
-          <TurnCard key={turn.id} turn={turn} onRetry={() => void run(turn.question)} onStop={stop} />
+          <TurnCard key={turn.id} turn={turn} onStop={stop} />
         ))}
       </section>
 

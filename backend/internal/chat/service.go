@@ -41,6 +41,10 @@ const (
 // 区别只在 qa_runs.verdict 里——那是给我们自己看的。
 const refusalAnswer = "根据现有知识库无法回答该问题。可以换个问法，或者先把相关资料导入知识库。"
 
+// stoppedAnswer 是用户主动停止且还没产生任何正文时的占位。
+// 它按正常 assistant 消息落库，刷新后不会变成失败卡片。
+const stoppedAnswer = "已停止生成。"
+
 // 模块级哨兵错误，handler 用 errors.Is 判断后翻成 HTTP 错误码。
 var (
 	// ErrEmptyQuestion 表示问题为空。
@@ -409,25 +413,45 @@ func (s *Service) finishFailed(
 	defer persistCancel()
 
 	// 失败也写一条 assistant 消息：刷新后前端才能还原失败卡片。
+	// 用户主动停止不是失败：按正常消息保存已生成内容，刷新后不显示错误。
 	var assistantMessageID int64
 	if conversationID != nil {
-		saved, saveErr := s.convs.AppendErrorMessage(
-			persistCtx, ownerID, *conversationID, partial, marshalJSON(nil), code, message)
-		if saveErr != nil {
-			s.log.Warn("save failed assistant message failed",
-				zap.Int64("conversation_id", *conversationID), zap.Error(saveErr))
+		if code == ReasonCancelled {
+			content := partial
+			if strings.TrimSpace(content) == "" {
+				content = stoppedAnswer
+			}
+			saved, saveErr := s.convs.AppendMessage(
+				persistCtx, ownerID, *conversationID, RoleAssistant, content, marshalJSON(nil))
+			if saveErr != nil {
+				s.log.Warn("save stopped assistant message failed",
+					zap.Int64("conversation_id", *conversationID), zap.Error(saveErr))
+			} else {
+				assistantMessageID = saved.ID
+			}
 		} else {
-			assistantMessageID = saved.ID
+			saved, saveErr := s.convs.AppendErrorMessage(
+				persistCtx, ownerID, *conversationID, partial, marshalJSON(nil), code, message)
+			if saveErr != nil {
+				s.log.Warn("save failed assistant message failed",
+					zap.Int64("conversation_id", *conversationID), zap.Error(saveErr))
+			} else {
+				assistantMessageID = saved.ID
+			}
 		}
 	}
 
+	verdict := VerdictFailed
+	if code == ReasonCancelled {
+		verdict = VerdictCancelled
+	}
 	run := &Run{
 		OwnerID:        ownerID,
 		ConversationID: conversationID,
 		Question:       question,
 		Answer:         partial,
 		RawAnswer:      stringPtr(partial),
-		Verdict:        VerdictFailed,
+		Verdict:        verdict,
 		VerdictReason:  stringPtr(code),
 		Citations:      marshalJSON(nil),
 		Retrieved:      marshalJSON(nil),
