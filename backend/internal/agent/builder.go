@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cloudwego/eino/adk"
 	"go.uber.org/zap"
 
 	"github.com/luo303/mindos/backend/internal/approval"
@@ -40,10 +41,11 @@ var _ Runner = (*Agent)(nil)
 type Builder struct {
 	retriever Retriever
 	// sqlRunner 为 nil 表示没有配置只读 SQL 工具。
-	sqlRunner SQLRunner
-	todos     *todo.Service
-	approvals *approval.Service
-	limits    Limits
+	sqlRunner   SQLRunner
+	todos       *todo.Service
+	approvals   *approval.Service
+	checkpoints adk.CheckPointStore
+	limits      Limits
 	// maxResults 是单次检索的条数上限，来自 RAG_TOP_K。
 	maxResults int
 	log        *zap.Logger
@@ -51,14 +53,14 @@ type Builder struct {
 
 // NewBuilder 组装构造器。retriever 由 cmd/server 注入适配器；
 // maxResults 是单次工具检索的条数上限（<=0 时用 8，最大 10）。
-func NewBuilder(retriever Retriever, sqlRunner SQLRunner, todos *todo.Service, approvals *approval.Service, limits Limits, maxResults int, log *zap.Logger) *Builder {
+func NewBuilder(retriever Retriever, sqlRunner SQLRunner, todos *todo.Service, approvals *approval.Service, checkpoints adk.CheckPointStore, limits Limits, maxResults int, log *zap.Logger) *Builder {
 	if maxResults <= 0 {
 		maxResults = 8
 	}
 	if maxResults > maxToolLimit {
 		maxResults = maxToolLimit
 	}
-	return &Builder{retriever: retriever, sqlRunner: sqlRunner, todos: todos, approvals: approvals, limits: limits, maxResults: maxResults, log: log}
+	return &Builder{retriever: retriever, sqlRunner: sqlRunner, todos: todos, approvals: approvals, checkpoints: checkpoints, limits: limits, maxResults: maxResults, log: log}
 }
 
 // Build 用给定配置与本次的编号表构造 Runner。
@@ -70,5 +72,5 @@ func (b *Builder) Build(ctx context.Context, ownerID int64, target *chatmodel.Re
 	if err != nil {
 		return nil, fmt.Errorf("build chat model: %w", err)
 	}
-	return New(chatModel, b.retriever, b.sqlRunner, b.todos, b.approvals, ownerID, registry, b.maxResults, b.limits, onHits, b.log), nil
+	return New(chatModel, b.retriever, b.sqlRunner, b.todos, b.approvals, b.checkpoints, ownerID, registry, b.maxResults, b.limits, onHits, b.log), nil
 }

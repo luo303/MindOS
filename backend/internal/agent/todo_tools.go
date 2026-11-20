@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"strings"
@@ -80,63 +81,119 @@ type pendingApprovalOutput struct {
 	Summary    string `json:"summary"`
 }
 
-// newCreateTodoTool 只创建审批提案，不直接写 todos。
-// 用户批准后由 approval API 执行；模型无法绕过人工确认。
+func init() {
+	gob.Register(todoApprovalState{})
+	gob.Register(todoApprovalInfo{})
+}
+
+type todoApprovalState struct {
+	ApprovalID int64
+}
+
+type todoApprovalInfo struct {
+	ApprovalID int64  `json:"approval_id"`
+	Summary    string `json:"summary"`
+}
+
+// newCreateTodoTool 第一次调用 StatefulInterrupt 暂停 Agent；审批后
+// Resume 会再次进入这里，只有 approved 才真正写 todos。
 func newCreateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
-	invoke := func(ctx context.Context, in createTodoInput) (*pendingApprovalOutput, error) {
+	invoke := func(ctx context.Context, in createTodoInput) (string, error) {
 		if err := budget.take(); err != nil {
-			return nil, err
+			return "", err
 		}
 		if approvals == nil {
-			return nil, errors.New("todo approval is not configured")
+			return "", errors.New("todo approval is not configured")
 		}
 		meta := RunMetaFrom(ctx)
+		if meta.CheckpointID == "" {
+			return "", errors.New("todo write requires a checkpoint")
+		}
 		if meta.ConversationID <= 0 {
-			return nil, errors.New("creating a todo requires an active conversation")
+			return "", errors.New("creating a todo requires an active conversation")
 		}
-		title := strings.TrimSpace(in.Title)
-		if title == "" {
-			return nil, errors.New("title is required")
-		}
-		if in.Priority == 0 {
-			in.Priority = 2
-		}
-		if in.Priority < 1 || in.Priority > 3 {
-			return nil, errors.New("priority must be 1, 2 or 3")
-		}
-		args := approval.JSON{
-			"title":       title,
-			"description": strings.TrimSpace(in.Description),
-			"priority":    in.Priority,
-		}
-		summary := "创建待办：" + title
-		if strings.TrimSpace(in.DueAt) != "" {
-			due, err := time.Parse(time.RFC3339, in.DueAt)
-			if err != nil {
-				return nil, fmt.Errorf("due_at must be RFC3339: %w", err)
+
+		wasInterrupted, _, state := tool.GetInterruptState[todoApprovalState](ctx)
+		if !wasInterrupted {
+			title := strings.TrimSpace(in.Title)
+			if title == "" {
+				return "", errors.New("title is required")
 			}
-			args["due_at"] = due.UTC().Format(time.RFC3339)
-			summary += "，截止 " + due.Format("2006-01-02 15:04")
+			if in.Priority == 0 {
+				in.Priority = 2
+			}
+			if in.Priority < 1 || in.Priority > 3 {
+				return "", errors.New("priority must be 1, 2 or 3")
+			}
+			args := approval.JSON{
+				"title":       title,
+				"description": strings.TrimSpace(in.Description),
+				"priority":    in.Priority,
+			}
+			summary := "创建待办：" + title
+			if strings.TrimSpace(in.DueAt) != "" {
+				due, err := time.Parse(time.RFC3339, in.DueAt)
+				if err != nil {
+					return "", fmt.Errorf("due_at must be RFC3339: %w", err)
+				}
+				args["due_at"] = due.UTC().Format(time.RFC3339)
+				summary += "，截止 " + due.Format("2006-01-02 15:04")
+			}
+			req, err := approvals.Propose(ctx, approval.ProposeInput{
+				OwnerID: ownerID, CheckpointID: meta.CheckpointID,
+				ConversationID: meta.ConversationID, UserMessageID: meta.UserMessageID,
+				ChatModelID: meta.ChatModelID, ToolName: "create_todo",
+				Arguments: args, Summary: summary,
+			})
+			if err != nil {
+				return "", err
+			}
+			return "", tool.StatefulInterrupt(ctx,
+				todoApprovalInfo{ApprovalID: req.ID, Summary: req.Summary},
+				todoApprovalState{ApprovalID: req.ID})
 		}
-		req, err := approvals.Propose(ctx, approval.ProposeInput{
-			OwnerID:        ownerID,
-			ConversationID: meta.ConversationID,
-			UserMessageID:  meta.UserMessageID,
-			ChatModelID:    meta.ChatModelID,
-			ToolName:       "create_todo",
-			Arguments:      args,
-			Summary:        summary,
+
+		isTarget, hasData, decision := tool.GetResumeContext[map[string]any](ctx)
+		if !isTarget {
+			return "", tool.StatefulInterrupt(ctx, todoApprovalInfo{ApprovalID: state.ApprovalID}, state)
+		}
+		approved := hasData && decision["approved"] == true
+		if !approved {
+			return "用户拒绝创建待办。", nil
+		}
+		req, err := approvals.Get(ctx, ownerID, state.ApprovalID)
+		if err != nil {
+			return "", err
+		}
+		if req.Status != approval.StatusApproved {
+			return "", fmt.Errorf("approval %d is not approved", req.ID)
+		}
+		title, _ := req.Arguments["title"].(string)
+		description, _ := req.Arguments["description"].(string)
+		priority := 2
+		if v, ok := req.Arguments["priority"].(float64); ok {
+			priority = int(v)
+		}
+		var due *time.Time
+		if raw, ok := req.Arguments["due_at"].(string); ok && raw != "" {
+			parsed, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				return "", err
+			}
+			due = &parsed
+		}
+		created, err := svc.Create(ctx, ownerID, todo.CreateInput{
+			Title: title, Description: description, Priority: priority, DueAt: due,
+			Source:     todo.SourceAI,
+			SourceRef:  todo.JSON{"approval_id": req.ID, "tool": req.ToolName},
+			ApprovalID: &req.ID,
 		})
 		if err != nil {
-			return nil, err
+			return "", err
 		}
-		return &pendingApprovalOutput{
-			Status:     "pending_approval",
-			ApprovalID: req.ID,
-			Summary:    req.Summary,
-		}, nil
+		return "已创建待办：" + created.Title, nil
 	}
-	return utils.InferTool("create_todo", "创建待办提案，必须等待用户审批后才会真正落库", invoke)
+	return utils.InferTool("create_todo", "创建待办；会暂停等待用户审批，批准后才落库", invoke)
 }
 
 type updateTodoInput struct {

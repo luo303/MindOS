@@ -3,10 +3,12 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/luo303/mindos/backend/internal/agent"
 	"github.com/luo303/mindos/backend/internal/approval"
 	"github.com/luo303/mindos/backend/internal/todo"
 )
@@ -21,8 +23,8 @@ func (s *Service) ListApprovals(ctx context.Context, ownerID, conversationID int
 
 // DecideApproval 批准/拒绝一条 AI 提案。
 //
-// v1 在批准时直接执行 create_todo 并写一条 assistant 确认消息；
-// 不恢复模型生成。真正的 Eino checkpoint 续跑留到下一阶段。
+// 有 checkpoint 的提案走 Agent.Resume：模型从工具中断点继续；
+// 老的无 checkpoint 提案保留直接执行路径，兼容升级前的数据。
 func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve bool) (*approval.Request, error) {
 	if s.approvals == nil {
 		return nil, approval.ErrNotFound
@@ -37,6 +39,9 @@ func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve
 	decided, err := s.approvals.Decide(ctx, ownerID, id, approve)
 	if err != nil {
 		return nil, err
+	}
+	if decided.CheckpointID != nil && *decided.CheckpointID != "" && decided.InterruptID != nil {
+		return s.resumeDecision(ctx, ownerID, decided, approve)
 	}
 	if !approve {
 		s.completeApprovalMessage(ctx, ownerID, decided, "已拒绝创建待办。")
@@ -155,4 +160,73 @@ func (s *Service) completeApprovalMessage(ctx context.Context, ownerID int64, re
 	if _, err := s.convs.AppendMessage(ctx, ownerID, *req.ConversationID, RoleAssistant, text, RawJSON("[]")); err != nil {
 		s.log.Warn("save approval result message failed", zap.Int64("approval_id", req.ID), zap.Error(err))
 	}
+}
+
+// resumeDecision 从 Eino checkpoint 恢复 Agent。
+//
+// 这是真正的断点恢复：模型停在 create_todo 的中断点，批准/拒绝后
+// 工具重新进入 InvokableRun，再由模型继续生成最终回答。
+func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approval.Request, approve bool) (*approval.Request, error) {
+	if s.builder == nil || s.models == nil {
+		return nil, errors.New("resume is not configured")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, s.settings.normalized().Timeout)
+	defer cancel()
+	meta := agent.RunMeta{OwnerID: ownerID, CheckpointID: *req.CheckpointID, ChatModelID: 0}
+	if req.ConversationID != nil {
+		meta.ConversationID = *req.ConversationID
+	}
+	if req.ChatModelID != nil {
+		meta.ChatModelID = *req.ChatModelID
+	}
+	runCtx = agent.WithRunMeta(runCtx, meta)
+	resolved, err := s.models.Resolve(runCtx, ownerID, req.ChatModelID)
+	if err != nil {
+		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": err.Error()})
+		return nil, err
+	}
+	registry := agent.NewRegistry()
+	answerer, err := s.builder.Build(runCtx, ownerID, resolved, registry, nil)
+	if err != nil {
+		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": err.Error()})
+		return nil, err
+	}
+	resumer, ok := answerer.(interface {
+		Resume(context.Context, string, string, map[string]any, func(string) error) (*agent.Result, error)
+	})
+	if !ok {
+		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": "runner does not support resume"})
+		return nil, errors.New("runner does not support resume")
+	}
+
+	var answer strings.Builder
+	result, err := resumer.Resume(runCtx, *req.CheckpointID, *req.InterruptID,
+		map[string]any{"approved": approve}, func(delta string) error {
+			answer.WriteString(delta)
+			return nil
+		})
+	if err != nil {
+		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": err.Error()})
+		return nil, err
+	}
+	if result.Pending != nil {
+		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": "another approval required"})
+		return nil, errors.New("another approval is required")
+	}
+	final := strings.TrimSpace(result.Answer)
+	if final == "" {
+		final = "审批已处理。"
+	}
+	if req.ConversationID != nil {
+		if _, err := s.convs.AppendMessage(ctx, ownerID, *req.ConversationID, RoleAssistant, final, marshalJSON(nil)); err != nil {
+			s.log.Warn("save resumed message failed", zap.Int64("approval_id", req.ID), zap.Error(err))
+		}
+	}
+	if err := s.approvals.Complete(ctx, ownerID, req.ID, approval.JSON{
+		"approved": approve,
+		"answer":   final,
+	}); err != nil {
+		return nil, err
+	}
+	return s.approvals.Get(ctx, ownerID, req.ID)
 }

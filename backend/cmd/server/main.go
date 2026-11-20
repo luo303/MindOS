@@ -334,12 +334,14 @@ func run() error {
 
 	todoSvc := todo.NewService(todo.NewRepository(db))
 	approvalSvc := approval.NewService(approval.NewRepository(db))
+	checkpointStore := agent.NewCheckpointStore(db)
 
 	agentBuilder := agent.NewBuilder(
 		knowledgeRetriever{searcher: searcher},
 		sqlExecutor,
 		todoSvc,
 		approvalSvc,
+		checkpointStore,
 		agent.DefaultLimits(),
 		cfg.Rag.TopK,
 		log.Named("agent"),

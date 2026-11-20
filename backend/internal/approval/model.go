@@ -60,6 +60,9 @@ type Request struct {
 	ToolName       string     `gorm:"column:tool_name" json:"tool_name"`
 	Arguments      JSON       `gorm:"column:arguments;type:jsonb" json:"arguments"`
 	Summary        string     `gorm:"column:summary" json:"summary"`
+	CheckpointID   *string    `gorm:"column:checkpoint_id" json:"checkpoint_id,omitempty"`
+	InterruptID    *string    `gorm:"column:interrupt_id" json:"interrupt_id,omitempty"`
+	PartialAnswer  string     `gorm:"column:partial_answer" json:"-"`
 	Status         string     `gorm:"column:status" json:"status"`
 	ExpiresAt      time.Time  `gorm:"column:expires_at" json:"expires_at"`
 	DecidedAt      *time.Time `gorm:"column:decided_at" json:"decided_at,omitempty"`

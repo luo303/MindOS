@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/luo303/mindos/backend/internal/agent"
@@ -133,6 +134,9 @@ type DonePayload struct {
 	ConversationID     int64 `json:"conversation_id,omitempty"`
 	UserMessageID      int64 `json:"user_message_id,omitempty"`
 	AssistantMessageID int64 `json:"assistant_message_id,omitempty"`
+	// AwaitingApproval 为 true 时本轮停在 checkpoint，等待审批。
+	AwaitingApproval bool  `json:"awaiting_approval,omitempty"`
+	ApprovalID       int64 `json:"approval_id,omitempty"`
 }
 
 // AskInput 是一次问答的输入。
@@ -304,8 +308,10 @@ func (s *Service) execute(
 	runCtx, cancel := context.WithTimeout(ctx, settings.Timeout)
 	defer cancel()
 
+	// 每次 run 一个 checkpoint：写工具中断后，审批 API 用它恢复。
+	checkpointID := uuid.NewString()
 	// 写工具需要知道当前会话/用户消息/模型；通过 context 传，不改 Runner 接口。
-	meta := agent.RunMeta{UserMessageID: userMessageID, ChatModelID: resolved.ID}
+	meta := agent.RunMeta{OwnerID: ownerID, CheckpointID: checkpointID, UserMessageID: userMessageID, ChatModelID: resolved.ID}
 	if conversationID != nil {
 		meta.ConversationID = *conversationID
 	}
@@ -337,6 +343,25 @@ func (s *Service) execute(
 	})
 	if runErr != nil {
 		return s.finishFailed(ctx, ownerID, emit, start, question, resolved, answer.String(), runErr, conversationID, userMessageID)
+	}
+	if result != nil && result.Pending != nil {
+		// 工具已创建 pending 审批，checkpoint 已由 Runner 写入 PG。
+		if s.approvals != nil {
+			_ = s.approvals.SetInterrupt(runCtx, checkpointID, result.Pending.InterruptID)
+		}
+		payload := DonePayload{
+			ChatModelID:      resolved.ID,
+			AwaitingApproval: true,
+			ApprovalID:       result.Pending.ApprovalID,
+		}
+		if conversationID != nil {
+			payload.ConversationID = *conversationID
+		}
+		payload.UserMessageID = userMessageID
+		if err := emit.Done(payload); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	// 引用只做映射：正文里出现、且这次真的登记过的编号。

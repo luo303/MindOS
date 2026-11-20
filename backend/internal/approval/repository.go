@@ -36,6 +36,19 @@ func (r *Repository) Get(ctx context.Context, ownerID, id int64) (*Request, erro
 	return &req, nil
 }
 
+// GetByCheckpoint 按 checkpoint 找审批；Agent 中断时用它关联。
+func (r *Repository) GetByCheckpoint(ctx context.Context, checkpointID string) (*Request, error) {
+	var req Request
+	err := r.db.WithContext(ctx).Where("checkpoint_id = ?", checkpointID).Take(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get approval by checkpoint %s: %w", checkpointID, err)
+	}
+	return &req, nil
+}
+
 func (r *Repository) ListPending(ctx context.Context, ownerID int64, conversationID int64) ([]Request, error) {
 	query := r.db.WithContext(ctx).
 		Where("owner_id = ? AND status = ? AND expires_at > now()", ownerID, StatusPending)
@@ -47,6 +60,13 @@ func (r *Repository) ListPending(ctx context.Context, ownerID int64, conversatio
 		return nil, fmt.Errorf("list pending approvals: %w", err)
 	}
 	return out, nil
+}
+
+// SetInterrupt 记录 Eino 的 interrupt ID；审批后恢复需要它。
+func (r *Repository) SetInterrupt(ctx context.Context, checkpointID, interruptID string) error {
+	return r.db.WithContext(ctx).Model(&Request{}).
+		Where("checkpoint_id = ?", checkpointID).
+		Updates(map[string]any{"interrupt_id": interruptID, "updated_at": time.Now().UTC()}).Error
 }
 
 // Decide 条件更新 pending -> approved/rejected，只有一个请求能抢到。

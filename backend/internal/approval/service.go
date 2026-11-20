@@ -24,6 +24,7 @@ type ProposeInput struct {
 	ConversationID int64
 	UserMessageID  int64
 	ChatModelID    int64
+	CheckpointID   string
 	ToolName       string
 	Arguments      JSON
 	Summary        string
@@ -51,6 +52,9 @@ func (s *Service) Propose(ctx context.Context, in ProposeInput) (*Request, error
 		ExpiresAt: time.Now().UTC().Add(s.ttl),
 		Result:    JSON{},
 	}
+	if in.CheckpointID != "" {
+		req.CheckpointID = &in.CheckpointID
+	}
 	if in.ConversationID > 0 {
 		req.ConversationID = &in.ConversationID
 	}
@@ -64,6 +68,14 @@ func (s *Service) Propose(ctx context.Context, in ProposeInput) (*Request, error
 		return nil, err
 	}
 	return req, nil
+}
+
+func (s *Service) SetInterrupt(ctx context.Context, checkpointID, interruptID string) error {
+	return s.repo.SetInterrupt(ctx, checkpointID, interruptID)
+}
+
+func (s *Service) GetByCheckpoint(ctx context.Context, checkpointID string) (*Request, error) {
+	return s.repo.GetByCheckpoint(ctx, checkpointID)
 }
 
 func (s *Service) ListPending(ctx context.Context, ownerID, conversationID int64) ([]Request, error) {

@@ -253,7 +253,7 @@ func TestAskCollectsAnswerAndUsage(t *testing.T) {
 		reply: "多端共享靠 WebSocket 推送 [1]。",
 		usage: &schema.TokenUsage{PromptTokens: 100, CompletionTokens: 20},
 	}
-	a := New(bot, &fakeRetriever{}, nil, nil, nil, 42, registry, 8, DefaultLimits(), nil, nil)
+	a := New(bot, &fakeRetriever{}, nil, nil, nil, nil, 42, registry, 8, DefaultLimits(), nil, nil)
 
 	var streamed strings.Builder
 	result, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "多端共享怎么做的"}}, func(delta string) error {
@@ -279,7 +279,7 @@ func TestAskCollectsAnswerAndUsage(t *testing.T) {
 
 func TestAskPropagatesModelError(t *testing.T) {
 	bot := &fakeChatModel{err: errors.New("upstream exploded")}
-	a := New(bot, &fakeRetriever{}, nil, nil, nil, 42, NewRegistry(), 8, DefaultLimits(), nil, nil)
+	a := New(bot, &fakeRetriever{}, nil, nil, nil, nil, 42, NewRegistry(), 8, DefaultLimits(), nil, nil)
 	if _, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "q"}}, nil); err == nil {
 		t.Fatal("model error should be returned")
 	}
@@ -287,7 +287,7 @@ func TestAskPropagatesModelError(t *testing.T) {
 
 func TestAskStopsWhenDeltaHandlerFails(t *testing.T) {
 	bot := &fakeChatModel{reply: "答案 [1]"}
-	a := New(bot, &fakeRetriever{}, nil, nil, nil, 42, NewRegistry(), 8, DefaultLimits(), nil, nil)
+	a := New(bot, &fakeRetriever{}, nil, nil, nil, nil, 42, NewRegistry(), 8, DefaultLimits(), nil, nil)
 
 	wantErr := errors.New("client gone")
 	_, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "q"}}, func(string) error { return wantErr })
@@ -305,7 +305,7 @@ func TestAskReportsBudgetExceeded(t *testing.T) {
 	}
 	limits := DefaultLimits()
 	limits.MaxTokens = 60000
-	a := New(bot, &fakeRetriever{}, nil, nil, nil, 42, NewRegistry(), 8, limits, nil, nil)
+	a := New(bot, &fakeRetriever{}, nil, nil, nil, nil, 42, NewRegistry(), 8, limits, nil, nil)
 
 	if _, err := a.Ask(context.Background(), []HistoryMessage{{Role: "user", Content: "q"}}, nil); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)

@@ -109,6 +109,16 @@ type Result struct {
 	Hits []Numbered
 	// SQLAudits 是本次 run 的 SQL 调用审计（可能为空）。
 	SQLAudits []SQLAudit
+	// Pending 非空表示 Agent 在写工具处中断，等待审批。
+	Pending *PendingApproval
+}
+
+// PendingApproval 是 Agent 暂停时返回给 chat 层的待审批信息。
+type PendingApproval struct {
+	ApprovalID  int64
+	InterruptID string
+	Tool        string
+	Summary     string
 }
 
 // Agent 绑定一次问答。
@@ -120,10 +130,11 @@ type Agent struct {
 	chatModel model.BaseModel[*schema.Message]
 	retriever Retriever
 	// sqlRunner 为 nil 表示没有配置只读 SQL 工具，本次 run 只挂检索。
-	sqlRunner SQLRunner
-	todos     *todo.Service
-	approvals *approval.Service
-	audits    *auditLog
+	sqlRunner   SQLRunner
+	todos       *todo.Service
+	approvals   *approval.Service
+	checkpoints adk.CheckPointStore
+	audits      *auditLog
 	// ownerID 是本次问答的用户：工具检索只能看到这个人的文档。
 	// 存在实例上而不是塞进 context，是因为每个请求本来就会构造一个新 Agent。
 	ownerID  int64
@@ -139,7 +150,7 @@ type Agent struct {
 
 // New 组装一次问答。registry 必须由调用方持有——问答结束后它还要用来
 // 生成引用列表与落库。
-func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRunner SQLRunner, todos *todo.Service, approvals *approval.Service, ownerID int64, registry *Registry, maxResults int, limits Limits, onHits func([]Numbered), log *zap.Logger) *Agent {
+func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRunner SQLRunner, todos *todo.Service, approvals *approval.Service, checkpoints adk.CheckPointStore, ownerID int64, registry *Registry, maxResults int, limits Limits, onHits func([]Numbered), log *zap.Logger) *Agent {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -150,18 +161,19 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRun
 		limits.MaxIterations = DefaultLimits().MaxIterations
 	}
 	return &Agent{
-		chatModel:  chatModel,
-		retriever:  retriever,
-		sqlRunner:  sqlRunner,
-		todos:      todos,
-		approvals:  approvals,
-		audits:     &auditLog{},
-		ownerID:    ownerID,
-		registry:   registry,
-		maxResults: maxResults,
-		limits:     limits,
-		onHits:     onHits,
-		log:        log,
+		chatModel:   chatModel,
+		retriever:   retriever,
+		sqlRunner:   sqlRunner,
+		todos:       todos,
+		approvals:   approvals,
+		checkpoints: checkpoints,
+		audits:      &auditLog{},
+		ownerID:     ownerID,
+		registry:    registry,
+		maxResults:  maxResults,
+		limits:      limits,
+		onHits:      onHits,
+		log:         log,
 	}
 }
 
@@ -239,7 +251,7 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 		return nil, fmt.Errorf("new chat model agent: %w", err)
 	}
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: chatAgent, EnableStreaming: true})
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: chatAgent, EnableStreaming: true, CheckPointStore: a.checkpoints})
 
 	// 取消句柄：ctx 被取消（客户端断开、整体超时）时立刻请求停止，
 	// 并在退出前等它真正收尾——不等就可能留下一个还在烧 token 的 goroutine。
@@ -263,7 +275,12 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 			msgs = append(msgs, schema.UserMessage(item.Content))
 		}
 	}
-	iter := runner.Run(ctx, msgs, cancelOpt)
+	runOpts := []adk.AgentRunOption{cancelOpt}
+	meta := RunMetaFrom(ctx)
+	if meta.CheckpointID != "" {
+		runOpts = append(runOpts, adk.WithCheckPointID(meta.CheckpointID))
+	}
+	iter := runner.Run(ctx, msgs, runOpts...)
 
 	var answer strings.Builder
 	var promptTokens, completionTokens int64
@@ -276,6 +293,9 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 		if event.Err != nil {
 			// 取消与超时原样带出去：上层要能区分"用户走了"和"模型挂了"。
 			return nil, event.Err
+		}
+		if event.Action != nil && event.Action.Interrupted != nil {
+			return a.handleInterrupt(ctx, event, meta.CheckpointID)
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			// 工具调用事件、内部状态事件：不是正文，跳过。
@@ -341,6 +361,174 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 		zap.Int64("completion_tokens", result.CompletionTokens),
 	)
 	return result, nil
+}
+
+// Resume 从 checkpoint 恢复一次中断的问答。
+//
+// 工具会再次进入 InvokableRun，通过 tool.GetResumeContext 读到审批决定。
+func (a *Agent) Resume(ctx context.Context, checkpointID, interruptID string, decision map[string]any, onDelta func(string) error) (*Result, error) {
+	budget := newToolBudget(a.limits.MaxToolCalls)
+	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.maxResults, budget, a.onHits)
+	if err != nil {
+		return nil, fmt.Errorf("build search tool: %w", err)
+	}
+	tools := []tool.BaseTool{searchTool}
+	if a.todos != nil {
+		listTool, err := newListTodosTool(a.todos, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build list_todos tool: %w", err)
+		}
+		tools = append(tools, listTool)
+	}
+	if a.todos != nil && a.approvals != nil {
+		createTool, err := newCreateTodoTool(a.todos, a.approvals, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build create_todo tool: %w", err)
+		}
+		tools = append(tools, createTool)
+		updateTool, err := newUpdateTodoTool(a.approvals, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build update_todo tool: %w", err)
+		}
+		tools = append(tools, updateTool)
+		deleteTool, err := newDeleteTodoTool(a.approvals, a.ownerID, budget)
+		if err != nil {
+			return nil, fmt.Errorf("build delete_todo tool: %w", err)
+		}
+		tools = append(tools, deleteTool)
+	}
+	if a.sqlRunner != nil {
+		sqlTool, err := newSQLTool(a.sqlRunner, a.ownerID, budget, a.audits)
+		if err != nil {
+			return nil, fmt.Errorf("build sql tool: %w", err)
+		}
+		tools = append(tools, sqlTool)
+	}
+	instr := instruction
+	if a.sqlRunner != nil {
+		instr = instructionWithSQL
+	}
+	if a.todos != nil && a.approvals != nil {
+		instr += todoInstruction
+	}
+	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name: "mindos-rag", Description: "基于个人知识库回答问题，按需检索或统计",
+		Instruction: instr, Model: a.chatModel,
+		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools, ExecuteSequentially: true}},
+		MaxIterations: a.limits.MaxIterations,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new chat model agent: %w", err)
+	}
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: chatAgent, EnableStreaming: true, CheckPointStore: a.checkpoints})
+	cancelOpt, cancelFn := adk.WithCancel()
+	defer func() {
+		if handle, ok := cancelFn(adk.WithAgentCancelMode(adk.CancelImmediate)); ok {
+			_ = handle.Wait()
+		}
+	}()
+	iter, err := runner.ResumeWithParams(ctx, checkpointID, &adk.ResumeParams{Targets: map[string]any{interruptID: decision}}, cancelOpt)
+	if err != nil {
+		return nil, fmt.Errorf("resume checkpoint: %w", err)
+	}
+
+	var answer strings.Builder
+	var promptTokens, completionTokens int64
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			return nil, event.Err
+		}
+		if event.Action != nil && event.Action.Interrupted != nil {
+			return a.handleInterrupt(ctx, event, checkpointID)
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+		mv := event.Output.MessageOutput
+		if mv.Role != schema.Assistant {
+			continue
+		}
+		if mv.IsStreaming {
+			if mv.MessageStream == nil {
+				continue
+			}
+			usage, err := consumeStream(mv.MessageStream, &answer, onDelta)
+			if err != nil {
+				return nil, err
+			}
+			if usage != nil {
+				promptTokens += int64(usage.PromptTokens)
+				completionTokens += int64(usage.CompletionTokens)
+				if exceeded(a.limits.MaxTokens, promptTokens, completionTokens) {
+					return nil, ErrBudgetExceeded
+				}
+			}
+			continue
+		}
+		if mv.Message == nil {
+			continue
+		}
+		if chunk := mv.Message.Content; chunk != "" {
+			answer.WriteString(chunk)
+			if onDelta != nil {
+				if err := onDelta(chunk); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if meta := mv.Message.ResponseMeta; meta != nil && meta.Usage != nil {
+			promptTokens += int64(meta.Usage.PromptTokens)
+			completionTokens += int64(meta.Usage.CompletionTokens)
+			if exceeded(a.limits.MaxTokens, promptTokens, completionTokens) {
+				return nil, ErrBudgetExceeded
+			}
+		}
+	}
+	return &Result{Answer: answer.String(), PromptTokens: promptTokens, CompletionTokens: completionTokens, Hits: a.registry.All(), SQLAudits: a.audits.all()}, nil
+}
+
+// handleInterrupt 把 Eino 的中断事件转成待审批结果。
+//
+// checkpoint 已经由 Runner 写入 PG；这里只补 interrupt_id 并读回审批，
+// 不执行任何写操作。
+func (a *Agent) handleInterrupt(ctx context.Context, event *adk.AgentEvent, checkpointID string) (*Result, error) {
+	if checkpointID == "" {
+		return nil, errors.New("agent interrupted without checkpoint id")
+	}
+	if a.approvals == nil {
+		return nil, errors.New("agent interrupted without approval service")
+	}
+	info := event.Action.Interrupted
+	var root *adk.InterruptCtx
+	for _, c := range info.InterruptContexts {
+		if c.IsRootCause {
+			root = c
+			break
+		}
+	}
+	if root == nil && len(info.InterruptContexts) > 0 {
+		root = info.InterruptContexts[0]
+	}
+	if root == nil {
+		return nil, errors.New("agent interrupted without context")
+	}
+	if err := a.approvals.SetInterrupt(ctx, checkpointID, root.ID); err != nil {
+		return nil, fmt.Errorf("save interrupt id: %w", err)
+	}
+	req, err := a.approvals.GetByCheckpoint(ctx, checkpointID)
+	if err != nil {
+		return nil, fmt.Errorf("load interrupt approval: %w", err)
+	}
+	return &Result{Pending: &PendingApproval{
+		ApprovalID:  req.ID,
+		InterruptID: root.ID,
+		Tool:        req.ToolName,
+		Summary:     req.Summary,
+	}}, nil
 }
 
 // consumeStream 把一段流读完，正文追加到 answer 并转发给 onDelta。

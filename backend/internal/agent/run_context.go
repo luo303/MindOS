@@ -5,6 +5,8 @@ import "context"
 // RunMeta 是一次问答的会话元数据，供写工具创建审批时使用。
 // 通过 context 传递，避免为了几个字段改 Runner 接口。
 type RunMeta struct {
+	OwnerID        int64
+	CheckpointID   string
 	ConversationID int64
 	UserMessageID  int64
 	ChatModelID    int64
