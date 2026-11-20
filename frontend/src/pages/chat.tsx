@@ -3,6 +3,7 @@ import { Loader2, Plus, SendHorizontal, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
+import { approvalKeys, decideApproval, fetchConversationApprovals, type Approval } from '@/api/approvals'
 import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
 import {
   conversationKeys,
@@ -59,6 +60,7 @@ function turnsFromMessages(messages: ChatMessage[]): Turn[] {
     if (message.role === 'user') {
       current = {
         id: 'msg-' + message.id,
+        messageId: message.id,
         question: message.content,
         answer: '',
         phase: 'settled',
@@ -109,6 +111,7 @@ export function ChatPage() {
   const [input, setInput] = useState('')
   const [pending, setPending] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [decidingId, setDecidingId] = useState<number | null>(null)
   const [createError, setCreateError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const creatingRef = useRef(false)
@@ -142,6 +145,39 @@ export function ChatPage() {
     enabled: activeId !== null,
     staleTime: 5_000,
   })
+
+  // 审批是会话历史的一部分：按 user_message_id 挂回对应轮次。
+  const approvalsQuery = useQuery({
+    queryKey: approvalKeys.conversation(activeId ?? 0),
+    queryFn: ({ signal }) => fetchConversationApprovals(activeId ?? 0, signal),
+    enabled: activeId !== null,
+    staleTime: 5_000,
+  })
+  const approvalsByMessage = useMemo(() => {
+    const map = new Map<number, Approval[]>()
+    for (const item of approvalsQuery.data ?? []) {
+      if (!item.user_message_id) {
+        continue
+      }
+      const list = map.get(item.user_message_id) ?? []
+      list.push(item)
+      map.set(item.user_message_id, list)
+    }
+    return map
+  }, [approvalsQuery.data])
+
+  const decide = async (id: number, decision: 'approve' | 'reject') => {
+    setDecidingId(id)
+    try {
+      await decideApproval(id, decision)
+      await queryClient.invalidateQueries({ queryKey: approvalKeys.conversation(activeId ?? 0) })
+      // 恢复后的 assistant 消息由后端落库；清掉同步标记，重新拉 messages。
+      syncedConversationRef.current = null
+      await messagesQuery.refetch()
+    } finally {
+      setDecidingId(null)
+    }
+  }
 
   // 选中的模型可能已被删除：回落到默认那条。
   useEffect(() => {
@@ -267,9 +303,15 @@ export function ChatPage() {
           onDone: (payload) => {
             patch((turn) => ({
               ...turn,
+              messageId: payload.user_message_id ?? turn.messageId,
               done: payload,
               phase: turn.phase === 'streaming' ? 'settled' : turn.phase,
             }))
+            if (payload.awaiting_approval) {
+              void queryClient.invalidateQueries({
+                queryKey: approvalKeys.conversation(conversationId),
+              })
+            }
             // 只刷新会话列表（标题/更新时间）；不重拉 messages，
             // 否则刚流式生成的内容会被一次空缓存覆盖。
             void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
@@ -417,7 +459,14 @@ export function ChatPage() {
         ) : null}
 
         {turns.map((turn) => (
-          <TurnCard key={turn.id} turn={turn} onStop={stop} />
+          <TurnCard
+            key={turn.id}
+            turn={turn}
+            onStop={stop}
+            approvals={turn.messageId ? approvalsByMessage.get(turn.messageId) : undefined}
+            decidingId={decidingId}
+            onDecision={decide}
+          />
         ))}
       </section>
 

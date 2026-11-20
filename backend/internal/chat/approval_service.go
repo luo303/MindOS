@@ -14,11 +14,11 @@ import (
 )
 
 // ListApprovals 返回当前用户的待审批动作；可按会话过滤。
-func (s *Service) ListApprovals(ctx context.Context, ownerID, conversationID int64) ([]approval.Request, error) {
+func (s *Service) ListApprovals(ctx context.Context, ownerID, conversationID int64, status string) ([]approval.Request, error) {
 	if s.approvals == nil {
 		return nil, nil
 	}
-	return s.approvals.ListPending(ctx, ownerID, conversationID)
+	return s.approvals.ListByConversation(ctx, ownerID, conversationID, status)
 }
 
 // DecideApproval 批准/拒绝一条 AI 提案。

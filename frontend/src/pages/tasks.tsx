@@ -3,11 +3,6 @@ import { Check, ListChecks, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
-  approvalKeys,
-  decideApproval,
-  fetchPendingApprovals,
-} from '@/api/approvals'
-import {
   createTodo,
   deleteTodo,
   fetchTodos,
@@ -108,20 +103,6 @@ export function TasksPage() {
     queryKey: todoKeys.list(status),
     queryFn: ({ signal }) => fetchTodos(status, signal),
   })
-  const approvalsQuery = useQuery({
-    queryKey: approvalKeys.pending(),
-    queryFn: ({ signal }) => fetchPendingApprovals(undefined, signal),
-  })
-  const approvals = approvalsQuery.data ?? []
-
-  const decisionMutation = useMutation({
-    mutationFn: ({ id, decision }: { id: number; decision: 'approve' | 'reject' }) =>
-      decideApproval(id, decision),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: approvalKeys.pending() })
-      void queryClient.invalidateQueries({ queryKey: todoKeys.all })
-    },
-  })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: todoKeys.all })
 
@@ -206,48 +187,6 @@ export function TasksPage() {
       <p className="text-muted-foreground text-sm">
         手动记录待办；也可以让 AI 结合知识库创建，经你审批后落库。
       </p>
-
-      {approvals.length > 0 ? (
-        <section className="space-y-2" aria-label="待审批的 AI 操作">
-          <h2 className="text-sm font-medium">待审批（{approvals.length}）</h2>
-          {approvals.map((item) => (
-            <Card key={item.id} className="border-primary/30 bg-primary/5">
-              <CardContent className="space-y-2 py-4">
-                <p className="text-sm font-medium">{item.summary}</p>
-                <p className="text-muted-foreground text-xs">
-                  AI 提案 · {item.tool_name} · 到期 {new Date(item.expires_at).toLocaleString('zh-CN')}
-                </p>
-                {typeof item.arguments.title === 'string' ? (
-                  <p className="text-xs">标题：{item.arguments.title}</p>
-                ) : null}
-                {typeof item.arguments.due_at === 'string' ? (
-                  <p className="text-xs">截止：{new Date(item.arguments.due_at).toLocaleString('zh-CN')}</p>
-                ) : null}
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => decisionMutation.mutate({ id: item.id, decision: 'approve' })}
-                    disabled={decisionMutation.isPending}
-                  >
-                    批准
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => decisionMutation.mutate({ id: item.id, decision: 'reject' })}
-                    disabled={decisionMutation.isPending}
-                  >
-                    拒绝
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-          {decisionMutation.error ? (
-            <p className="text-destructive text-sm">{describeError(decisionMutation.error)}</p>
-          ) : null}
-        </section>
-      ) : null}
 
       {formOpen ? (
         <Card>

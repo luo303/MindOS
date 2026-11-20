@@ -94,7 +94,7 @@ func (h *Handler) ListApprovals(c *gin.Context) {
 		return
 	}
 	conversationID, _ := strconv.ParseInt(c.Query("conversation_id"), 10, 64)
-	items, err := h.svc.ListApprovals(c.Request.Context(), p.UserID, conversationID)
+	items, err := h.svc.ListApprovals(c.Request.Context(), p.UserID, conversationID, c.Query("status"))
 	if err != nil {
 		httpx.Fail(c, httpx.ErrInternal.Wrap(err))
 		return

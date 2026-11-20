@@ -49,6 +49,19 @@ func (r *Repository) GetByCheckpoint(ctx context.Context, checkpointID string) (
 	return &req, nil
 }
 
+// ListByConversation 返回会话的审批历史；status 为空或 all 时不过滤。
+func (r *Repository) ListByConversation(ctx context.Context, ownerID, conversationID int64, status string) ([]Request, error) {
+	query := r.db.WithContext(ctx).Where("owner_id = ? AND conversation_id = ?", ownerID, conversationID)
+	if status != "" && status != "all" {
+		query = query.Where("status = ?", status)
+	}
+	var out []Request
+	if err := query.Order("created_at ASC").Limit(200).Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("list conversation approvals: %w", err)
+	}
+	return out, nil
+}
+
 func (r *Repository) ListPending(ctx context.Context, ownerID int64, conversationID int64) ([]Request, error) {
 	query := r.db.WithContext(ctx).
 		Where("owner_id = ? AND status = ? AND expires_at > now()", ownerID, StatusPending)

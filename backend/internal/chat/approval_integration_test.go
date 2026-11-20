@@ -53,4 +53,12 @@ func TestApproveTodoCreatesTodoAndMessage(t *testing.T) {
 	if messages[0].Role != RoleAssistant {
 		t.Errorf("message role = %s", messages[0].Role)
 	}
+	all, err := svc.ListApprovals(ctx, owner, conv.ID, "all")
+	if err != nil || len(all) != 1 || all[0].Status != approval.StatusCompleted {
+		t.Fatalf("conversation approvals = %v, %v", all, err)
+	}
+	pending, err := svc.ListApprovals(ctx, owner, conv.ID, "pending")
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending approvals = %v, %v", pending, err)
+	}
 }

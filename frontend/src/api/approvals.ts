@@ -19,15 +19,17 @@ export type Approval = {
 }
 
 export const approvalKeys = {
-  pending: (conversationId?: number) => ['approvals', 'pending', conversationId ?? 0] as const,
+  conversation: (conversationId: number) => ['approvals', 'conversation', conversationId] as const,
 }
 
-export async function fetchPendingApprovals(
-  conversationId?: number,
+export async function fetchConversationApprovals(
+  conversationId: number,
   signal?: AbortSignal,
 ): Promise<Approval[]> {
-  const query = conversationId ? '?conversation_id=' + conversationId : ''
-  const data = await apiRequest<{ items: Approval[] | null }>('/approvals' + query, { signal })
+  const data = await apiRequest<{ items: Approval[] | null }>(
+    '/approvals?conversation_id=' + conversationId + '&status=all',
+    { signal },
+  )
   return data.items ?? []
 }
 

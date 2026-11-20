@@ -11,6 +11,8 @@ export type TurnPhase = 'streaming' | 'settled' | 'refused' | 'withdrawn' | 'fai
 
 export type Turn = {
   id: string
+  /** 后端 user message id；审批按它挂到对应轮次。 */
+  messageId?: number
   question: string
   /** 已收到的正文。撤回时会被替换成提示文案。 */
   answer: string

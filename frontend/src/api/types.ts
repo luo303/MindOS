@@ -245,6 +245,8 @@ export type AskDonePayload = {
   latency_ms: number
   awaiting_approval?: boolean
   approval_id?: number
+  conversation_id?: number
+  user_message_id?: number
 }
 
 /**

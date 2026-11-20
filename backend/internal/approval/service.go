@@ -78,6 +78,10 @@ func (s *Service) GetByCheckpoint(ctx context.Context, checkpointID string) (*Re
 	return s.repo.GetByCheckpoint(ctx, checkpointID)
 }
 
+func (s *Service) ListByConversation(ctx context.Context, ownerID, conversationID int64, status string) ([]Request, error) {
+	return s.repo.ListByConversation(ctx, ownerID, conversationID, status)
+}
+
 func (s *Service) ListPending(ctx context.Context, ownerID, conversationID int64) ([]Request, error) {
 	return s.repo.ListPending(ctx, ownerID, conversationID)
 }
