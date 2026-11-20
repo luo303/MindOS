@@ -54,6 +54,8 @@ var (
 	ErrEmptyQuestion = errors.New("question is empty")
 	// ErrQuestionTooLong 表示问题超过 maxQuestionRunes。
 	ErrQuestionTooLong = errors.New("question is too long")
+	// ErrApprovalPending 表示会话还有待审批写操作；审批完成前不能继续对话。
+	ErrApprovalPending = errors.New("conversation has a pending approval")
 )
 
 // Settings 是问答的可调参数。
@@ -213,6 +215,15 @@ func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID
 	// 先确认会话属于当前用户：不存在/越权都返回同一个 404。
 	if _, err := s.convs.Get(ctx, ownerID, conversationID); err != nil {
 		return err
+	}
+	if s.approvals != nil {
+		pending, err := s.approvals.HasPending(ctx, ownerID, conversationID)
+		if err != nil {
+			return err
+		}
+		if pending {
+			return ErrApprovalPending
+		}
 	}
 	resolved, err := s.models.Resolve(ctx, ownerID, in.ChatModelID)
 	if err != nil {

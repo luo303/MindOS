@@ -11,6 +11,9 @@ import (
 
 var ErrNotFound = errors.New("approval not found")
 
+// ErrPending 表示该会话已有一条待审批动作；同一会话同时最多一条。
+var ErrPending = errors.New("approval already pending for conversation")
+
 type Repository struct{ db *gorm.DB }
 
 func NewRepository(db *gorm.DB) *Repository { return &Repository{db: db} }
@@ -50,6 +53,18 @@ func (r *Repository) GetByCheckpoint(ctx context.Context, checkpointID string) (
 }
 
 // ListByConversation 返回会话的审批历史；status 为空或 all 时不过滤。
+// HasPending 在创建新审批前做门禁；唯一索引负责并发兜底。
+func (r *Repository) HasPending(ctx context.Context, ownerID, conversationID int64) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&Request{}).
+		Where("owner_id = ? AND conversation_id = ? AND status = ?", ownerID, conversationID, StatusPending).
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("count pending approvals: %w", err)
+	}
+	return count > 0, nil
+}
+
 func (r *Repository) ListByConversation(ctx context.Context, ownerID, conversationID int64, status string) ([]Request, error) {
 	query := r.db.WithContext(ctx).Where("owner_id = ? AND conversation_id = ?", ownerID, conversationID)
 	if status != "" && status != "all" {

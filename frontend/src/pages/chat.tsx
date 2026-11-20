@@ -23,7 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 
-import { ApprovalDialog } from './chat/approval-dialog'
+import { ApprovalPanel } from './chat/approval-panel'
 import { TurnCard } from './chat/turn-card'
 import { ModelSelect } from './chat/model-select'
 import { REFUSAL_TEXT, STOPPED_TEXT, WITHDRAWN_TEXT, type Turn } from './chat/format'
@@ -113,7 +113,6 @@ export function ChatPage() {
   const [pending, setPending] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [decidingId, setDecidingId] = useState<number | null>(null)
-  const [approvalOpen, setApprovalOpen] = useState(false)
   const [decisionText, setDecisionText] = useState('')
   const [decisionError, setDecisionError] = useState('')
   const [createError, setCreateError] = useState('')
@@ -158,25 +157,13 @@ export function ChatPage() {
     staleTime: 5_000,
   })
   const approvals = useMemo(() => approvalsQuery.data ?? [], [approvalsQuery.data])
-  const pendingCount = approvals.filter((item) => item.status === 'pending').length
-  const seenPendingRef = useRef<Set<number>>(new Set())
+  const pendingApproval = approvals.find((item) => item.status === 'pending') ?? null
 
-  // 新出现的 pending 审批自动弹框；用户手动关掉后，同一 id 不反复弹。
-  useEffect(() => {
-    if (activeId === null) {
+  const decide = async (decision: 'approve' | 'reject') => {
+    if (!pendingApproval) {
       return
     }
-    const fresh = approvals.filter(
-      (item) => item.status === 'pending' && !seenPendingRef.current.has(item.id),
-    )
-    if (fresh.length === 0) {
-      return
-    }
-    fresh.forEach((item) => seenPendingRef.current.add(item.id))
-    setApprovalOpen(true)
-  }, [activeId, approvals])
-
-  const decide = async (id: number, decision: 'approve' | 'reject') => {
+    const id = pendingApproval.id
     setDecidingId(id)
     setDecisionText('')
     setDecisionError('')
@@ -381,16 +368,6 @@ export function ChatPage() {
         title="对话"
         actions={
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setApprovalOpen(true)
-                void approvalsQuery.refetch()
-              }}
-            >
-              审批{pendingCount > 0 ? ` ${pendingCount}` : ''}
-            </Button>
             <select
               aria-label="选择会话"
               className="border-input bg-background h-8 w-40 rounded-md border px-2 text-sm sm:w-52"
@@ -493,6 +470,15 @@ export function ChatPage() {
         ))}
       </section>
 
+      {pendingApproval ? (
+        <ApprovalPanel
+          approval={pendingApproval}
+          deciding={decidingId === pendingApproval.id}
+          streamText={decisionText}
+          error={decisionError}
+          onDecision={decide}
+        />
+      ) : (
       <form
         aria-label="发送消息"
         className="space-y-2 rounded-xl border border-input bg-card p-2"
@@ -535,16 +521,7 @@ export function ChatPage() {
             </Button>
           </div>
       </form>
-
-      <ApprovalDialog
-        open={approvalOpen}
-        approvals={approvals}
-        decidingId={decidingId}
-        streamText={decisionText}
-        error={decisionError}
-        onClose={() => setApprovalOpen(false)}
-        onDecision={decide}
-      />
+      )}
     </div>
   )
 }

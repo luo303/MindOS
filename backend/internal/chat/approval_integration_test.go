@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -60,5 +61,27 @@ func TestApproveTodoCreatesTodoAndMessage(t *testing.T) {
 	pending, err := svc.ListApprovals(ctx, owner, conv.ID, "pending")
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("pending approvals = %v, %v", pending, err)
+	}
+}
+
+func TestAskBlockedByPendingApproval(t *testing.T) {
+	repo, gdb, owner := newConversationDB(t)
+	ctx := context.Background()
+	conv := &Conversation{OwnerID: owner, Title: "pending"}
+	if err := repo.Create(ctx, conv); err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	approvalSvc := approval.NewService(approval.NewRepository(gdb))
+	todoSvc := todo.NewService(todo.NewRepository(gdb))
+	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, Settings{Timeout: time.Second}, nil)
+	if _, err := approvalSvc.Propose(ctx, approval.ProposeInput{
+		OwnerID: owner, ConversationID: conv.ID, ToolName: "create_todo",
+		Arguments: approval.JSON{"title": "x"}, Summary: "创建待办：x",
+	}); err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	err := svc.AskInConversation(ctx, owner, conv.ID, AskInput{Question: "继续"}, &fakeEmitter{})
+	if !errors.Is(err, ErrApprovalPending) {
+		t.Fatalf("ask = %v, want ErrApprovalPending", err)
 	}
 }

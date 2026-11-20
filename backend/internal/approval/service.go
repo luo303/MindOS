@@ -43,6 +43,13 @@ func (s *Service) Propose(ctx context.Context, in ProposeInput) (*Request, error
 	if in.ConversationID <= 0 {
 		return nil, fmt.Errorf("approval requires a conversation")
 	}
+	pending, err := s.repo.HasPending(ctx, in.OwnerID, in.ConversationID)
+	if err != nil {
+		return nil, err
+	}
+	if pending {
+		return nil, ErrPending
+	}
 	req := &Request{
 		OwnerID:   in.OwnerID,
 		ToolName:  in.ToolName,
@@ -72,6 +79,10 @@ func (s *Service) Propose(ctx context.Context, in ProposeInput) (*Request, error
 
 func (s *Service) SetInterrupt(ctx context.Context, checkpointID, interruptID string) error {
 	return s.repo.SetInterrupt(ctx, checkpointID, interruptID)
+}
+
+func (s *Service) HasPending(ctx context.Context, ownerID, conversationID int64) (bool, error) {
+	return s.repo.HasPending(ctx, ownerID, conversationID)
 }
 
 func (s *Service) GetByCheckpoint(ctx context.Context, checkpointID string) (*Request, error) {
