@@ -5,16 +5,16 @@ import { useEffect, useRef, useState } from 'react'
  *
  * 模型/SSE 的 delta 往往一次包含几个词甚至一整句，直接 append 会一跳一段。
  * 这里保留完整目标文本，另用一个逐帧追赶的显示文本：
- * - 正常积压：约 30 字/秒；
- * - 积压较多：自动加速，避免流结束后还在慢慢补；
+ * - 正常：60fps 下逐字显示（约 60 字/秒），接近 ChatGPT/Claude 的 token 节奏；
+ * - 积压较多：每帧 2–3 字，避免流结束后还在慢慢补；
  * - 流结束/失败：立即显示完整文本。
  */
-const FRAME_MS = 33 // 约 30fps，比 60fps 少一半重渲染
+const FRAME_MS = 16 // 每个 rAF 都更新，避免 30fps 的顿挫
 const STEP_NORMAL = 1
-const STEP_FAST = 3
-const STEP_CATCH_UP = 6
-const BACKLOG_FAST = 80
-const BACKLOG_CATCH_UP = 160
+const STEP_FAST = 2
+const STEP_CATCH_UP = 3
+const BACKLOG_FAST = 120
+const BACKLOG_CATCH_UP = 280
 
 export function useTypewriter(target: string, active: boolean): string {
   const [shown, setShown] = useState(active ? '' : target)

@@ -22,8 +22,6 @@ type Props = {
 
 export function TurnCard({ turn, onRetry, onStop }: Props) {
   const streaming = turn.phase === 'streaming'
-  // 模型 delta 可能一次一段；显示层逐字追赶，避免"跳一段"。
-  const displayedAnswer = useTypewriter(turn.answer, streaming)
 
   return (
     <article className="space-y-4 border-b pb-5">
@@ -31,7 +29,7 @@ export function TurnCard({ turn, onRetry, onStop }: Props) {
         {turn.question}
       </h2>
       <div className="space-y-3 break-words">
-        <AnswerBody turn={turn} answer={displayedAnswer} />
+        <AnswerBody turn={turn} />
 
         {turn.citations.length > 0 ? <CitationList items={turn.citations} /> : null}
         {turn.hits.length > 0 ? <RetrievalPanel items={turn.hits} /> : null}
@@ -64,7 +62,9 @@ export function TurnCard({ turn, onRetry, onStop }: Props) {
   )
 }
 
-function AnswerBody({ turn, answer }: { turn: Turn; answer: string }) {
+function AnswerBody({ turn }: { turn: Turn }) {
+  // 把逐字更新限制在回答正文，避免每个字都重渲染整张 TurnCard。
+  const answer = useTypewriter(turn.answer, turn.phase === 'streaming')
   // 首字之前显示骨架：空白区域会让人以为"没点上"，而这段时间可能要几秒。
   if (turn.phase === 'streaming' && turn.answer === '') {
     return (
