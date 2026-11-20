@@ -1,3 +1,4 @@
+import { streamSSE, type AskHandlers } from '@/api/ask'
 import { apiRequest } from '@/api/client'
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'completed' | 'expired' | 'failed'
@@ -33,10 +34,17 @@ export async function fetchConversationApprovals(
   return data.items ?? []
 }
 
-export function decideApproval(id: number, decision: 'approve' | 'reject'): Promise<Approval> {
-  return apiRequest<Approval>('/approvals/' + id + '/decision', {
-    method: 'POST',
-    body: { decision },
-    timeoutMs: 60_000,
-  })
+/** 审批后从 checkpoint 恢复，delta 与普通问答同形，直接续到会话里。 */
+export function streamApprovalDecision(
+  id: number,
+  decision: 'approve' | 'reject',
+  handlers: AskHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamSSE(
+    '/approvals/' + id + '/decision',
+    { decision },
+    handlers,
+    signal,
+  )
 }

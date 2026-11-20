@@ -3,7 +3,7 @@ import { Loader2, Plus, SendHorizontal, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
-import { approvalKeys, decideApproval, fetchConversationApprovals, type Approval } from '@/api/approvals'
+import { approvalKeys, fetchConversationApprovals, streamApprovalDecision, type Approval } from '@/api/approvals'
 import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
 import {
   conversationKeys,
@@ -166,14 +166,35 @@ export function ChatPage() {
     return map
   }, [approvalsQuery.data])
 
-  const decide = async (id: number, decision: 'approve' | 'reject') => {
+  const decide = async (id: number, decision: 'approve' | 'reject', messageId?: number) => {
     setDecidingId(id)
+    const patchTurn = (next: (turn: Turn) => Turn) => {
+      setTurns((prev) =>
+        prev.map((turn) =>
+          turn.messageId === messageId ? next({ ...turn, phase: 'streaming', answer: '' }) : turn,
+        ),
+      )
+    }
     try {
-      await decideApproval(id, decision)
-      await queryClient.invalidateQueries({ queryKey: approvalKeys.conversation(activeId ?? 0) })
-      // 恢复后的 assistant 消息由后端落库；清掉同步标记，重新拉 messages。
-      syncedConversationRef.current = null
-      await messagesQuery.refetch()
+      await streamApprovalDecision(id, decision, {
+        onDelta: (text) => patchTurn((turn) => ({ ...turn, answer: turn.answer + text })),
+        onDone: (payload) => {
+          patchTurn((turn) => ({ ...turn, done: payload, phase: 'settled' }))
+          void queryClient.invalidateQueries({
+            queryKey: approvalKeys.conversation(activeId ?? 0),
+          })
+          syncedConversationRef.current = null
+          void messagesQuery.refetch()
+        },
+        onError: (code, message) =>
+          patchTurn((turn) => ({ ...turn, phase: 'failed', error: { code, message } })),
+      })
+    } catch (error) {
+      patchTurn((turn) => ({
+        ...turn,
+        phase: 'failed',
+        error: { code: 'approval', message: describeError(error) },
+      }))
     } finally {
       setDecidingId(null)
     }
@@ -465,7 +486,7 @@ export function ChatPage() {
             onStop={stop}
             approvals={turn.messageId ? approvalsByMessage.get(turn.messageId) : undefined}
             decidingId={decidingId}
-            onDecision={decide}
+            onDecision={(id, decision) => decide(id, decision, turn.messageId)}
           />
         ))}
       </section>

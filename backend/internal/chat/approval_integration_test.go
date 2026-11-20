@@ -32,7 +32,7 @@ func TestApproveTodoCreatesTodoAndMessage(t *testing.T) {
 		t.Fatalf("propose: %v", err)
 	}
 
-	decided, err := svc.DecideApproval(ctx, owner, req.ID, true)
+	decided, err := svc.DecideApproval(ctx, owner, req.ID, true, &fakeEmitter{})
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}

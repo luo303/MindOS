@@ -25,7 +25,7 @@ func (s *Service) ListApprovals(ctx context.Context, ownerID, conversationID int
 //
 // 有 checkpoint 的提案走 Agent.Resume：模型从工具中断点继续；
 // 老的无 checkpoint 提案保留直接执行路径，兼容升级前的数据。
-func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve bool) (*approval.Request, error) {
+func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve bool, emit Emitter) (*approval.Request, error) {
 	if s.approvals == nil {
 		return nil, approval.ErrNotFound
 	}
@@ -41,15 +41,21 @@ func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve
 		return nil, err
 	}
 	if decided.CheckpointID != nil && *decided.CheckpointID != "" && decided.InterruptID != nil {
-		return s.resumeDecision(ctx, ownerID, decided, approve)
+		return s.resumeDecision(ctx, ownerID, decided, approve, emit)
 	}
 	if !approve {
-		s.completeApprovalMessage(ctx, ownerID, decided, "已拒绝创建待办。")
+		text := "已拒绝创建待办。"
+		assistantID := s.completeApprovalMessage(ctx, ownerID, decided, text)
+		if emit != nil {
+			_ = emit.Delta(text)
+			_ = emit.Done(approvalDone(decided, assistantID))
+		}
 		_ = s.approvals.Complete(ctx, ownerID, id, approval.JSON{"approved": false})
 		return s.approvals.Get(ctx, ownerID, id)
 	}
 
 	result := approval.JSON{}
+	var text string
 	switch decided.ToolName {
 	case "create_todo":
 		todoItem, createErr := s.createTodoFromApproval(ctx, ownerID, decided)
@@ -59,7 +65,7 @@ func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve
 		}
 		result["todo_id"] = todoItem.ID
 		result["title"] = todoItem.Title
-		s.completeApprovalMessage(ctx, ownerID, decided, "已创建待办："+todoItem.Title)
+		text = "已创建待办：" + todoItem.Title
 	case "update_todo":
 		todoItem, updateErr := s.updateTodoFromApproval(ctx, ownerID, decided)
 		if updateErr != nil {
@@ -67,22 +73,41 @@ func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve
 			return nil, updateErr
 		}
 		result["todo_id"] = todoItem.ID
-		s.completeApprovalMessage(ctx, ownerID, decided, "已修改待办："+todoItem.Title)
+		text = "已修改待办：" + todoItem.Title
 	case "delete_todo":
 		if err := s.deleteTodoFromApproval(ctx, ownerID, decided); err != nil {
 			_ = s.approvals.Fail(ctx, ownerID, id, approval.JSON{"error": err.Error()})
 			return nil, err
 		}
 		result["deleted"] = true
-		s.completeApprovalMessage(ctx, ownerID, decided, "已删除待办。")
+		text = "已删除待办。"
 	default:
 		_ = s.approvals.Fail(ctx, ownerID, id, approval.JSON{"error": "unsupported tool"})
 		return nil, errors.New("unsupported approval tool")
 	}
+	assistantID := s.completeApprovalMessage(ctx, ownerID, decided, text)
 	if err := s.approvals.Complete(ctx, ownerID, id, result); err != nil {
 		return nil, err
 	}
+	if emit != nil {
+		_ = emit.Delta(text)
+		_ = emit.Done(approvalDone(decided, assistantID))
+	}
 	return s.approvals.Get(ctx, ownerID, id)
+}
+
+func approvalDone(req *approval.Request, assistantID int64) DonePayload {
+	payload := DonePayload{AssistantMessageID: assistantID}
+	if req.ConversationID != nil {
+		payload.ConversationID = *req.ConversationID
+	}
+	if req.UserMessageID != nil {
+		payload.UserMessageID = *req.UserMessageID
+	}
+	if req.ChatModelID != nil {
+		payload.ChatModelID = *req.ChatModelID
+	}
+	return payload
 }
 
 func (s *Service) createTodoFromApproval(ctx context.Context, ownerID int64, req *approval.Request) (*todo.Todo, error) {
@@ -153,20 +178,23 @@ func (s *Service) deleteTodoFromApproval(ctx context.Context, ownerID int64, req
 	return s.todos.Delete(ctx, ownerID, int64(id))
 }
 
-func (s *Service) completeApprovalMessage(ctx context.Context, ownerID int64, req *approval.Request, text string) {
+func (s *Service) completeApprovalMessage(ctx context.Context, ownerID int64, req *approval.Request, text string) int64 {
 	if req.ConversationID == nil || s.convs == nil {
-		return
+		return 0
 	}
-	if _, err := s.convs.AppendMessage(ctx, ownerID, *req.ConversationID, RoleAssistant, text, RawJSON("[]")); err != nil {
+	saved, err := s.convs.AppendMessage(ctx, ownerID, *req.ConversationID, RoleAssistant, text, RawJSON("[]"))
+	if err != nil {
 		s.log.Warn("save approval result message failed", zap.Int64("approval_id", req.ID), zap.Error(err))
+		return 0
 	}
+	return saved.ID
 }
 
 // resumeDecision 从 Eino checkpoint 恢复 Agent。
 //
 // 这是真正的断点恢复：模型停在 create_todo 的中断点，批准/拒绝后
 // 工具重新进入 InvokableRun，再由模型继续生成最终回答。
-func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approval.Request, approve bool) (*approval.Request, error) {
+func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approval.Request, approve bool, emit Emitter) (*approval.Request, error) {
 	if s.builder == nil || s.models == nil {
 		return nil, errors.New("resume is not configured")
 	}
@@ -199,10 +227,11 @@ func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approv
 		return nil, errors.New("runner does not support resume")
 	}
 
-	var answer strings.Builder
 	result, err := resumer.Resume(runCtx, *req.CheckpointID, *req.InterruptID,
 		map[string]any{"approved": approve}, func(delta string) error {
-			answer.WriteString(delta)
+			if emit != nil {
+				return emit.Delta(delta)
+			}
 			return nil
 		})
 	if err != nil {
@@ -217,9 +246,13 @@ func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approv
 	if final == "" {
 		final = "审批已处理。"
 	}
+	var assistantID int64
 	if req.ConversationID != nil {
-		if _, err := s.convs.AppendMessage(ctx, ownerID, *req.ConversationID, RoleAssistant, final, marshalJSON(nil)); err != nil {
+		saved, err := s.convs.AppendMessage(ctx, ownerID, *req.ConversationID, RoleAssistant, final, marshalJSON(nil))
+		if err != nil {
 			s.log.Warn("save resumed message failed", zap.Int64("approval_id", req.ID), zap.Error(err))
+		} else {
+			assistantID = saved.ID
 		}
 	}
 	if err := s.approvals.Complete(ctx, ownerID, req.ID, approval.JSON{
@@ -227,6 +260,9 @@ func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approv
 		"answer":   final,
 	}); err != nil {
 		return nil, err
+	}
+	if emit != nil {
+		_ = emit.Done(approvalDone(req, assistantID))
 	}
 	return s.approvals.Get(ctx, ownerID, req.ID)
 }

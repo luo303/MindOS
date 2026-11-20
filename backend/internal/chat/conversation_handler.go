@@ -107,6 +107,8 @@ type approvalDecisionRequest struct {
 }
 
 // DecideApproval 是 POST /approvals/:id/decision。
+//
+// 响应是 SSE：批准后 Resume 的每个 delta 直接推给前端，不再等整段回答。
 func (h *Handler) DecideApproval(c *gin.Context) {
 	p, ok := auth.PrincipalFrom(c)
 	if !ok {
@@ -127,12 +129,16 @@ func (h *Handler) DecideApproval(c *gin.Context) {
 		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("decision must be approve or reject"))
 		return
 	}
-	result, err := h.svc.DecideApproval(c.Request.Context(), p.UserID, id, req.Decision == "approve")
-	if err != nil {
-		httpx.Fail(c, mapAskError(err))
+	writer := &sseWriter{c: c}
+	_, err = h.svc.DecideApproval(c.Request.Context(), p.UserID, id, req.Decision == "approve", writer)
+	if err == nil {
 		return
 	}
-	httpx.OK(c, result)
+	if writer.started {
+		_ = writer.Error("internal", "审批恢复过程中出错", true)
+		return
+	}
+	httpx.Fail(c, mapAskError(err))
 }
 
 // ListMessages 是 GET /conversations/:id/messages。
