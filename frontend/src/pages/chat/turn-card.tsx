@@ -12,6 +12,7 @@ import {
   similarityLabel,
   type Turn,
 } from './format'
+import { useTypewriter } from './use-typewriter'
 
 type Props = {
   turn: Turn
@@ -21,6 +22,8 @@ type Props = {
 
 export function TurnCard({ turn, onRetry, onStop }: Props) {
   const streaming = turn.phase === 'streaming'
+  // 模型 delta 可能一次一段；显示层逐字追赶，避免"跳一段"。
+  const displayedAnswer = useTypewriter(turn.answer, streaming)
 
   return (
     <article className="space-y-4 border-b pb-5">
@@ -28,7 +31,7 @@ export function TurnCard({ turn, onRetry, onStop }: Props) {
         {turn.question}
       </h2>
       <div className="space-y-3 break-words">
-        <AnswerBody turn={turn} />
+        <AnswerBody turn={turn} answer={displayedAnswer} />
 
         {turn.citations.length > 0 ? <CitationList items={turn.citations} /> : null}
         {turn.hits.length > 0 ? <RetrievalPanel items={turn.hits} /> : null}
@@ -61,7 +64,7 @@ export function TurnCard({ turn, onRetry, onStop }: Props) {
   )
 }
 
-function AnswerBody({ turn }: { turn: Turn }) {
+function AnswerBody({ turn, answer }: { turn: Turn; answer: string }) {
   // 首字之前显示骨架：空白区域会让人以为"没点上"，而这段时间可能要几秒。
   if (turn.phase === 'streaming' && turn.answer === '') {
     return (
@@ -80,7 +83,7 @@ function AnswerBody({ turn }: { turn: Turn }) {
           没有拿到回答
         </p>
         <p className="text-muted-foreground text-xs break-words">{turn.error?.message}</p>
-        {turn.answer ? <p className="text-sm whitespace-pre-wrap">{turn.answer}</p> : null}
+        {answer ? <p className="text-sm whitespace-pre-wrap">{answer}</p> : null}
       </div>
     )
   }
@@ -89,7 +92,7 @@ function AnswerBody({ turn }: { turn: Turn }) {
     // 拒答与撤回共用灰底样式：对用户都是"没答上来"，区别只在文案。
     return (
       <div className="bg-muted/50 rounded-md border p-3">
-        <p className="text-sm whitespace-pre-wrap">{turn.answer}</p>
+        <p className="text-sm whitespace-pre-wrap">{answer}</p>
         {turn.reason ? (
           <p className="text-muted-foreground mt-1 text-xs">原因：{reasonLabel(turn.reason)}</p>
         ) : null}
@@ -99,7 +102,7 @@ function AnswerBody({ turn }: { turn: Turn }) {
 
   return (
     <p className="text-sm leading-relaxed whitespace-pre-wrap">
-      {renderAnswer(turn.answer, turn.citations)}
+      {renderAnswer(answer, turn.citations)}
     </p>
   )
 }
