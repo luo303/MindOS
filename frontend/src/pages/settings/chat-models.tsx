@@ -15,7 +15,7 @@ import { describeError } from '@/api/errors'
 import type { ChatModel, ChatModelInput } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { EmptyState } from '@/components/empty-state'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 
@@ -128,15 +128,17 @@ export function ChatModelsCard() {
   const formError = createMutation.error ?? updateMutation.error
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>对话模型</CardTitle>
-        <CardDescription>
-          问答用哪个模型由你决定，配置存在数据库里，改完下一个问题就生效，不需要重启。
-          密钥加密存储，界面只显示末四位。
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <section aria-labelledby="chat-models-heading" className="space-y-4 border-t pt-5">
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="chat-models-heading" className="font-semibold">对话模型</h2>
+        {!editing ? (
+          <Button variant="secondary" size="sm" onClick={openCreate}>
+            <Plus aria-hidden="true" />
+            添加模型
+          </Button>
+        ) : null}
+      </header>
+      <div className="space-y-4">
         {modelsQuery.isPending ? (
           <div className="space-y-2">
             <Skeleton className="h-10 w-full" />
@@ -147,15 +149,7 @@ export function ChatModelsCard() {
             读取失败：{describeError(modelsQuery.error)}
           </p>
         ) : models.length === 0 ? (
-          <div className="rounded-lg border border-dashed px-3 py-6 text-center">
-            <p className="text-sm font-medium">还没有配置</p>
-            <p className="text-muted-foreground mx-auto mt-1 max-w-md text-xs">
-              填一个 OpenAI 兼容的地址与模型名即可，例如讯飞星辰
-              <code className="bg-muted mx-1 rounded px-1">https://maas-api.cn-huabei-1.xf-yun.com/v2</code>
-              + <code className="bg-muted rounded px-1">spark-x2.6</code>。
-              地址填到版本号为止，<strong>不要带 /chat/completions</strong>。
-            </p>
-          </div>
+          editing ? null : <EmptyState title="未配置对话模型" />
         ) : (
           <ul className="divide-y">
             {models.map((model) => (
@@ -290,7 +284,7 @@ export function ChatModelsCard() {
                   maxLength={128}
                 />
               </Field>
-              <Field label="Base URL（到版本号为止，不要带 /chat/completions）" className="sm:col-span-2">
+              <Field label="Base URL（不含 /chat/completions）" className="sm:col-span-2">
                 <Input
                   value={draft.base_url}
                   onChange={(event) => setDraft({ ...draft, base_url: event.target.value })}
@@ -310,9 +304,8 @@ export function ChatModelsCard() {
                   autoComplete="off"
                 />
               </Field>
-              <div className="flex flex-col justify-end gap-1">
                 {editing === 'new' ? null : (
-                  <label className="flex items-center gap-2 text-xs">
+                  <label className="flex items-center gap-2 self-end py-2 text-xs">
                     <input
                       type="checkbox"
                       checked={clearKey}
@@ -321,12 +314,6 @@ export function ChatModelsCard() {
                     清除已保存的 Key
                   </label>
                 )}
-                <p className="text-muted-foreground text-xs">
-                  {editing !== 'new' && editing.api_key_configured
-                    ? `已保存：****${editing.api_key_hint || '（短）'}`
-                    : '密钥只存在本地数据库，加密保存'}
-                </p>
-              </div>
               <Field label="temperature（可空）">
                 <Input
                   value={draft.temperature}
@@ -360,14 +347,9 @@ export function ChatModelsCard() {
               </Button>
             </div>
           </form>
-        ) : (
-          <Button variant="outline" size="sm" onClick={openCreate}>
-            <Plus aria-hidden="true" />
-            添加模型
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+        ) : null}
+      </div>
+    </section>
   )
 }
 

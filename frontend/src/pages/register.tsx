@@ -47,7 +47,6 @@ export function RegisterPage() {
   return (
     <AuthShell
       title="注册"
-      description="创建一个账号。知识库、问答记录与模型配置只属于这个账号。"
       footer={
         <>
           已有账号？

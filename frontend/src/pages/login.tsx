@@ -35,7 +35,6 @@ export function LoginPage() {
   return (
     <AuthShell
       title="登录"
-      description="使用邮箱与密码进入你的知识空间。"
       footer={
         <>
           还没有账号？

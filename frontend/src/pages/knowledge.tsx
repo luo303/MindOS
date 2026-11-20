@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BookOpen, Loader2, NotebookPen, Sparkles, Upload, X } from 'lucide-react'
+import { Loader2, NotebookPen, Sparkles, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { useSearchParams } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 
 import {
   backfillEmbeddings,
@@ -37,18 +37,13 @@ import { UploadComposer, type UploadDraft } from '@/pages/knowledge/upload-compo
 const emptyFilters: DocumentFilters = { collection: '', tag: '', status: '' }
 
 /**
- * 知识库页（Phase 5）：导入、筛选、编辑分类标签、删除、重索引、查看分块。
- *
- * 页面本身只做编排：取数、变更、把结果交给下面几个视图组件。
- * 具体渲染在 `pages/knowledge/` 下按职责拆开——单文件超过 500 行后
- * 改动一次要滚动很久，拆分是硬性约定而不是偏好。
- *
- * 仍然没有向量与检索：所以详情卡片明确写"尚未索引"，
- * 而不是用一个假的搜索框假装能用。
+ * 知识库页负责取数和变更，列表、详情和导入表单独立渲染。
  */
 export function KnowledgePage() {
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLElement>(null)
+  const detailRef = useRef<HTMLElement>(null)
   // 问答页的引用 chip 会带 ?doc=&chunk= 跳进来。
   // chunk 是 0 基的分块序号，只用于滚动与高亮；doc 决定打开哪篇文档。
   const [searchParams] = useSearchParams()
@@ -250,6 +245,13 @@ export function KnowledgePage() {
     setSelectedId(null)
   }
 
+  const selectDocument = (id: number) => {
+    setSelectedId(id)
+    if (window.matchMedia?.('(width < 64rem)').matches) {
+      detailRef.current?.focus()
+    }
+  }
+
   const actionError =
     updateMutation.error ??
     deleteMutation.error ??
@@ -261,10 +263,9 @@ export function KnowledgePage() {
   const isFiltered = filters.collection !== '' || filters.tag !== '' || filters.status !== ''
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-5">
       <PageHeader
         title="知识库"
-        description="导入 Markdown / 纯文本或直接写笔记，系统解析、切分并向量化。配置了向量模型后，文档会先切分、再自动排队算向量。"
         actions={
           <>
             <input
@@ -277,7 +278,7 @@ export function KnowledgePage() {
             />
             {embeddingConfigured ? (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 onClick={() => backfillMutation.mutate()}
                 disabled={backfillMutation.isPending}
@@ -291,7 +292,6 @@ export function KnowledgePage() {
               </Button>
             ) : null}
             <Button
-              variant="outline"
               size="sm"
               onClick={() => {
                 setComposerOpen((open) => !open)
@@ -302,7 +302,7 @@ export function KnowledgePage() {
               <NotebookPen aria-hidden="true" />
               写笔记
             </Button>
-            <Button size="sm" onClick={startUpload} disabled={uploadMutation.isPending}>
+            <Button variant="outline" size="sm" onClick={startUpload} disabled={uploadMutation.isPending}>
               {uploadMutation.isPending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
               ) : (
@@ -330,14 +330,6 @@ export function KnowledgePage() {
           </Button>
         </div>
       ) : null}
-      {/* 未配置模型时给一条常驻提示：否则用户只会看到"未配置向量模型"的徽标，
-          不知道去哪儿改。 */}
-      {settingsQuery.isSuccess && !embeddingConfigured ? (
-        <p className="text-muted-foreground text-xs">
-          未配置向量模型，文档只能按关键词检索。在 Settings 页填好 EMBEDDING 配置后，点「补齐向量」为已有文档补算。
-        </p>
-      ) : null}
-
       {composerOpen ? (
         <NoteComposer
           saving={noteMutation.isPending}
@@ -363,10 +355,17 @@ export function KnowledgePage() {
         />
       ) : null}
 
-      <FilterBar filters={filters} onChange={changeFilters} />
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <FilterBar filters={filters} onChange={changeFilters} />
+        {settingsQuery.isSuccess && !embeddingConfigured ? (
+          <Link to="/settings" className="text-muted-foreground hover:text-primary py-1.5 text-xs underline-offset-4 hover:underline">
+            仅关键词检索 · 向量设置
+          </Link>
+        ) : null}
+      </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
-        <section aria-label="文档列表" className="space-y-3">
+      <div className="grid gap-4 border-t lg:grid-cols-[minmax(0,17rem)_minmax(0,1fr)] lg:gap-0">
+        <section ref={listRef} tabIndex={-1} aria-label="文档列表" className="min-w-0 pt-2 lg:pr-4">
           {listQuery.isPending ? (
             <ListSkeleton />
           ) : listQuery.error ? (
@@ -377,47 +376,26 @@ export function KnowledgePage() {
               retrying={listQuery.isFetching}
             />
           ) : items.length === 0 ? (
-            <EmptyState
-              icon={BookOpen}
-              title={isFiltered ? '没有符合条件的文档' : '还没有文档'}
-              description={
-                isFiltered
-                  ? '换个分类、标签或状态再试，或者清除筛选查看全部。'
-                  : '上传一个 .md / .txt 文件，或点右上角「写笔记」新建一条。'
-              }
-              action={
-                isFiltered ? (
-                  <Button variant="outline" size="sm" onClick={() => changeFilters(emptyFilters)}>
-                    清除筛选
-                  </Button>
-                ) : (
-                  <Button variant="outline" size="sm" onClick={startUpload}>
-                    <Upload aria-hidden="true" />
-                    上传文件
-                  </Button>
-                )
-              }
-            />
+            <EmptyState title={isFiltered ? '没有符合条件的文档' : '还没有文档'} />
           ) : (
             <DocumentList
               items={items}
               total={total}
               page={page}
               activeId={activeId}
-              onSelect={setSelectedId}
+              onSelect={selectDocument}
               onPageChange={setPage}
             />
           )}
         </section>
 
-        <section aria-label="文档详情">
-          {activeId === null ? (
-            <EmptyState
-              icon={BookOpen}
-              title="还没有可查看的文档"
-              description="左侧选择一篇文档后，这里会显示它的分块与偏移信息。"
-            />
-          ) : detailQuery.isPending ? (
+        <section ref={detailRef} tabIndex={-1} aria-label="文档详情" hidden={activeId === null} className="min-w-0 border-t pt-4 lg:border-t-0 lg:border-l lg:pt-4 lg:pl-7">
+          {activeId !== null ? (
+            <Button variant="link" size="sm" className="mb-2 px-0 lg:hidden" onClick={() => listRef.current?.focus()}>
+              返回文档列表
+            </Button>
+          ) : null}
+          {activeId === null ? null : detailQuery.isPending ? (
             <ListSkeleton />
           ) : detailQuery.error ? (
             <ErrorState

@@ -66,9 +66,24 @@ describe('知识库页面', () => {
     expect(await screen.findByText('集成测试笔记')).toBeInTheDocument()
     // 分块内容原样渲染：保留 Markdown 标记与换行，不做美化。
     expect(await screen.findByText(/# 标题[\s\S]*第一段正文。/)).toBeInTheDocument()
-    // fixture 默认已向量化：详情里一枚 pill、列表里一枚徽标。
-    expect(screen.getAllByText('已向量化').length).toBeGreaterThan(0)
+    expect(screen.getByText('已向量化')).toBeInTheDocument()
     expect(screen.getByText(/\[0, 12\)/)).toBeInTheDocument()
+  })
+
+  it('窄屏选中条目后聚焦详情，也能回到列表', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: true }))
+    mockHappyPath(documentFixture(), '正文')
+    const user = userEvent.setup()
+    renderApp('/knowledge')
+
+    const list = screen.getByRole('region', { name: '文档列表' })
+    const row = await within(list).findByRole('button', { name: /集成测试笔记/ })
+    await user.click(row)
+
+    const detail = screen.getByRole('region', { name: '文档详情' })
+    expect(detail).toHaveFocus()
+    await user.click(within(detail).getByRole('button', { name: '返回文档列表' }))
+    expect(list).toHaveFocus()
   })
 
   it('重建向量走 embed 接口，不触发重新切分', async () => {
@@ -140,9 +155,8 @@ describe('知识库页面', () => {
 
     renderApp('/knowledge')
 
-    // 徽标说状态，页面提示说"去哪儿改"——只给状态，用户不知道下一步。
-    expect((await screen.findAllByText('未配置向量模型')).length).toBeGreaterThan(0)
-    expect(await screen.findByText(/只能按关键词检索/)).toBeInTheDocument()
+    expect(await screen.findByText('未配置向量模型')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '仅关键词检索 · 向量设置' })).toHaveAttribute('href', '/settings')
   })
 
   it('空列表显示空态而不是空白面板', async () => {
@@ -151,9 +165,8 @@ describe('知识库页面', () => {
     renderApp('/knowledge')
 
     expect(await screen.findByText('还没有文档')).toBeInTheDocument()
-    expect(screen.getByText('还没有可查看的文档')).toBeInTheDocument()
-    // 空态里的操作按钮与页头按钮同名，这里确认至少有一个可点的上传入口。
-    expect(screen.getAllByRole('button', { name: /上传文件/ }).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('region', { name: '文档详情' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '上传文件' })).toBeEnabled()
   })
 
   it('列表请求失败时给出原因与重试', async () => {
@@ -255,7 +268,6 @@ describe('知识库页面', () => {
     await user.type(await screen.findByLabelText('文件分类'), '工作')
     await user.type(screen.getByLabelText('文件标签'), 'go, 检索')
     // 标签按逗号切分并去空白，与服务端规则一致。
-    expect(screen.getByText('将保存 2 个标签：go、检索')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '开始导入' }))
 
     await vi.waitFor(() => {
@@ -422,7 +434,8 @@ describe('知识库页面', () => {
  * 要验证的正是"点一下之后到底发了什么请求、列表有没有跟着变"。
  */
 describe('知识库页面的文档管理', () => {
-  it('列表与详情展示分类和标签', async () => {
+  it('详情保留分类、标签与可展开的文件信息', async () => {
+    const user = userEvent.setup()
     const doc = documentFixture({ collection: '工作', tags: ['go', '检索'] })
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
@@ -440,12 +453,12 @@ describe('知识库页面的文档管理', () => {
 
     renderApp('/knowledge')
 
-    await screen.findByText('集成测试笔记')
-    // 先等详情卡片出现（哈希那行只在详情里），再断言"列表 + 详情各一份"。
-    await screen.findByText(/^sha256:/)
-    expect(screen.getAllByText('工作').length).toBe(2)
-    expect(screen.getAllByText('go').length).toBe(2)
-    expect(screen.getAllByText('检索').length).toBe(2)
+    const detail = within(await screen.findByRole('region', { name: '文档详情' }))
+    await user.click(await detail.findByText('文件信息'))
+    expect(detail.getByText(/^sha256:/)).toBeVisible()
+    expect(detail.getByText('工作')).toBeInTheDocument()
+    expect(detail.getByText('go')).toBeInTheDocument()
+    expect(detail.getByText('检索')).toBeInTheDocument()
   })
 
   it('按标签筛选时把条件带进查询参数', async () => {
@@ -588,7 +601,8 @@ describe('知识库页面的文档管理', () => {
       expect(deleted).toBe(true)
     })
     // 删掉当前文档后不能继续显示它——否则会立刻触发一次注定 404 的详情请求。
-    expect(await screen.findByText('还没有可查看的文档')).toBeInTheDocument()
+    expect(await screen.findByText('还没有文档')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '文档详情' })).not.toBeInTheDocument()
   })
 
   it('上传命中既有文档时提示没有重复入库', async () => {

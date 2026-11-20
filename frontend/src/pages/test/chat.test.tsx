@@ -112,8 +112,8 @@ describe('问答页', () => {
 
     renderApp('/chat')
 
-    expect(await screen.findByText(/还没有可用的对话模型配置/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '去设置' })).toBeInTheDocument()
+    expect(await screen.findByText('未配置对话模型')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '去设置' })).toHaveAttribute('href', '/settings')
     expect(screen.getByLabelText('输入问题')).toBeDisabled()
   })
 
@@ -142,7 +142,24 @@ describe('问答页', () => {
     }
     // 依据面板与引用列表都展示文档标题
     expect(screen.getAllByText('集成测试笔记').length).toBeGreaterThan(0)
-    expect(screen.getByText(/1\.2s · 输入 10 \/ 输出 5 tokens · #7/)).toBeInTheDocument()
+    await user.click(screen.getByText('运行信息'))
+    expect(screen.getByText(/1\.2s · 输入 10 \/ 输出 5 tokens · #7/)).toBeVisible()
+  })
+
+  it('保留键盘快捷发送', async () => {
+    stubChatFetch(sseResponse([
+      { type: 'delta', seq: 1, payload: { text: '键盘发送成功' } },
+      { type: 'verdict', seq: 2, payload: { status: 'answered', reason: '' } },
+      doneEvent(8),
+    ]))
+    const user = userEvent.setup()
+    renderApp('/chat')
+
+    const input = screen.getByRole('textbox', { name: '输入问题' })
+    await waitFor(() => expect(input).toBeEnabled())
+    await user.type(input, '这条消息从键盘发送{Control>}{Enter}{/Control}')
+
+    expect(await screen.findByText('键盘发送成功')).toBeInTheDocument()
   })
 
   it('模型多次检索时，依据面板合并各批次而不是覆盖', async () => {

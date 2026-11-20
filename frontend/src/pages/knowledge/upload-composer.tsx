@@ -2,7 +2,7 @@ import { FileText, Loader2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 
 import { formatBytes, splitTags } from './format'
@@ -63,10 +63,7 @@ export function UploadComposer({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">导入文件</CardTitle>
-        <CardDescription>
-          支持 .md / .markdown / .txt / .text。分类与标签可留空，导入后也能在详情里修改。
-        </CardDescription>
+        <h2 className="text-base font-semibold">导入文件</h2>
       </CardHeader>
       <CardContent>
         <form className="space-y-3" onSubmit={submit}>
@@ -80,7 +77,7 @@ export function UploadComposer({
                 <span className="text-muted-foreground shrink-0 text-xs">{formatBytes(file.size)}</span>
               </div>
             ) : (
-              <p className="text-muted-foreground text-sm">还没有选择文件</p>
+              <p className="text-muted-foreground text-sm">Markdown / 纯文本</p>
             )}
             <Button type="button" variant="outline" size="sm" onClick={onChooseFile} disabled={saving}>
               {file ? '重新选择' : '选择文件'}
@@ -91,21 +88,19 @@ export function UploadComposer({
             <Input
               value={collection}
               onChange={(e) => setCollection(e.target.value)}
-              placeholder="分类（可选，例如 工作）"
+              placeholder="分类（可选）"
               aria-label="文件分类"
               maxLength={64}
             />
             <Input
               value={tags}
               onChange={(e) => setTags(e.target.value)}
-              placeholder="标签（可选，逗号分隔）"
+              placeholder="标签（逗号分隔）"
               aria-label="文件标签"
             />
           </div>
           {tagProblem !== '' ? (
-            <p className="text-destructive text-xs">{tagProblem}</p>
-          ) : parsedTags.length > 0 ? (
-            <p className="text-muted-foreground text-xs">将保存 {parsedTags.length} 个标签：{parsedTags.join('、')}</p>
+            <p className="text-destructive text-xs" role="alert">{tagProblem}</p>
           ) : null}
 
           <div className="flex items-center justify-end gap-2">

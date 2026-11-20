@@ -70,7 +70,8 @@ npm run build        # tsc --noEmit && vite build，产物在 dist/
 
 **页面与路由**
 
-- 模块的路径、标题、阶段只在 `src/app/modules.ts` 定义一份，导航与页面共用。
+- 导航项的路径、名称和图标集中在 `src/app/modules.ts`，工作台也复用这份入口定义。
+- 页面标题只放名称和操作；用列表、分隔线与原生表单表达层级。空态只说当前状态，诊断信息按需展开，失败原因留在操作附近。
 - 新增页面：`modules.ts` 加一条 → `src/pages/` 建组件 → `router.tsx` 挂到 `AppShell` 的 children → 在 `app.test.tsx` 里补一条可见性用例。
 - 窄屏导航收进抽屉（`< md`），主内容区不被侧边栏挤压。
 - 知识页是第一个真实业务页：上传走 `FormData`（客户端只在 `apiRequest` 一处判断，不手写 `Content-Type`），分块偏移是**码点**而不是 UTF-16 下标；需要高亮原文时用 `Array.from(text).slice(start, end)`，不要用 `String.slice`。

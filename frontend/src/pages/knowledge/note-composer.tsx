@@ -2,7 +2,7 @@ import { Loader2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -18,8 +18,7 @@ export type NoteDraft = {
 /**
  * 新建笔记表单。
  *
- * 标题留空时由后端取正文第一行：这个规则写在提示文案里，
- * 否则用户会以为"不填标题"等于"没有标题"。
+ * 正文交给后端按 Markdown 解析，标题可留空。
  */
 export function NoteComposer({
   saving,
@@ -51,8 +50,7 @@ export function NoteComposer({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">新建笔记</CardTitle>
-        <CardDescription>正文按 Markdown 解析：# 开头会作为章节标题；标题留空时取正文第一行。</CardDescription>
+        <h2 className="text-base font-semibold">新建笔记</h2>
       </CardHeader>
       <CardContent>
         <form className="space-y-3" onSubmit={submit}>
@@ -66,7 +64,7 @@ export function NoteComposer({
           <Textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder={'# 小节标题\n\n正文内容……'}
+            placeholder="正文（Markdown）"
             aria-label="笔记正文"
             rows={8}
           />
@@ -74,14 +72,14 @@ export function NoteComposer({
             <Input
               value={collection}
               onChange={(e) => setCollection(e.target.value)}
-              placeholder="分类（可选，例如 工作）"
+              placeholder="分类（可选）"
               aria-label="笔记分类"
               maxLength={64}
             />
             <Input
               value={tags}
               onChange={(e) => setTags(e.target.value)}
-              placeholder="标签（可选，逗号分隔）"
+              placeholder="标签（逗号分隔）"
               aria-label="笔记标签"
             />
           </div>

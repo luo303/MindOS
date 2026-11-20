@@ -4,7 +4,6 @@ import { useEffect, useState, type FormEvent } from 'react'
 import type { ChunkView, DocumentPatch, DocumentView, EmbedStatus } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusPill } from '@/components/status-pill'
@@ -94,35 +93,16 @@ export function DocumentDetail({
   const embedBusy = embedding || isEmbedInFlight(embed.status)
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-            {doc.title}
+    <div className="space-y-5">
+      <div className="space-y-4">
+        <header className="space-y-2">
+          <h2 className="text-xl font-semibold tracking-tight break-words">{doc.title}</h2>
+          <div className="flex flex-wrap items-center gap-2">
             <StatusPill tone={statusMeta[doc.status].tone}>{statusMeta[doc.status].label}</StatusPill>
             {/* 两条独立的进度线：内容可用（上一枚）不等于可语义检索（这一枚）。 */}
             <StatusPill tone={embedLabel.tone}>{embedLabel.label}</StatusPill>
-          </CardTitle>
-          <CardDescription>
-            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <Badge variant="outline">{sourceLabel[doc.source_type]}</Badge>
-              <span>{doc.mime}</span>
-              <span aria-hidden="true">·</span>
-              <span>{formatBytes(doc.size_bytes)}</span>
-              <span aria-hidden="true">·</span>
-              <span>{doc.chunk_count} 个分块</span>
-              <span aria-hidden="true">·</span>
-              <span>更新于 {formatDate(doc.updated_at)}</span>
-            </span>
-          </CardDescription>
-          {/* 向量化的细节就地可见：模型名决定"这批向量能不能和新查询比"，
-              维度不符是最常见的配置事故，都值得直接写出来。 */}
-          {embed.status === 'done' ? (
-            <CardDescription className="text-xs">
-              {embed.chunks} 块已向量化 · {embed.model} · {embed.dimensions} 维
-              {embed.embedded_at ? ` · ${formatDate(embed.embedded_at)}` : ''}
-            </CardDescription>
-          ) : null}
+          </div>
+          <p className="text-muted-foreground text-xs">更新于 {formatDate(doc.updated_at)}</p>
           {embed.status === 'failed' && embed.error_message ? (
             <p role="alert" className="text-destructive text-xs break-words">
               向量化失败：{embed.error_message}
@@ -132,12 +112,6 @@ export function DocumentDetail({
               {embed.chunks > 0 ? ` 上次成功的 ${embed.chunks} 块向量仍可用。` : ''}
             </p>
           ) : null}
-          {embed.status === 'skipped' ? (
-            <CardDescription className="text-xs">
-              当前没有配置向量模型，文档只能按关键词检索；在 Settings 里填好 EMBEDDING 配置后可点「生成向量」补齐。
-            </CardDescription>
-          ) : null}
-          <CardDescription className="font-mono text-xs break-all">sha256: {doc.content_hash}</CardDescription>
           {/* 失败原因必须就地可见：让用户为了一句"处理失败"去翻后端日志是不合理的。 */}
           {doc.status === 'failed' && doc.error_message ? (
             <p role="alert" className="text-destructive text-xs break-words">
@@ -145,9 +119,9 @@ export function DocumentDetail({
               {doc.error_code ? `（${doc.error_code}）` : ''}
             </p>
           ) : null}
-        </CardHeader>
+        </header>
 
-        <CardContent className="space-y-3">
+        <div className="space-y-3">
           <MetadataRow doc={doc} />
 
           {editing ? (
@@ -159,18 +133,18 @@ export function DocumentDetail({
             />
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" size="sm" onClick={onStartEdit}>
+              <Button variant="secondary" size="sm" onClick={onStartEdit}>
                 <Pencil aria-hidden="true" />
                 编辑分类与标签
               </Button>
-              <Button variant="outline" size="sm" onClick={onReindex} disabled={reindexing}>
+              <Button variant="ghost" size="sm" onClick={onReindex} disabled={reindexing}>
                 {reindexing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
                 {reindexing ? '重新切分中' : '重新切分'}
               </Button>
               {/* 向量化与切分是两条独立动作：换模型只该重算向量，不该重切。
                   文档还没 ready 时没有分块可算，直接禁用而不是让用户点出一个 409。 */}
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 onClick={onEmbed}
                 disabled={embedBusy || doc.status !== 'ready'}
@@ -211,8 +185,23 @@ export function DocumentDetail({
               </div>
             </div>
           ) : null}
-        </CardContent>
-      </Card>
+        </div>
+
+        <details className="text-muted-foreground text-xs">
+          <summary className="w-fit cursor-pointer py-1.5">文件信息</summary>
+          <div className="space-y-1.5 pt-1 break-words">
+            <p>{sourceLabel[doc.source_type]} · {doc.mime} · {formatBytes(doc.size_bytes)}</p>
+            <p>创建于 {formatDate(doc.created_at)}</p>
+            {embed.status === 'done' ? (
+              <p>
+                {embed.chunks} 块已向量化 · {embed.model} · {embed.dimensions} 维
+                {embed.embedded_at ? ` · ${formatDate(embed.embedded_at)}` : ''}
+              </p>
+            ) : null}
+            <p className="font-mono break-all">sha256: {doc.content_hash}</p>
+          </div>
+        </details>
+      </div>
 
       {chunksLoading ? (
         <div aria-busy="true" className="space-y-3">
@@ -354,13 +343,8 @@ function ChunkList({
   highlightSeq: number | null
 }) {
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-sm font-medium">分块预览</h2>
-        <p className="text-muted-foreground text-xs">
-          偏移以 Unicode 码点计（中文与 emoji 都算 1 个字符），可用于回指原文
-        </p>
-      </div>
+    <section className="space-y-3 border-t pt-4" aria-labelledby="chunks-heading">
+      <h3 id="chunks-heading" className="text-sm font-semibold">分块预览</h3>
 
       {chunks.length < total ? (
         <p className="text-muted-foreground text-xs">
@@ -368,30 +352,29 @@ function ChunkList({
         </p>
       ) : null}
 
+      {total === 0 ? <p className="text-muted-foreground text-sm">暂无分块</p> : null}
+
       {chunks.map((chunk) => (
-        <Card
+        <article
           key={chunk.id}
           id={`chunk-${chunk.seq}`}
-          className={highlightSeq === chunk.seq ? 'ring-primary/40 gap-2 ring-2' : 'gap-2'}
+          className={highlightSeq === chunk.seq ? 'bg-accent/50 ring-primary/40 rounded-md p-3 ring-2' : 'rounded-md p-3'}
         >
-          <CardHeader className="gap-1">
-            <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-muted-foreground font-mono">#{chunk.seq}</span>
-              <span>{chunk.heading || '（文首，无标题）'}</span>
-            </CardTitle>
-            <CardDescription className="font-mono text-xs">
+          <header className="mb-2 space-y-1">
+            <h4 className="text-sm font-medium break-words">
+              <span className="text-muted-foreground mr-2 font-mono">#{chunk.seq}</span>
+              {chunk.heading}
+            </h4>
+            <p className="text-muted-foreground font-mono text-xs" title="偏移以 Unicode 码点计">
               [{chunk.start_offset}, {chunk.end_offset}) · 约 {chunk.token_count} tokens
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {/* 保留原始换行与 Markdown 标记：分块内容就是原文子串，不做美化，
-                因此这里不能用会把空白折叠掉的普通文本渲染。 */}
-            <pre className="bg-muted/50 overflow-x-auto rounded-md p-3 font-sans text-sm leading-relaxed whitespace-pre-wrap">
-              {chunk.content}
-            </pre>
-          </CardContent>
-        </Card>
+            </p>
+          </header>
+          {/* 保留原始换行与 Markdown 标记：分块内容就是原文子串。 */}
+          <pre className="text-sm leading-7 wrap-anywhere whitespace-pre-wrap [font-family:inherit]">
+            {chunk.content}
+          </pre>
+        </article>
       ))}
-    </div>
+    </section>
   )
 }

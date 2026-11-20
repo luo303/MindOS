@@ -19,21 +19,18 @@ export function ModelSelect({ models, value, onChange, disabled }: Props) {
     return null
   }
   return (
-    <label className="flex items-center gap-2 text-xs">
-      <span className="text-muted-foreground">模型</span>
-      <select
-        className="border-input bg-background focus-visible:ring-ring rounded-md border px-2 py-1 text-xs focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
-        value={value ?? ''}
-        onChange={(event) => onChange(Number(event.target.value))}
-        disabled={disabled}
-        aria-label="选择对话模型"
-      >
-        {models.map((model) => (
-          <option key={model.id} value={model.id}>
-            {model.name}（{model.model}）
-          </option>
-        ))}
-      </select>
-    </label>
+    <select
+      className="border-input bg-background text-muted-foreground h-8 max-w-full min-w-0 rounded-md border px-2 text-xs disabled:opacity-50 sm:max-w-64"
+      value={value ?? ''}
+      onChange={(event) => onChange(Number(event.target.value))}
+      disabled={disabled}
+      aria-label="选择对话模型"
+    >
+      {models.map((model) => (
+        <option key={model.id} value={model.id}>
+          {model.name}（{model.model}）
+        </option>
+      ))}
+    </select>
   )
 }

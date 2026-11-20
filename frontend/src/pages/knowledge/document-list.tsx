@@ -1,11 +1,9 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 import type { DocumentView } from '@/api/types'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
 
-import { formatDate, embedMeta, PAGE_SIZE, sourceLabel } from './format'
+import { formatDate, PAGE_SIZE, sourceLabel, statusMeta } from './format'
 
 /**
  * 文档列表。
@@ -32,38 +30,28 @@ export function DocumentList({
 
   return (
     <div className="space-y-3">
-      <Card className="overflow-hidden py-0">
-        <ul className="divide-y">
-          {items.map((doc) => (
-            <li key={doc.id}>
-              <button
-                type="button"
-                onClick={() => onSelect(doc.id)}
-                aria-current={doc.id === activeId ? 'true' : undefined}
-                className="hover:bg-accent/60 aria-[current=true]:bg-accent w-full space-y-1 px-4 py-3 text-left transition-colors"
-              >
-                <p className="truncate text-sm font-medium">{doc.title}</p>
-                <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                  <span>{sourceLabel[doc.source_type]}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{doc.chunk_count} 块</span>
-                  <span aria-hidden="true">·</span>
-                  {/* 向量状态单独一个徽标：它和"解析状态"是两条独立的进度线 */}
-                  <Badge variant="outline" className="font-normal">
-                    {embedMeta[doc.embedding.status].label}
-                  </Badge>
-                  <span aria-hidden="true">·</span>
-                  <span>{formatDate(doc.created_at)}</span>
-                </p>
-                <DocTagRow doc={doc} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      </Card>
+      <ul className="space-y-0.5">
+        {items.map((doc) => (
+          <li key={doc.id}>
+            <button
+              type="button"
+              onClick={() => onSelect(doc.id)}
+              aria-current={doc.id === activeId ? 'true' : undefined}
+              className="hover:bg-accent/60 aria-[current=true]:bg-accent bg-transparent focus-visible:outline-ring w-full space-y-1 rounded-md px-3 py-2.5 text-left transition-colors focus-visible:outline-2"
+            >
+              <span className="block truncate text-sm font-medium">{doc.title}</span>
+              <span className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <span>{sourceLabel[doc.source_type]}</span>
+                <span aria-hidden="true">·</span>
+                <span>{doc.status === 'ready' ? formatDate(doc.created_at) : statusMeta[doc.status].label}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
 
       {total > PAGE_SIZE ? (
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-1 border-t pt-2">
           <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
             <ChevronLeft aria-hidden="true" />
             上一页
@@ -83,27 +71,5 @@ export function DocumentList({
         </div>
       ) : null}
     </div>
-  )
-}
-
-/** 列表里最多展示 3 个标签，其余折成 "+n"：再多的标签在窄栏里无法阅读。 */
-const MAX_VISIBLE_TAGS = 3
-
-function DocTagRow({ doc }: { doc: DocumentView }) {
-  const visibleTags = doc.tags.slice(0, MAX_VISIBLE_TAGS)
-  const hiddenCount = doc.tags.length - visibleTags.length
-  if (doc.collection === '' && doc.tags.length === 0) {
-    return null
-  }
-  return (
-    <span className="flex flex-wrap items-center gap-1">
-      {doc.collection !== '' ? <Badge variant="secondary">{doc.collection}</Badge> : null}
-      {visibleTags.map((tag) => (
-        <Badge key={tag} variant="outline" className="font-normal">
-          {tag}
-        </Badge>
-      ))}
-      {hiddenCount > 0 ? <span className="text-muted-foreground text-xs">+{hiddenCount}</span> : null}
-    </span>
   )
 }

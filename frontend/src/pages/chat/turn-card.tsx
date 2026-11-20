@@ -1,10 +1,9 @@
-import { AlertTriangle, Link2, StopCircle } from 'lucide-react'
+import { AlertTriangle, StopCircle } from 'lucide-react'
 import { Link } from 'react-router'
 
 import type { AskCitationItem, AskRetrievalItem } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 
 import {
@@ -24,11 +23,11 @@ export function TurnCard({ turn, onRetry, onStop }: Props) {
   const streaming = turn.phase === 'streaming'
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm leading-relaxed font-medium">{turn.question}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <article className="space-y-4 border-b pb-5">
+      <h2 className="ml-auto w-fit max-w-[90%] rounded-xl bg-accent px-3.5 py-2.5 text-sm leading-relaxed font-medium break-words whitespace-pre-wrap">
+        {turn.question}
+      </h2>
+      <div className="space-y-3 break-words">
         <AnswerBody turn={turn} />
 
         {turn.citations.length > 0 ? <CitationList items={turn.citations} /> : null}
@@ -47,15 +46,18 @@ export function TurnCard({ turn, onRetry, onStop }: Props) {
             </Button>
           ) : null}
           {turn.done ? (
-            <p className="text-muted-foreground text-xs">
-              {(turn.done.latency_ms / 1000).toFixed(1)}s · 输入 {turn.done.prompt_tokens} / 输出{' '}
-              {turn.done.completion_tokens} tokens
-              {turn.done.run_id > 0 ? ` · #${turn.done.run_id}` : ''}
-            </p>
+            <details className="text-muted-foreground text-xs">
+              <summary className="w-fit cursor-pointer py-1">运行信息</summary>
+              <p className="pt-1">
+                {(turn.done.latency_ms / 1000).toFixed(1)}s · 输入 {turn.done.prompt_tokens} / 输出{' '}
+                {turn.done.completion_tokens} tokens
+                {turn.done.run_id > 0 ? ` · #${turn.done.run_id}` : ''}
+              </p>
+            </details>
           ) : null}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </article>
   )
 }
 
@@ -207,18 +209,4 @@ function reasonLabel(reason: string): string {
     default:
       return reason
   }
-}
-
-/** 空态：还没有问过任何问题。 */
-export function ChatEmptyState() {
-  return (
-    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-12 text-center">
-      <Link2 className="text-muted-foreground size-6" aria-hidden="true" />
-      <p className="text-sm font-medium">问一句关于你知识库里内容的话</p>
-      <p className="text-muted-foreground max-w-md text-xs">
-        回答只使用已导入的文档，并在每句后面标注来源编号。库里没有依据时会直接说没有，
-        不会凭空编造。
-      </p>
-    </div>
-  )
 }

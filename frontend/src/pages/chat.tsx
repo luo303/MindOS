@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, SendHorizontal, Settings2, Trash2 } from 'lucide-react'
+import { Loader2, Plus, SendHorizontal, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { Link } from 'react-router'
 
 import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
 import {
@@ -15,13 +15,14 @@ import {
 } from '@/api/conversations'
 import { ApiError, describeError } from '@/api/errors'
 import type { AskVerdict } from '@/api/types'
+import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 
-import { ChatEmptyState, TurnCard } from './chat/turn-card'
+import { TurnCard } from './chat/turn-card'
 import { ModelSelect } from './chat/model-select'
 import { REFUSAL_TEXT, STOPPED_TEXT, WITHDRAWN_TEXT, type Turn } from './chat/format'
 
@@ -86,7 +87,6 @@ function turnsFromMessages(messages: ChatMessage[]): Turn[] {
  * 页面只保留当前会话的展示状态，刷新后从 messages 重新还原。
  */
 export function ChatPage() {
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const modelsQuery = useQuery({
     queryKey: chatModelKeys.all,
@@ -101,6 +101,7 @@ export function ChatPage() {
   const [input, setInput] = useState('')
   const [pending, setPending] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [createError, setCreateError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const creatingRef = useRef(false)
   // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
@@ -114,9 +115,6 @@ export function ChatPage() {
       setTurns([])
       setConfirmDelete(false)
       void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
-    },
-    onError: (error) => {
-      console.warn('delete conversation failed', error)
     },
   })
 
@@ -166,11 +164,12 @@ export function ChatPage() {
     void (async () => {
       try {
         const conv = await createConversation()
+        setCreateError('')
         setActiveId(conv.id)
         setTurns([])
         await queryClient.invalidateQueries({ queryKey: conversationKeys.all })
-      } catch {
-        // 建会话失败时保持空态；下一次用户点"新会话"会重试。
+      } catch (error) {
+        setCreateError(describeError(error))
       } finally {
         creatingRef.current = false
       }
@@ -203,6 +202,7 @@ export function ChatPage() {
       return
     }
     creatingRef.current = true
+    setCreateError('')
     setPending(true)
     try {
       const conv = await createConversation()
@@ -210,8 +210,7 @@ export function ChatPage() {
       setTurns([])
       await queryClient.invalidateQueries({ queryKey: conversationKeys.all })
     } catch (error) {
-      setTurns([])
-      console.warn('create conversation failed', error)
+      setCreateError(describeError(error))
     } finally {
       setPending(false)
       creatingRef.current = false
@@ -307,15 +306,14 @@ export function ChatPage() {
   const conversations = conversationsQuery.data ?? []
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+    <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5">
       <PageHeader
         title="对话"
-        description="多轮会话；回答按需检索知识库，每句标注来源，没有依据会直接说没有。"
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <>
             <select
               aria-label="选择会话"
-              className="border-input bg-background h-9 max-w-52 rounded-md border px-2 text-sm"
+              className="border-input bg-background h-8 w-40 rounded-md border px-2 text-sm sm:w-52"
               value={activeId ?? ''}
               onChange={(event) => {
                 const next = Number(event.target.value)
@@ -359,51 +357,70 @@ export function ChatPage() {
                   disabled={pending}
                 >
                   <Trash2 aria-hidden="true" />
-                  删除
+                  删除会话
                 </Button>
               )
             ) : null}
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               onClick={() => void createNewConversation()}
-              disabled={pending || noModel}
+            disabled={pending || models.length === 0}
             >
               <Plus aria-hidden="true" />
               新会话
             </Button>
-            <ModelSelect
-              models={models}
-              value={selectedId}
-              onChange={chooseModel}
-              disabled={pending || models.length === 0}
-            />
-          </div>
+          </>
         }
       />
 
       {modelsQuery.isPending ? (
-        <Skeleton className="h-9 w-48" />
+        <div role="status" className="py-8">
+          <span className="sr-only">正在加载对话模型</span>
+          <Skeleton className="mx-auto h-5 w-40" />
+        </div>
+      ) : modelsQuery.isError ? (
+        <ErrorState title="读取对话模型失败" description={describeError(modelsQuery.error)} onRetry={() => void modelsQuery.refetch()} retrying={modelsQuery.isFetching} />
       ) : noModel ? (
-        <div className="border-border bg-muted/40 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2">
-          <p className="text-sm">还没有可用的对话模型配置，对话无法开始。</p>
-          <Button variant="outline" size="sm" onClick={() => navigate('/settings')}>
-            <Settings2 aria-hidden="true" />
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-muted px-4 py-3">
+          <p className="text-sm">未配置对话模型</p>
+          <Link to="/settings" className="text-primary text-sm font-medium underline underline-offset-4">
             去设置
-          </Button>
+          </Link>
         </div>
       ) : null}
 
-      {turns.length === 0 && !noModel ? <ChatEmptyState /> : null}
+      <section aria-label="会话消息" className="flex-1 space-y-5">
+        {createError ? <ErrorState title="新建会话失败" description={createError} /> : null}
+        {deleteMutation.error ? (
+          <ErrorState title="删除会话失败" description={describeError(deleteMutation.error)} />
+        ) : null}
+        {conversationsQuery.isError ? (
+          <ErrorState title="读取会话失败" description={describeError(conversationsQuery.error)} onRetry={() => void conversationsQuery.refetch()} retrying={conversationsQuery.isFetching} />
+        ) : activeId !== null && messagesQuery.isError ? (
+          <ErrorState title="读取消息失败" description={describeError(messagesQuery.error)} onRetry={() => void messagesQuery.refetch()} retrying={messagesQuery.isFetching} />
+        ) : turns.length === 0 && models.length > 0 && !createError ? (
+          activeId === null || messagesQuery.isPending ? (
+            <div role="status" className="py-8">
+              <span className="sr-only">正在加载会话</span>
+              <Skeleton className="mx-auto h-5 w-32" />
+            </div>
+          ) : <EmptyState title="暂无消息" />
+        ) : null}
 
-      <div className="space-y-4">
         {turns.map((turn) => (
           <TurnCard key={turn.id} turn={turn} onRetry={() => void run(turn.question)} onStop={stop} />
         ))}
-      </div>
+      </section>
 
-      <Card>
-        <CardContent className="space-y-2 pt-4">
+      <form
+        aria-label="发送消息"
+        className="space-y-2 rounded-xl border border-input bg-card p-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          submit()
+        }}
+      >
           <Textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
@@ -413,19 +430,21 @@ export function ChatPage() {
                 submit()
               }
             }}
-            placeholder="继续这个会话，⌘/Ctrl + Enter 发送"
+            placeholder="输入问题…"
             rows={3}
+            className="min-h-16 border-transparent bg-transparent shadow-none"
             maxLength={500}
-            disabled={pending || noModel || modelsQuery.isPending || activeId === null}
+            disabled={pending || models.length === 0 || activeId === null}
             aria-label="输入问题"
+            aria-keyshortcuts="Meta+Enter Control+Enter"
           />
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-muted-foreground text-xs">
-              {input.length}/500 · 最近 16 条对话会作为上下文
-            </p>
+          <div className="flex flex-wrap items-center gap-2 px-1">
+            <ModelSelect models={models} value={selectedId} onChange={chooseModel} disabled={pending} />
+            {input.length >= 450 ? <p className="text-muted-foreground text-xs tabular-nums">{input.length}/500</p> : null}
             <Button
-              onClick={submit}
-              disabled={pending || input.trim() === '' || noModel || activeId === null}
+              type="submit"
+              className="ml-auto"
+              disabled={pending || input.trim() === '' || models.length === 0 || activeId === null}
             >
               {pending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
@@ -435,8 +454,7 @@ export function ChatPage() {
               {pending ? '生成中' : '发送'}
             </Button>
           </div>
-        </CardContent>
-      </Card>
+      </form>
     </div>
   )
 }

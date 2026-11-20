@@ -16,7 +16,6 @@ import { ErrorState } from '@/components/error-state'
 import { PageHeader } from '@/components/page-header'
 import { StatusPill } from '@/components/status-pill'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ChatModelsCard } from '@/pages/settings/chat-models'
 
@@ -64,7 +63,6 @@ export function SettingsPage() {
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <PageHeader
         title="设置"
-        description="系统依赖状态、迁移版本与只读配置视图。"
         actions={
           <Button variant="outline" size="sm" onClick={retry} disabled={retrying}>
             <RefreshCw aria-hidden="true" />
@@ -101,23 +99,18 @@ export function SettingsPage() {
 
       <ChatModelsCard />
 
-      <p className="text-muted-foreground text-xs">
-        运行配置来自 backend/.env，只读：修改需要编辑文件后重启服务。
-        对话模型是例外——它由上面的卡片管理，存在数据库里，改完立即生效。
-        密钥一律只显示脱敏值或"已配置"，完整内容不会出现在浏览器里。
-      </p>
     </div>
   )
 }
 
 function SystemStatusCard({ status }: { status: SystemStatus }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>系统状态</CardTitle>
-        <CardDescription>后端版本 {status.version}，数据来自 GET /api/v1/system/status</CardDescription>
-      </CardHeader>
-      <CardContent className="divide-y">
+    <section aria-labelledby="system-status-heading" className="space-y-3">
+      <header className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="system-status-heading" className="font-semibold">系统状态</h2>
+        <p className="text-muted-foreground text-xs">版本 {status.version}</p>
+      </header>
+      <div className="divide-y">
         <StatusRow
           label="PostgreSQL"
           detail={status.postgres.detail}
@@ -139,8 +132,8 @@ function SystemStatusCard({ status }: { status: SystemStatus }) {
           detail={migrationDetail(status.migration)}
           pill={<StatusPill tone={migrationPill[status.migration.state].tone}>{migrationPill[status.migration.state].label}</StatusPill>}
         />
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
 
@@ -156,12 +149,12 @@ function SettingsCard({ settings }: { settings: SettingsView }) {
   const probe = useMutation({ mutationFn: testEmbedding })
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>运行配置</CardTitle>
-        <CardDescription>来自后端 .env 的只读视图，密码字段不返回</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <section aria-labelledby="runtime-settings-heading" className="space-y-4 border-t pt-5">
+      <header className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="runtime-settings-heading" className="font-semibold">运行配置</h2>
+        <p className="text-muted-foreground text-xs">只读 · backend/.env</p>
+      </header>
+      <div>
         <dl className="grid gap-4 sm:grid-cols-2">
           <Field label="运行环境" value={settings.app.env} />
           <Field label="监听地址" value={settings.app.http_addr} />
@@ -192,7 +185,7 @@ function SettingsCard({ settings }: { settings: SettingsView }) {
             {probe.isPending ? '测试中' : '测试向量模型'}
           </Button>
           {!settings.embedding.api_key_configured ? (
-            <p className="text-muted-foreground text-xs">未配置 EMBEDDING_*，测试不可用。</p>
+            <p className="text-muted-foreground text-xs">未配置 EMBEDDING_*</p>
           ) : probe.data ? (
             <p className="text-muted-foreground text-xs">
               连通 · {probe.data.model} · {probe.data.dimensions} 维 · {probe.data.latency_ms} ms
@@ -204,8 +197,8 @@ function SettingsCard({ settings }: { settings: SettingsView }) {
             </p>
           ) : null}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
 
@@ -237,16 +230,14 @@ function StatusRow({ label, detail, pill }: { label: string; detail?: string; pi
 
 function LoadingCard({ title }: { title: string }) {
   return (
-    <Card aria-busy="true">
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription className="sr-only">正在加载</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <section aria-label={title} aria-busy="true" className="space-y-3 border-b pb-4">
+      <h2 className="font-semibold">{title}</h2>
+      <p className="sr-only">正在加载</p>
+      <div className="space-y-3">
         <Skeleton className="h-4 w-2/3" />
         <Skeleton className="h-4 w-1/2" />
         <Skeleton className="h-4 w-3/5" />
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
