@@ -3,7 +3,7 @@ import { Loader2, Plus, SendHorizontal, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
-import { approvalKeys, fetchConversationApprovals, streamApprovalDecision, type Approval } from '@/api/approvals'
+import { approvalKeys, fetchConversationApprovals, streamApprovalDecision } from '@/api/approvals'
 import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
 import {
   conversationKeys,
@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 
+import { ApprovalDialog } from './chat/approval-dialog'
 import { TurnCard } from './chat/turn-card'
 import { ModelSelect } from './chat/model-select'
 import { REFUSAL_TEXT, STOPPED_TEXT, WITHDRAWN_TEXT, type Turn } from './chat/format'
@@ -112,6 +113,9 @@ export function ChatPage() {
   const [pending, setPending] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [decidingId, setDecidingId] = useState<number | null>(null)
+  const [approvalOpen, setApprovalOpen] = useState(false)
+  const [decisionText, setDecisionText] = useState('')
+  const [decisionError, setDecisionError] = useState('')
   const [createError, setCreateError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const creatingRef = useRef(false)
@@ -153,48 +157,43 @@ export function ChatPage() {
     enabled: activeId !== null,
     staleTime: 5_000,
   })
-  const approvalsByMessage = useMemo(() => {
-    const map = new Map<number, Approval[]>()
-    for (const item of approvalsQuery.data ?? []) {
-      if (!item.user_message_id) {
-        continue
-      }
-      const list = map.get(item.user_message_id) ?? []
-      list.push(item)
-      map.set(item.user_message_id, list)
-    }
-    return map
-  }, [approvalsQuery.data])
+  const approvals = useMemo(() => approvalsQuery.data ?? [], [approvalsQuery.data])
+  const pendingCount = approvals.filter((item) => item.status === 'pending').length
+  const seenPendingRef = useRef<Set<number>>(new Set())
 
-  const decide = async (id: number, decision: 'approve' | 'reject', messageId?: number) => {
-    setDecidingId(id)
-    const patchTurn = (next: (turn: Turn) => Turn) => {
-      setTurns((prev) =>
-        prev.map((turn) =>
-          turn.messageId === messageId ? next({ ...turn, phase: 'streaming', answer: '' }) : turn,
-        ),
-      )
+  // 新出现的 pending 审批自动弹框；用户手动关掉后，同一 id 不反复弹。
+  useEffect(() => {
+    if (activeId === null) {
+      return
     }
+    const fresh = approvals.filter(
+      (item) => item.status === 'pending' && !seenPendingRef.current.has(item.id),
+    )
+    if (fresh.length === 0) {
+      return
+    }
+    fresh.forEach((item) => seenPendingRef.current.add(item.id))
+    setApprovalOpen(true)
+  }, [activeId, approvals])
+
+  const decide = async (id: number, decision: 'approve' | 'reject') => {
+    setDecidingId(id)
+    setDecisionText('')
+    setDecisionError('')
     try {
       await streamApprovalDecision(id, decision, {
-        onDelta: (text) => patchTurn((turn) => ({ ...turn, answer: turn.answer + text })),
-        onDone: (payload) => {
-          patchTurn((turn) => ({ ...turn, done: payload, phase: 'settled' }))
+        onDelta: (text) => setDecisionText((prev) => prev + text),
+        onDone: () => {
           void queryClient.invalidateQueries({
             queryKey: approvalKeys.conversation(activeId ?? 0),
           })
           syncedConversationRef.current = null
           void messagesQuery.refetch()
         },
-        onError: (code, message) =>
-          patchTurn((turn) => ({ ...turn, phase: 'failed', error: { code, message } })),
+        onError: (_code, message) => setDecisionError(message),
       })
     } catch (error) {
-      patchTurn((turn) => ({
-        ...turn,
-        phase: 'failed',
-        error: { code: 'approval', message: describeError(error) },
-      }))
+      setDecisionError(describeError(error))
     } finally {
       setDecidingId(null)
     }
@@ -382,6 +381,9 @@ export function ChatPage() {
         title="对话"
         actions={
           <>
+            <Button variant="outline" size="sm" onClick={() => setApprovalOpen(true)}>
+              审批{pendingCount > 0 ? ` ${pendingCount}` : ''}
+            </Button>
             <select
               aria-label="选择会话"
               className="border-input bg-background h-8 w-40 rounded-md border px-2 text-sm sm:w-52"
@@ -480,14 +482,7 @@ export function ChatPage() {
         ) : null}
 
         {turns.map((turn) => (
-          <TurnCard
-            key={turn.id}
-            turn={turn}
-            onStop={stop}
-            approvals={turn.messageId ? approvalsByMessage.get(turn.messageId) : undefined}
-            decidingId={decidingId}
-            onDecision={(id, decision) => decide(id, decision, turn.messageId)}
-          />
+          <TurnCard key={turn.id} turn={turn} onStop={stop} />
         ))}
       </section>
 
@@ -533,6 +528,16 @@ export function ChatPage() {
             </Button>
           </div>
       </form>
+
+      <ApprovalDialog
+        open={approvalOpen}
+        approvals={approvals}
+        decidingId={decidingId}
+        streamText={decisionText}
+        error={decisionError}
+        onClose={() => setApprovalOpen(false)}
+        onDecision={decide}
+      />
     </div>
   )
 }

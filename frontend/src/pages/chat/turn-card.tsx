@@ -1,7 +1,6 @@
 import { AlertTriangle, StopCircle } from 'lucide-react'
 import { Link } from 'react-router'
 
-import type { Approval } from '@/api/approvals'
 import type { AskCitationItem, AskRetrievalItem } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -19,12 +18,9 @@ import { useTypewriter } from './use-typewriter'
 type Props = {
   turn: Turn
   onStop: () => void
-  approvals?: Approval[]
-  decidingId?: number | null
-  onDecision?: (id: number, decision: 'approve' | 'reject') => void
 }
 
-export function TurnCard({ turn, onStop, approvals = [], decidingId = null, onDecision }: Props) {
+export function TurnCard({ turn, onStop }: Props) {
   const streaming = turn.phase === 'streaming'
 
   return (
@@ -33,10 +29,6 @@ export function TurnCard({ turn, onStop, approvals = [], decidingId = null, onDe
         {turn.question}
       </h2>
       <div className="space-y-3 break-words">
-        {approvals.length > 0 ? (
-          <ApprovalHistory approvals={approvals} decidingId={decidingId} onDecision={onDecision} />
-        ) : null}
-
         <AnswerBody turn={turn} />
 
         {turn.citations.length > 0 ? <CitationList items={turn.citations} /> : null}
@@ -62,63 +54,6 @@ export function TurnCard({ turn, onStop, approvals = [], decidingId = null, onDe
         </div>
       </div>
     </article>
-  )
-}
-
-function ApprovalHistory({
-  approvals,
-  decidingId,
-  onDecision,
-}: {
-  approvals: Approval[]
-  decidingId: number | null
-  onDecision?: (id: number, decision: 'approve' | 'reject') => void
-}) {
-  return (
-    <section className="space-y-2" aria-label="待审批操作">
-      {approvals.map((approval) => {
-        const pending = approval.status === 'pending'
-        return (
-          <div
-            key={approval.id}
-            className={
-              pending
-                ? 'border-primary/30 bg-primary/5 space-y-2 rounded-md border p-3'
-                : 'bg-muted/40 space-y-1 rounded-md border p-3'
-            }
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={pending ? 'default' : 'secondary'}>
-                {pending ? '待审批' : approval.status === 'completed' ? '已处理' : approval.status}
-              </Badge>
-              <span className="text-sm font-medium">{approval.summary}</span>
-            </div>
-            <p className="text-muted-foreground text-xs">
-              AI 写操作 · {approval.tool_name} · {new Date(approval.created_at).toLocaleString('zh-CN')}
-            </p>
-            {pending && onDecision ? (
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => onDecision(approval.id, 'approve')}
-                  disabled={decidingId === approval.id}
-                >
-                  批准
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onDecision(approval.id, 'reject')}
-                  disabled={decidingId === approval.id}
-                >
-                  拒绝
-                </Button>
-              </div>
-            ) : null}
-          </div>
-        )
-      })}
-    </section>
   )
 }
 
