@@ -48,10 +48,10 @@ describe('应用布局与路由', () => {
     expect(screen.getByRole('heading', { name: '工作台' })).toBeInTheDocument()
   })
 
-  it('能直接进入尚未接入的任务页', () => {
+  it('能直接进入任务页', async () => {
     renderApp('/tasks')
 
-    expect(screen.getByRole('heading', { name: '任务' })).toBeInTheDocument()
-    expect(screen.getByText('尚未接入')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '任务' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建待办' })).toBeInTheDocument()
   })
 })

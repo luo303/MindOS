@@ -36,6 +36,7 @@ import (
 	"github.com/luo303/mindos/backend/internal/reaper"
 	"github.com/luo303/mindos/backend/internal/router"
 	"github.com/luo303/mindos/backend/internal/task"
+	"github.com/luo303/mindos/backend/internal/todo"
 	"github.com/luo303/mindos/backend/migrations"
 )
 
@@ -361,6 +362,9 @@ func run() error {
 		log.Named("chat"),
 	)
 
+	// 待办：手动 API 与后续 Agent 工具共用同一个 service。
+	todoSvc := todo.NewService(todo.NewRepository(db))
+
 	// 任务表在业务层之前创建：knowledge 需要它判断"取消时任务排着队还是在跑"，
 	// 消费端需要它写进度，两者共用同一个对象。
 	taskRepo := task.NewRepository(db)
@@ -639,6 +643,7 @@ func run() error {
 		Knowledge:   knowledge.NewHandler(knowledgeSvc),
 		ChatModels:  chatmodel.NewHandler(chatModelSvc),
 		Ask:         chat.NewHandler(chatSvc),
+		Todos:       todo.NewHandler(todoSvc),
 	})
 
 	// 【为什么不用 router.Run()】

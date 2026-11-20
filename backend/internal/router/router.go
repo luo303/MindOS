@@ -19,6 +19,7 @@ import (
 	"github.com/luo303/mindos/backend/internal/handler"
 	"github.com/luo303/mindos/backend/internal/httpx"
 	"github.com/luo303/mindos/backend/internal/knowledge"
+	"github.com/luo303/mindos/backend/internal/todo"
 )
 
 // Deps 收集构建路由需要的依赖。
@@ -44,6 +45,9 @@ type Deps struct {
 
 	// Ask 是单轮流式问答。
 	Ask *chat.Handler
+
+	// Todos 是用户待办。
+	Todos *todo.Handler
 
 	// 后续模块在这里扩展，例如：
 	//   Chat *chat.Handler
@@ -136,4 +140,10 @@ func Register(e *gin.Engine, deps Deps) {
 	authed.DELETE("/conversations/:id", deps.Ask.DeleteConversation)
 	authed.GET("/conversations/:id/messages", deps.Ask.ListMessages)
 	authed.POST("/conversations/:id/messages", deps.Ask.PostMessage)
+
+	// 用户待办：手动 CRUD；AI 写工具复用 service，但先过审批。
+	authed.GET("/todos", deps.Todos.List)
+	authed.POST("/todos", deps.Todos.Create)
+	authed.PATCH("/todos/:id", deps.Todos.Update)
+	authed.DELETE("/todos/:id", deps.Todos.Delete)
 }
