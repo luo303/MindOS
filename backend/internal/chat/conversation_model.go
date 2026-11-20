@@ -50,7 +50,10 @@ type Message struct {
 	// Embedding/Model 只用于冷层与 ES 重建，不返回给前端。
 	EmbeddingModel *string    `gorm:"column:embedding_model" json:"-"`
 	EmbeddedAt     *time.Time `gorm:"column:embedded_at" json:"-"`
-	CreatedAt      time.Time  `gorm:"column:created_at" json:"created_at"`
+	// ErrorCode/ErrorMessage 只在 assistant 失败时写入，刷新后用来还原失败卡片。
+	ErrorCode    *string   `gorm:"column:error_code" json:"error_code,omitempty"`
+	ErrorMessage *string   `gorm:"column:error_message" json:"error_message,omitempty"`
+	CreatedAt    time.Time `gorm:"column:created_at" json:"created_at"`
 }
 
 // TableName 见 Conversation.TableName 的说明。

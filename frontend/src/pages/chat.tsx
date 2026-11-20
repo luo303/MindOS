@@ -75,7 +75,15 @@ function turnsFromMessages(messages: ChatMessage[]): Turn[] {
     // 后端正常返回数组；这里再兜一层，避免旧缓存/旧版本把 base64 字符串
     // 塞进来时整页崩在 citations.map。
     current.citations = Array.isArray(message.citations) ? message.citations : []
-    current.phase = 'settled'
+    if (message.error_code) {
+      current.phase = 'failed'
+      current.error = {
+        code: message.error_code,
+        message: message.error_message ?? '模型返回失败',
+      }
+    } else {
+      current.phase = 'settled'
+    }
   }
   return turns
 }

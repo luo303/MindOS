@@ -82,7 +82,7 @@ func (r *ConversationRepository) ClaimSummary(ctx context.Context, ownerID, conv
 		}
 
 		var messages []Message
-		if err := tx.Where("owner_id = ? AND conversation_id = ? AND seq BETWEEN ? AND ?",
+		if err := tx.Where("owner_id = ? AND conversation_id = ? AND seq BETWEEN ? AND ? AND error_code IS NULL",
 			ownerID, conversationID, from, to).
 			Order("seq ASC").Find(&messages).Error; err != nil {
 			return err

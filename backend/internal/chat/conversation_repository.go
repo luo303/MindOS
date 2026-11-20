@@ -106,6 +106,24 @@ func (r *ConversationRepository) AppendMessage(
 	ctx context.Context, ownerID, conversationID int64,
 	role, content string, citations RawJSON,
 ) (*Message, error) {
+	return r.appendMessage(ctx, ownerID, conversationID, role, content, citations, nil, nil)
+}
+
+// AppendErrorMessage 追加一条失败的 assistant 消息。
+//
+// 失败也要落库：否则刷新后只剩 user 消息，前端无法还原失败原因。
+// 错误消息不写检索索引/摘要事件——它不是可召回的知识。
+func (r *ConversationRepository) AppendErrorMessage(
+	ctx context.Context, ownerID, conversationID int64,
+	content string, citations RawJSON, code, message string,
+) (*Message, error) {
+	return r.appendMessage(ctx, ownerID, conversationID, RoleAssistant, content, citations, &code, &message)
+}
+
+func (r *ConversationRepository) appendMessage(
+	ctx context.Context, ownerID, conversationID int64,
+	role, content string, citations RawJSON, errorCode, errorMessage *string,
+) (*Message, error) {
 	var msg Message
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var conv Conversation
@@ -136,6 +154,8 @@ func (r *ConversationRepository) AppendMessage(
 			Citations:      citations,
 			Seq:            seq,
 			TokenCount:     estimateTokens(content),
+			ErrorCode:      errorCode,
+			ErrorMessage:   errorMessage,
 		}
 		if err := tx.Create(&msg).Error; err != nil {
 			return err
@@ -148,6 +168,9 @@ func (r *ConversationRepository) AppendMessage(
 				"updated_at":    time.Now().UTC(),
 			}).Error; err != nil {
 			return err
+		}
+		if errorCode != nil {
+			return nil
 		}
 		// 先索引正文（关键词立即可用），再异步补向量。
 		payload := map[string]any{
@@ -181,7 +204,7 @@ func (r *ConversationRepository) MessagesBefore(
 	}
 	var out []Message
 	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND conversation_id = ? AND seq < ?", ownerID, conversationID, beforeSeq).
+		Where("owner_id = ? AND conversation_id = ? AND seq < ? AND error_code IS NULL", ownerID, conversationID, beforeSeq).
 		Order("seq DESC").
 		Limit(limit).
 		Find(&out).Error
@@ -217,7 +240,7 @@ func (r *ConversationRepository) MessagesBySeqs(ctx context.Context, ownerID, co
 	}
 	var out []Message
 	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND conversation_id = ? AND seq IN ?", ownerID, conversationID, seqs).
+		Where("owner_id = ? AND conversation_id = ? AND seq IN ? AND error_code IS NULL", ownerID, conversationID, seqs).
 		Order("seq ASC").
 		Find(&out).Error
 	if err != nil {

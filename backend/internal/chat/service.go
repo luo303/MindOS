@@ -408,6 +408,19 @@ func (s *Service) finishFailed(
 	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer persistCancel()
 
+	// 失败也写一条 assistant 消息：刷新后前端才能还原失败卡片。
+	var assistantMessageID int64
+	if conversationID != nil {
+		saved, saveErr := s.convs.AppendErrorMessage(
+			persistCtx, ownerID, *conversationID, partial, marshalJSON(nil), code, message)
+		if saveErr != nil {
+			s.log.Warn("save failed assistant message failed",
+				zap.Int64("conversation_id", *conversationID), zap.Error(saveErr))
+		} else {
+			assistantMessageID = saved.ID
+		}
+	}
+
 	run := &Run{
 		OwnerID:        ownerID,
 		ConversationID: conversationID,
@@ -425,7 +438,13 @@ func (s *Service) finishFailed(
 	}
 	runID := s.saveRun(persistCtx, run)
 
-	done := DonePayload{RunID: runID, ChatModelID: resolved.ID, LatencyMS: int64(run.LatencyMS), UserMessageID: userMessageID}
+	done := DonePayload{
+		RunID:              runID,
+		ChatModelID:        resolved.ID,
+		LatencyMS:          int64(run.LatencyMS),
+		UserMessageID:      userMessageID,
+		AssistantMessageID: assistantMessageID,
+	}
 	if conversationID != nil {
 		done.ConversationID = *conversationID
 	}

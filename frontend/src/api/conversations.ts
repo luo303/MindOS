@@ -18,6 +18,9 @@ export type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   citations: AskCitationItem[]
+  // 失败时后端会持久化一条 assistant 消息，刷新后靠这两个字段还原失败卡片。
+  error_code?: string | null
+  error_message?: string | null
   seq: number
   created_at: string
 }
