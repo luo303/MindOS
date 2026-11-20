@@ -204,12 +204,12 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 			return nil, fmt.Errorf("build create_todo tool: %w", err)
 		}
 		tools = append(tools, createTool)
-		updateTool, err := newUpdateTodoTool(a.approvals, a.ownerID, budget)
+		updateTool, err := newUpdateTodoTool(a.todos, a.approvals, a.ownerID, budget)
 		if err != nil {
 			return nil, fmt.Errorf("build update_todo tool: %w", err)
 		}
 		tools = append(tools, updateTool)
-		deleteTool, err := newDeleteTodoTool(a.approvals, a.ownerID, budget)
+		deleteTool, err := newDeleteTodoTool(a.todos, a.approvals, a.ownerID, budget)
 		if err != nil {
 			return nil, fmt.Errorf("build delete_todo tool: %w", err)
 		}
@@ -386,12 +386,12 @@ func (a *Agent) Resume(ctx context.Context, checkpointID, interruptID string, de
 			return nil, fmt.Errorf("build create_todo tool: %w", err)
 		}
 		tools = append(tools, createTool)
-		updateTool, err := newUpdateTodoTool(a.approvals, a.ownerID, budget)
+		updateTool, err := newUpdateTodoTool(a.todos, a.approvals, a.ownerID, budget)
 		if err != nil {
 			return nil, fmt.Errorf("build update_todo tool: %w", err)
 		}
 		tools = append(tools, updateTool)
-		deleteTool, err := newDeleteTodoTool(a.approvals, a.ownerID, budget)
+		deleteTool, err := newDeleteTodoTool(a.todos, a.approvals, a.ownerID, budget)
 		if err != nil {
 			return nil, fmt.Errorf("build delete_todo tool: %w", err)
 		}

@@ -70,6 +70,20 @@ function AnswerBody({ turn }: { turn: Turn }) {
     )
   }
 
+  if (turn.done?.awaiting_approval) {
+    return (
+      <div className="bg-muted/50 space-y-2 rounded-md border p-3">
+        <p className="text-sm font-medium">已提交审批，Agent 已停在 checkpoint</p>
+        <p className="text-muted-foreground text-xs">
+          批准后模型会从断点继续，审批记录在任务页。
+        </p>
+        <Link className="text-primary text-sm underline underline-offset-2" to="/tasks">
+          去任务页审批
+        </Link>
+      </div>
+    )
+  }
+
   if (turn.phase === 'failed') {
     return (
       <div role="alert" className="border-destructive/30 bg-destructive/5 space-y-1 rounded-md border p-3">

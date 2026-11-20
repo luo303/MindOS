@@ -35,5 +35,6 @@ export function decideApproval(id: number, decision: 'approve' | 'reject'): Prom
   return apiRequest<Approval>('/approvals/' + id + '/decision', {
     method: 'POST',
     body: { decision },
+    timeoutMs: 60_000,
   })
 }

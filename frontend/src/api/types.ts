@@ -243,6 +243,8 @@ export type AskDonePayload = {
   prompt_tokens: number
   completion_tokens: number
   latency_ms: number
+  awaiting_approval?: boolean
+  approval_id?: number
 }
 
 /**

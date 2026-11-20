@@ -208,61 +208,136 @@ type deleteTodoInput struct {
 	ID int64 `json:"id" jsonschema:"description=待办 ID"`
 }
 
-func newUpdateTodoTool(approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
-	invoke := func(ctx context.Context, in updateTodoInput) (*pendingApprovalOutput, error) {
+func newUpdateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
+	invoke := func(ctx context.Context, in updateTodoInput) (string, error) {
 		if err := budget.take(); err != nil {
-			return nil, err
+			return "", err
 		}
-		if in.ID <= 0 {
-			return nil, errors.New("id is required")
-		}
-		args := approval.JSON{"id": in.ID}
-		if in.Title != "" {
-			args["title"] = in.Title
-		}
-		if in.Description != "" {
-			args["description"] = in.Description
-		}
-		if in.Status != "" {
-			args["status"] = in.Status
-		}
-		if in.Priority != 0 {
-			args["priority"] = in.Priority
+		if approvals == nil {
+			return "", errors.New("todo approval is not configured")
 		}
 		meta := RunMetaFrom(ctx)
-		req, err := approvals.Propose(ctx, approval.ProposeInput{
-			OwnerID: ownerID, ConversationID: meta.ConversationID,
-			UserMessageID: meta.UserMessageID, ChatModelID: meta.ChatModelID,
-			ToolName: "update_todo", Arguments: args,
-			Summary: "修改待办 #" + fmt.Sprint(in.ID),
-		})
-		if err != nil {
-			return nil, err
+		if meta.CheckpointID == "" || meta.ConversationID <= 0 {
+			return "", errors.New("todo write requires an active conversation checkpoint")
 		}
-		return &pendingApprovalOutput{Status: "pending_approval", ApprovalID: req.ID, Summary: req.Summary}, nil
+		wasInterrupted, _, state := tool.GetInterruptState[todoApprovalState](ctx)
+		if !wasInterrupted {
+			if in.ID <= 0 {
+				return "", errors.New("id is required")
+			}
+			args := approval.JSON{"id": in.ID}
+			if in.Title != "" {
+				args["title"] = in.Title
+			}
+			if in.Description != "" {
+				args["description"] = in.Description
+			}
+			if in.Status != "" {
+				args["status"] = in.Status
+			}
+			if in.Priority != 0 {
+				args["priority"] = in.Priority
+			}
+			req, err := approvals.Propose(ctx, approval.ProposeInput{
+				OwnerID: ownerID, CheckpointID: meta.CheckpointID,
+				ConversationID: meta.ConversationID, UserMessageID: meta.UserMessageID,
+				ChatModelID: meta.ChatModelID, ToolName: "update_todo",
+				Arguments: args, Summary: "修改待办 #" + fmt.Sprint(in.ID),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "", tool.StatefulInterrupt(ctx,
+				todoApprovalInfo{ApprovalID: req.ID, Summary: req.Summary},
+				todoApprovalState{ApprovalID: req.ID})
+		}
+		isTarget, hasData, decision := tool.GetResumeContext[map[string]any](ctx)
+		if !isTarget {
+			return "", tool.StatefulInterrupt(ctx, todoApprovalInfo{ApprovalID: state.ApprovalID}, state)
+		}
+		if !(hasData && decision["approved"] == true) {
+			return "用户拒绝修改待办。", nil
+		}
+		req, err := approvals.Get(ctx, ownerID, state.ApprovalID)
+		if err != nil {
+			return "", err
+		}
+		if req.Status != approval.StatusApproved {
+			return "", fmt.Errorf("approval %d is not approved", req.ID)
+		}
+		id, _ := req.Arguments["id"].(float64)
+		inUpdate := todo.UpdateInput{}
+		if v, ok := req.Arguments["title"].(string); ok && v != "" {
+			inUpdate.Title = &v
+		}
+		if v, ok := req.Arguments["description"].(string); ok && v != "" {
+			inUpdate.Description = &v
+		}
+		if v, ok := req.Arguments["status"].(string); ok && v != "" {
+			inUpdate.Status = &v
+		}
+		if v, ok := req.Arguments["priority"].(float64); ok && v > 0 {
+			p := int(v)
+			inUpdate.Priority = &p
+		}
+		updated, err := svc.Update(ctx, ownerID, int64(id), inUpdate)
+		if err != nil {
+			return "", err
+		}
+		return "已修改待办：" + updated.Title, nil
 	}
-	return utils.InferTool("update_todo", "修改待办提案，必须等待用户审批", invoke)
+	return utils.InferTool("update_todo", "修改待办；会暂停等待用户审批，批准后才落库", invoke)
 }
 
-func newDeleteTodoTool(approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
-	invoke := func(ctx context.Context, in deleteTodoInput) (*pendingApprovalOutput, error) {
+func newDeleteTodoTool(svc *todo.Service, approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
+	invoke := func(ctx context.Context, in deleteTodoInput) (string, error) {
 		if err := budget.take(); err != nil {
-			return nil, err
+			return "", err
 		}
-		if in.ID <= 0 {
-			return nil, errors.New("id is required")
+		if approvals == nil {
+			return "", errors.New("todo approval is not configured")
 		}
 		meta := RunMetaFrom(ctx)
-		req, err := approvals.Propose(ctx, approval.ProposeInput{
-			OwnerID: ownerID, ConversationID: meta.ConversationID,
-			UserMessageID: meta.UserMessageID, ChatModelID: meta.ChatModelID,
-			ToolName: "delete_todo", Arguments: approval.JSON{"id": in.ID},
-			Summary: "删除待办 #" + fmt.Sprint(in.ID),
-		})
-		if err != nil {
-			return nil, err
+		if meta.CheckpointID == "" || meta.ConversationID <= 0 {
+			return "", errors.New("todo write requires an active conversation checkpoint")
 		}
-		return &pendingApprovalOutput{Status: "pending_approval", ApprovalID: req.ID, Summary: req.Summary}, nil
+		wasInterrupted, _, state := tool.GetInterruptState[todoApprovalState](ctx)
+		if !wasInterrupted {
+			if in.ID <= 0 {
+				return "", errors.New("id is required")
+			}
+			req, err := approvals.Propose(ctx, approval.ProposeInput{
+				OwnerID: ownerID, CheckpointID: meta.CheckpointID,
+				ConversationID: meta.ConversationID, UserMessageID: meta.UserMessageID,
+				ChatModelID: meta.ChatModelID, ToolName: "delete_todo",
+				Arguments: approval.JSON{"id": in.ID}, Summary: "删除待办 #" + fmt.Sprint(in.ID),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "", tool.StatefulInterrupt(ctx,
+				todoApprovalInfo{ApprovalID: req.ID, Summary: req.Summary},
+				todoApprovalState{ApprovalID: req.ID})
+		}
+		isTarget, hasData, decision := tool.GetResumeContext[map[string]any](ctx)
+		if !isTarget {
+			return "", tool.StatefulInterrupt(ctx, todoApprovalInfo{ApprovalID: state.ApprovalID}, state)
+		}
+		if !(hasData && decision["approved"] == true) {
+			return "用户拒绝删除待办。", nil
+		}
+		req, err := approvals.Get(ctx, ownerID, state.ApprovalID)
+		if err != nil {
+			return "", err
+		}
+		if req.Status != approval.StatusApproved {
+			return "", fmt.Errorf("approval %d is not approved", req.ID)
+		}
+		id, _ := req.Arguments["id"].(float64)
+		if err := svc.Delete(ctx, ownerID, int64(id)); err != nil {
+			return "", err
+		}
+		return "已删除待办。", nil
 	}
-	return utils.InferTool("delete_todo", "删除待办提案，必须等待用户审批", invoke)
+	return utils.InferTool("delete_todo", "删除待办；会暂停等待用户审批，批准后才落库", invoke)
 }
