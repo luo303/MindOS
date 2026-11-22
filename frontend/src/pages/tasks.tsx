@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -161,18 +162,13 @@ export function TasksPage() {
         title="任务"
         actions={
           <div className="flex items-center gap-2">
-            <select
-              aria-label="筛选状态"
-              className="border-input bg-background h-9 rounded-md border px-2 text-sm"
+            <Select
+              ariaLabel="筛选状态"
               value={status}
-              onChange={(event) => setStatus(event.target.value)}
-            >
-              {statusOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              options={statusOptions}
+              onChange={setStatus}
+              className="h-9 px-3 text-sm"
+            />
             <Button size="sm" onClick={openCreate}>
               <Plus aria-hidden="true" />
               新建待办
@@ -199,18 +195,21 @@ export function TasksPage() {
               rows={3}
             />
             <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-2 text-sm">
+              <div className="flex items-center gap-2 text-sm">
                 优先级
-                <select
-                  className="border-input bg-background h-9 rounded-md border px-2"
-                  value={draft.priority}
-                  onChange={(event) => setDraft({ ...draft, priority: Number(event.target.value) })}
-                >
-                  <option value={1}>高</option>
-                  <option value={2}>中</option>
-                  <option value={3}>低</option>
-                </select>
-              </label>
+                <Select
+                  ariaLabel="优先级"
+                  value={String(draft.priority)}
+                  options={[
+                    { value: '1', label: '高' },
+                    { value: '2', label: '中' },
+                    { value: '3', label: '低' },
+                  ]}
+                  onChange={(next) => setDraft({ ...draft, priority: Number(next) })}
+                  className="h-9 px-3 text-sm"
+                  menuClassName="w-32"
+                />
+              </div>
               <label className="flex items-center gap-2 text-sm">
                 截止
                 <input

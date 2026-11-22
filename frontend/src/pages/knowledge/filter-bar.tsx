@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react'
 import type { DocumentFilters, DocumentStatus } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 
 import { statusOptions } from './format'
 
@@ -52,18 +53,14 @@ export function FilterBar({
       </label>
       <label className="flex flex-col gap-1 text-xs">
         状态
-        <select
+        <Select
           value={status}
-          onChange={(event) => setStatus(event.target.value as DocumentStatus | '')}
-          aria-label="按状态筛选"
-          className="border-input bg-background h-8 rounded-md border px-2 text-sm"
-        >
-          {statusOptions.map((option) => (
-            <option key={option.value || 'all'} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          onChange={(next) => setStatus(next as DocumentStatus | '')}
+          ariaLabel="按状态筛选"
+          options={statusOptions}
+          className="h-8 px-2 text-xs"
+          menuClassName="w-36"
+        />
       </label>
       <Button type="submit" variant="outline" size="sm">
         <Filter aria-hidden="true" />
