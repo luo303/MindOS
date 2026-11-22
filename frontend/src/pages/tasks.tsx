@@ -92,7 +92,7 @@ function formatDue(iso: string): string {
 
 export function TasksPage() {
   const queryClient = useQueryClient()
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState('open')
   const [draft, setDraft] = useState<Draft>(emptyDraft)
   const [formOpen, setFormOpen] = useState(false)
   const [confirmId, setConfirmId] = useState<number | null>(null)
