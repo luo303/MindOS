@@ -161,6 +161,7 @@ export function ChatPage() {
       // 删除当前会话后允许自动选下一条；如果删的是别的，不影响当前。
       if (activeId === conversationId) {
         draftRef.current = false
+        syncedConversationRef.current = null
         rememberConversationId(null)
       }
       setDeleteTarget(null)
@@ -303,6 +304,7 @@ export function ChatPage() {
       if (!list.some((conv) => conv.id === activeId)) {
         const fallback = readStoredConversationId()
         const target = fallback && list.some((conv) => conv.id === fallback) ? fallback : list[0].id
+        syncedConversationRef.current = null
         setActiveId(target)
       }
       return
@@ -312,13 +314,9 @@ export function ChatPage() {
     }
     const stored = readStoredConversationId()
     const target = stored && list.some((conv) => conv.id === stored) ? stored : list[0].id
+    syncedConversationRef.current = null
     setActiveId(target)
   }, [activeId, conversationsQuery.isSuccess, conversationsQuery.data, models.length])
-
-  // 每次切换会话都允许下一次 messages 数据重新回填 turns。
-  useEffect(() => {
-    syncedConversationRef.current = null
-  }, [activeId])
 
   // 历史加载完成后还原 turns；流式过程中不要用缓存覆盖正在生成的内容。
   useEffect(() => {
@@ -346,6 +344,7 @@ export function ChatPage() {
       return
     }
     draftRef.current = true
+    syncedConversationRef.current = null
     rememberConversationId(null)
     setActiveId(null)
     setTurns([])
@@ -473,6 +472,7 @@ export function ChatPage() {
   const activeConversation = conversations.find((conv) => conv.id === activeId) ?? null
   const showEmpty =
     turns.length === 0 &&
+    !pending &&
     !createError &&
     !pendingApproval &&
     (activeId === null || (messagesQuery.isSuccess && !messagesQuery.isError))
