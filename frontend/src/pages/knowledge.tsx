@@ -26,6 +26,7 @@ import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Drawer } from '@/components/ui/drawer'
+import { Modal } from '@/components/ui/modal'
 import { Toast } from '@/components/ui/toast'
 
 import { DocumentDetail } from '@/pages/knowledge/document-detail'
@@ -436,7 +437,7 @@ export function KnowledgePage() {
         </div>
       </main>
 
-      <Drawer
+      <Modal
         open={uploadOpen}
         title="导入文件"
         onClose={() => {
@@ -458,7 +459,7 @@ export function KnowledgePage() {
             }
           }}
         />
-      </Drawer>
+      </Modal>
 
       <Drawer open={composerOpen} title="新建笔记" onClose={() => setComposerOpen(false)}>
         <NoteComposer
