@@ -47,7 +47,7 @@ export function NoteComposer({
   }
 
   return (
-    <form className="space-y-3" onSubmit={submit}>
+    <form className="flex h-full min-h-0 flex-col gap-3" onSubmit={submit}>
           <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -55,13 +55,16 @@ export function NoteComposer({
             aria-label="笔记标题"
             maxLength={200}
           />
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="正文（Markdown）"
-            aria-label="笔记正文"
-            rows={8}
-          />
+          <div className="min-h-0 flex-1">
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="正文（Markdown）"
+              aria-label="笔记正文"
+              rows={8}
+              className="h-full min-h-32 resize-none"
+            />
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Input
               value={collection}
@@ -77,7 +80,7 @@ export function NoteComposer({
               aria-label="笔记标签"
             />
           </div>
-          <div className="flex items-center justify-end gap-2">
+          <div className="mt-auto flex items-center justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving}>
               取消
             </Button>
