@@ -105,6 +105,19 @@
     height: 100%;
   }
 
+  /* 所有可交互控件统一手势；禁用态显式 not-allowed。 */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  select:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  select:disabled {
+    cursor: not-allowed;
+  }
+
   body {
     @apply bg-background text-foreground antialiased;
     font-family:
