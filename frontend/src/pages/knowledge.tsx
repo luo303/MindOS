@@ -25,6 +25,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Drawer } from '@/components/ui/drawer'
 import { Toast } from '@/components/ui/toast'
 
 import { DocumentDetail } from '@/pages/knowledge/document-detail'
@@ -284,7 +285,7 @@ export function KnowledgePage() {
               variant="outline"
               size="sm"
               onClick={() => {
-                setComposerOpen((open) => !open)
+                setComposerOpen(true)
                 setUploadOpen(false)
               }}
               aria-expanded={composerOpen}
@@ -395,14 +396,6 @@ export function KnowledgePage() {
         ) : null}
         <div className="h-full overflow-y-auto">
         <div className="mx-auto max-w-4xl p-4 sm:p-6">
-          {composerOpen ? (
-            <NoteComposer
-              saving={noteMutation.isPending}
-              onCancel={() => setComposerOpen(false)}
-              onSubmit={(draft) => noteMutation.mutate(draft)}
-            />
-          ) : null}
-
           {uploadOpen ? (
             <UploadComposer
               file={pendingFile}
@@ -459,6 +452,14 @@ export function KnowledgePage() {
         </div>
         </div>
       </main>
+
+      <Drawer open={composerOpen} title="新建笔记" onClose={() => setComposerOpen(false)}>
+        <NoteComposer
+          saving={noteMutation.isPending}
+          onCancel={() => setComposerOpen(false)}
+          onSubmit={(draft) => noteMutation.mutate(draft)}
+        />
+      </Drawer>
 
       {filterOpen ? (
         <div

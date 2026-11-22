@@ -2,7 +2,6 @@ import { Loader2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -48,12 +47,7 @@ export function NoteComposer({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <h2 className="text-base font-semibold">新建笔记</h2>
-      </CardHeader>
-      <CardContent>
-        <form className="space-y-3" onSubmit={submit}>
+    <form className="space-y-3" onSubmit={submit}>
           <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -92,8 +86,6 @@ export function NoteComposer({
               保存笔记
             </Button>
           </div>
-        </form>
-      </CardContent>
-    </Card>
+    </form>
   )
 }
