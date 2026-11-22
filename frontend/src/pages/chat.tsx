@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 
+import { SlidingPill } from '@/components/sliding-pill'
 import { ApprovalPanel } from './chat/approval-panel'
 import { TurnCard } from './chat/turn-card'
 import { ModelSelect } from './chat/model-select'
@@ -143,6 +144,7 @@ export function ChatPage() {
   // 用户主动点“新对话”后进入空白草稿，不要被自动选择逻辑选回旧会话。
   const draftRef = useRef(false)
   const endRef = useRef<HTMLDivElement | null>(null)
+  const conversationListRef = useRef<HTMLUListElement | null>(null)
   // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
   const syncedConversationRef = useRef<number | null>(null)
 
@@ -517,14 +519,23 @@ export function ChatPage() {
           ) : conversations.length === 0 ? (
             <p className="text-muted-foreground p-2 text-xs">还没有历史会话</p>
           ) : (
-            <ul className="space-y-0.5">
+            <ul ref={conversationListRef} className="relative isolate space-y-0.5">
+              <SlidingPill
+                containerRef={conversationListRef}
+                active={activeId}
+                selector={'[aria-current="true"]'}
+                className="conversation-pill"
+              />
               {conversations.map((conv) => (
                 <li key={conv.id}>
                   <button
                     type="button"
+                    aria-current={conv.id === activeId ? 'true' : undefined}
                     className={
-                      'hover:bg-muted flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors ' +
-                      (conv.id === activeId ? 'bg-muted font-medium' : 'text-muted-foreground')
+                      'relative z-10 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm transition-colors ' +
+                      (conv.id === activeId
+                        ? 'text-foreground font-medium'
+                        : 'text-muted-foreground hover:bg-white/45')
                     }
                     onClick={() => {
                       draftRef.current = false
@@ -568,9 +579,11 @@ export function ChatPage() {
             <p className="truncate text-sm font-semibold">
               {activeConversation?.title || (activeId === null ? '新对话' : '对话')}
             </p>
-            <p className="text-muted-foreground truncate text-[11px]">
-              {pendingApproval ? '等待审批，完成后才能继续' : pending ? '生成中…' : '右键左侧会话可删除'}
-            </p>
+            {pendingApproval ? (
+              <p className="text-muted-foreground truncate text-[11px]">等待审批，完成后才能继续</p>
+            ) : pending ? (
+              <p className="text-muted-foreground truncate text-[11px]">生成中…</p>
+            ) : null}
           </div>
           <ModelSelect models={models} value={selectedId} onChange={chooseModel} disabled={pending} />
         </header>
