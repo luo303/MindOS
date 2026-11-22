@@ -29,6 +29,7 @@ import { REFUSAL_TEXT, STOPPED_TEXT, WITHDRAWN_TEXT, type Turn } from './chat/fo
 
 /** 选中的模型存本地：这是"本机偏好"，不该占一个后端字段。 */
 const MODEL_STORAGE_KEY = 'mindos.chat.modelId'
+const CONVERSATION_STORAGE_KEY = 'mindos.chat.conversationId'
 
 function readStoredModelId(): number | null {
   try {
@@ -41,6 +42,28 @@ function readStoredModelId(): number | null {
   } catch {
     // 隐私模式下 localStorage 会抛异常，不值得为此让页面挂掉。
     return null
+  }
+}
+
+function readStoredConversationId(): number | null {
+  try {
+    const raw = localStorage.getItem(CONVERSATION_STORAGE_KEY)
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function rememberConversationId(id: number | null) {
+  try {
+    if (id === null) {
+      localStorage.removeItem(CONVERSATION_STORAGE_KEY)
+    } else {
+      localStorage.setItem(CONVERSATION_STORAGE_KEY, String(id))
+    }
+  } catch {
+    // 隐私模式存不了不影响当前会话。
   }
 }
 
@@ -106,7 +129,7 @@ export function ChatPage() {
   const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data])
 
   const [selectedId, setSelectedId] = useState<number | null>(() => readStoredModelId())
-  const [activeId, setActiveId] = useState<number | null>(null)
+  const [activeId, setActiveId] = useState<number | null>(() => readStoredConversationId())
   const [turns, setTurns] = useState<Turn[]>([])
   const [pending, setPending] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -136,6 +159,7 @@ export function ChatPage() {
       // 删除当前会话后允许自动选下一条；如果删的是别的，不影响当前。
       if (activeId === conversationId) {
         draftRef.current = false
+        rememberConversationId(null)
       }
       setDeleteTarget(null)
       setContextMenu(null)
@@ -257,16 +281,42 @@ export function ChatPage() {
     setSelectedId(fallback.id)
   }, [models, selectedId])
 
-  // 有历史会话时默认选最近一条；没有就停在空白草稿，不发创建请求。
   useEffect(() => {
-    if (activeId !== null || draftRef.current || !conversationsQuery.isSuccess || models.length === 0) {
+    rememberConversationId(activeId)
+  }, [activeId])
+
+  // 优先恢复上次的会话；失效时回落到最近一条。草稿状态不自动选择。
+  useEffect(() => {
+    if (!conversationsQuery.isSuccess || models.length === 0) {
       return
     }
     const list = conversationsQuery.data
-    if (list.length > 0) {
-      setActiveId(list[0].id)
+    if (list.length === 0) {
+      if (activeId !== null) {
+        setActiveId(null)
+      }
+      return
     }
+    if (activeId !== null) {
+      if (!list.some((conv) => conv.id === activeId)) {
+        const fallback = readStoredConversationId()
+        const target = fallback && list.some((conv) => conv.id === fallback) ? fallback : list[0].id
+        setActiveId(target)
+      }
+      return
+    }
+    if (draftRef.current) {
+      return
+    }
+    const stored = readStoredConversationId()
+    const target = stored && list.some((conv) => conv.id === stored) ? stored : list[0].id
+    setActiveId(target)
   }, [activeId, conversationsQuery.isSuccess, conversationsQuery.data, models.length])
+
+  // 每次切换会话都允许下一次 messages 数据重新回填 turns。
+  useEffect(() => {
+    syncedConversationRef.current = null
+  }, [activeId])
 
   // 历史加载完成后还原 turns；流式过程中不要用缓存覆盖正在生成的内容。
   useEffect(() => {
@@ -294,6 +344,7 @@ export function ChatPage() {
       return
     }
     draftRef.current = true
+    rememberConversationId(null)
     setActiveId(null)
     setTurns([])
     setCreateError('')
@@ -313,6 +364,7 @@ export function ChatPage() {
         const conv = await createConversation()
         conversationId = conv.id
         draftRef.current = false
+        syncedConversationRef.current = null
         setCreateError('')
         setActiveId(conv.id)
         queryClient.setQueryData<Conversation[]>(conversationKeys.all, (old) =>
@@ -476,6 +528,7 @@ export function ChatPage() {
                     }
                     onClick={() => {
                       draftRef.current = false
+                      syncedConversationRef.current = null
                       setActiveId(conv.id)
                       setTurns([])
                       setSidebarOpen(false)
