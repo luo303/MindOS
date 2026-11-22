@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Menu, MessageSquare, Plus, SendHorizontal, Trash2, X } from 'lucide-react'
+import { ArrowUp, Loader2, Menu, MessageSquare, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
@@ -752,13 +752,14 @@ function ChatComposer({ onSubmit, pending, disabled }: ChatComposerProps) {
     onSubmit(value)
     if (ref.current) {
       ref.current.value = ''
+      ref.current.style.height = ''
     }
   }
 
   return (
     <form
       aria-label="发送消息"
-      className="glass-surface flex items-end gap-2 rounded-2xl border p-2"
+      className="glass-surface space-y-2 rounded-3xl border p-3 transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20"
       onSubmit={(event) => {
         event.preventDefault()
         send()
@@ -766,7 +767,7 @@ function ChatComposer({ onSubmit, pending, disabled }: ChatComposerProps) {
     >
       <Textarea
         ref={ref}
-        placeholder="输入问题…"
+        placeholder="给 MindOS 发送消息"
         rows={1}
         maxLength={500}
         disabled={disabled}
@@ -788,18 +789,32 @@ function ChatComposer({ onSubmit, pending, disabled }: ChatComposerProps) {
             send()
           }
         }}
-        className="placeholder:text-muted-foreground max-h-40 min-h-10 resize-none overflow-y-auto border-0 bg-transparent px-2 py-2 text-sm leading-6 shadow-none outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50"
+        className="placeholder:text-muted-foreground max-h-40 min-h-10 resize-none overflow-y-auto border-0 bg-transparent px-1 py-2 text-sm leading-6 shadow-none outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50"
       />
-      <Button
-        type="button"
-        size="icon"
-        className="shrink-0 rounded-xl"
-        disabled={disabled || pending}
-        aria-label={pending ? '生成中' : '发送'}
-        onClick={send}
-      >
-        {pending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <SendHorizontal aria-hidden="true" />}
-      </Button>
+
+      <div className="flex items-center justify-between">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="rounded-full"
+          aria-label="添加附件，暂未开放"
+          title="暂未开放"
+        >
+          <Plus aria-hidden="true" />
+        </Button>
+
+        <Button
+          type="button"
+          size="icon"
+          className="rounded-full"
+          disabled={disabled || pending}
+          aria-label={pending ? '生成中' : '发送'}
+          onClick={send}
+        >
+          {pending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
+        </Button>
+      </div>
     </form>
   )
 }
