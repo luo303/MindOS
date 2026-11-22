@@ -374,26 +374,27 @@ export function KnowledgePage() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto">
+      <main className="relative min-w-0 flex-1 overflow-hidden">
+        {importNotice || backfillNotice ? (
+          <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-4">
+            <Toast
+              className="pointer-events-auto relative top-auto left-auto max-w-xl -translate-x-0"
+              message={
+                importNotice
+                  ? importNotice.existed
+                    ? `内容与已有文档一致，已复用《${importNotice.title}》，没有重复入库。`
+                    : `已受理《${importNotice.title}》，正在后台解析。`
+                  : backfillNotice ?? ''
+              }
+              onClose={() => {
+                setImportNotice(null)
+                setBackfillNotice(null)
+              }}
+            />
+          </div>
+        ) : null}
+        <div className="h-full overflow-y-auto">
         <div className="mx-auto max-w-4xl p-4 sm:p-6">
-          {importNotice || backfillNotice ? (
-            <div className="pointer-events-none sticky top-0 z-30 -mx-4 flex justify-center px-4 pt-3 sm:-mx-6 sm:px-6">
-              <Toast
-                className="pointer-events-auto relative top-auto left-auto max-w-xl -translate-x-0"
-                message={
-                  importNotice
-                    ? importNotice.existed
-                      ? `内容与已有文档一致，已复用《${importNotice.title}》，没有重复入库。`
-                      : `已受理《${importNotice.title}》，正在后台解析。`
-                    : backfillNotice ?? ''
-                }
-                onClose={() => {
-                  setImportNotice(null)
-                  setBackfillNotice(null)
-                }}
-              />
-            </div>
-          ) : null}
           {composerOpen ? (
             <NoteComposer
               saving={noteMutation.isPending}
@@ -455,6 +456,7 @@ export function KnowledgePage() {
               )}
             </section>
           ) : null}
+        </div>
         </div>
       </main>
 
