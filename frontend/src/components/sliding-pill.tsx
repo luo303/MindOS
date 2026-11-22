@@ -51,7 +51,21 @@ export function SlidingPill({ containerRef, active, selector = '[aria-current="p
     })
     observer.observe(container)
     container.querySelectorAll(selector).forEach((item) => observer.observe(item))
-    return () => observer.disconnect()
+
+    // 列表新增/删除条目时也要重新定位。只观察首次挂载时的子项不够：
+    // 新上传的文档刚插入、active 又没变时，胶囊会停在旧位置或隐藏。
+    const mutations = new MutationObserver(() => {
+      const pill = pillRef.current
+      if (pill) {
+        placePill(container, pill, selector, false)
+      }
+    })
+    mutations.observe(container, { childList: true, subtree: true })
+
+    return () => {
+      observer.disconnect()
+      mutations.disconnect()
+    }
   }, [containerRef, selector])
 
   return <span ref={pillRef} aria-hidden="true" className={cn('sliding-pill', className)} hidden />
