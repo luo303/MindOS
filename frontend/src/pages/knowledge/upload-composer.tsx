@@ -2,7 +2,6 @@ import { FileText, Loader2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 
 import { formatBytes, splitTags } from './format'
@@ -61,12 +60,7 @@ export function UploadComposer({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <h2 className="text-base font-semibold">导入文件</h2>
-      </CardHeader>
-      <CardContent>
-        <form className="space-y-3" onSubmit={submit}>
+    <form className="space-y-3" onSubmit={submit}>
           <div className="border-border flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
             {file ? (
               <div className="flex min-w-0 items-center gap-2">
@@ -112,8 +106,6 @@ export function UploadComposer({
               {saving ? '导入中' : '开始导入'}
             </Button>
           </div>
-        </form>
-      </CardContent>
-    </Card>
+    </form>
   )
 }

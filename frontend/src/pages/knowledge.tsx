@@ -396,23 +396,6 @@ export function KnowledgePage() {
         ) : null}
         <div className="h-full overflow-y-auto">
         <div className="mx-auto max-w-4xl p-4 sm:p-6">
-          {uploadOpen ? (
-            <UploadComposer
-              file={pendingFile}
-              saving={uploadMutation.isPending}
-              onChooseFile={() => fileInputRef.current?.click()}
-              onCancel={() => {
-                setUploadOpen(false)
-                setPendingFile(null)
-              }}
-              onSubmit={(draft) => {
-                if (pendingFile) {
-                  uploadMutation.mutate({ ...draft, file: pendingFile })
-                }
-              }}
-            />
-          ) : null}
-
           {activeId !== null ? (
             <section aria-label="文档详情">
               {detailQuery.isPending ? (
@@ -452,6 +435,30 @@ export function KnowledgePage() {
         </div>
         </div>
       </main>
+
+      <Drawer
+        open={uploadOpen}
+        title="导入文件"
+        onClose={() => {
+          setUploadOpen(false)
+          setPendingFile(null)
+        }}
+      >
+        <UploadComposer
+          file={pendingFile}
+          saving={uploadMutation.isPending}
+          onChooseFile={() => fileInputRef.current?.click()}
+          onCancel={() => {
+            setUploadOpen(false)
+            setPendingFile(null)
+          }}
+          onSubmit={(draft) => {
+            if (pendingFile) {
+              uploadMutation.mutate({ ...draft, file: pendingFile })
+            }
+          }}
+        />
+      </Drawer>
 
       <Drawer open={composerOpen} title="新建笔记" onClose={() => setComposerOpen(false)}>
         <NoteComposer
