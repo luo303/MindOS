@@ -789,7 +789,7 @@ function ChatComposer({ onSubmit, pending, disabled }: ChatComposerProps) {
             send()
           }
         }}
-        className="placeholder:text-muted-foreground max-h-40 min-h-10 resize-none overflow-y-auto border-0 bg-transparent px-1 py-2 text-sm leading-6 shadow-none outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50"
+        className="placeholder:text-muted-foreground max-h-40 min-h-10 resize-none overflow-y-auto border-0 bg-transparent px-1 py-2 text-sm leading-6 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50"
       />
 
       <div className="flex items-center justify-between">
