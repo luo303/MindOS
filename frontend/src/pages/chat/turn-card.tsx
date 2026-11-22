@@ -25,7 +25,7 @@ export function TurnCard({ turn, onStop }: Props) {
 
   return (
     <article className="glass-surface space-y-4 p-4 sm:p-5">
-      <h2 className="ml-auto w-fit max-w-[90%] rounded-xl bg-accent px-3.5 py-2.5 text-sm leading-relaxed font-medium break-words whitespace-pre-wrap">
+      <h2 className="bg-muted ml-auto w-fit max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
         {turn.question}
       </h2>
       <div className="space-y-3 break-words">

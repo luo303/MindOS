@@ -13,6 +13,7 @@ import {
   fetchMessages,
   sendConversationMessage,
   type ChatMessage,
+  type Conversation,
 } from '@/api/conversations'
 import { ApiError, describeError } from '@/api/errors'
 import type { AskVerdict } from '@/api/types'
@@ -107,7 +108,6 @@ export function ChatPage() {
   const [selectedId, setSelectedId] = useState<number | null>(() => readStoredModelId())
   const [activeId, setActiveId] = useState<number | null>(null)
   const [turns, setTurns] = useState<Turn[]>([])
-  const [input, setInput] = useState('')
   const [pending, setPending] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
@@ -125,6 +125,10 @@ export function ChatPage() {
     mutationFn: (conversationId: number) => deleteConversation(conversationId),
     onSuccess: (_result, conversationId) => {
       queryClient.removeQueries({ queryKey: conversationKeys.messages(conversationId) })
+      // 先把它从列表缓存里移除，避免 activeId 置空后自动选回刚删掉的会话。
+      queryClient.setQueryData<Conversation[]>(conversationKeys.all, (old) =>
+        old?.filter((conv) => conv.id !== conversationId),
+      )
       setActiveId((current) => (current === conversationId ? null : current))
       setTurns((current) => (activeId === conversationId ? [] : current))
       setDeleteTarget(null)
@@ -167,6 +171,8 @@ export function ChatPage() {
     enabled: activeId !== null,
     staleTime: 5_000,
   })
+  // 当前会话还是空白时不允许再建新会话，避免列表里堆一串空对话。
+  const activeIsEmpty = activeId !== null && messagesQuery.isSuccess && (messagesQuery.data?.length ?? 0) === 0
 
   // 审批是会话历史的一部分：按 user_message_id 挂回对应轮次。
   const approvalsQuery = useQuery({
@@ -299,7 +305,7 @@ export function ChatPage() {
   }
 
   const createNewConversation = async () => {
-    if (creatingRef.current) {
+    if (creatingRef.current || activeIsEmpty) {
       return
     }
     creatingRef.current = true
@@ -323,6 +329,8 @@ export function ChatPage() {
     if (conversationId === null) {
       return
     }
+    // 本地已经有一个正在生成的轮次；后续 messages 刷新不要用旧缓存覆盖它。
+    syncedConversationRef.current = conversationId
     const id = newId()
     setTurns((prev) => [
       ...prev,
@@ -398,12 +406,11 @@ export function ChatPage() {
     }
   }
 
-  const submit = () => {
-    const question = input.trim()
+  const submit = (raw: string) => {
+    const question = raw.trim()
     if (question === '' || pending || activeId === null) {
       return
     }
-    setInput('')
     void run(question)
   }
 
@@ -412,6 +419,13 @@ export function ChatPage() {
   const noModel = modelsQuery.isSuccess && models.length === 0
   const conversations = conversationsQuery.data ?? []
   const activeConversation = conversations.find((conv) => conv.id === activeId) ?? null
+  const showEmpty =
+    activeId !== null &&
+    messagesQuery.isSuccess &&
+    turns.length === 0 &&
+    !createError &&
+    !messagesQuery.isError &&
+    !pendingApproval
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden">
@@ -436,7 +450,7 @@ export function ChatPage() {
             className="w-full justify-start"
             size="sm"
             onClick={() => void createNewConversation()}
-            disabled={pending || models.length === 0}
+            disabled={pending || models.length === 0 || activeIsEmpty}
           >
             <Plus aria-hidden="true" />
             新对话
@@ -511,122 +525,102 @@ export function ChatPage() {
           <ModelSelect models={models} value={selectedId} onChange={chooseModel} disabled={pending} />
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto" aria-label="会话消息">
-          <div className="mx-auto w-full max-w-3xl px-4 py-6">
-            {createError ? <ErrorState title="新建会话失败" description={createError} /> : null}
-            {deleteMutation.error ? (
-              <ErrorState title="删除会话失败" description={describeError(deleteMutation.error)} />
-            ) : null}
-            {modelsQuery.isPending ? (
-              <div role="status" className="py-8">
-                <span className="sr-only">正在加载对话模型</span>
-                <Skeleton className="mx-auto h-5 w-40" />
-              </div>
-            ) : modelsQuery.isError ? (
-              <ErrorState
-                title="读取对话模型失败"
-                description={describeError(modelsQuery.error)}
-                onRetry={() => void modelsQuery.refetch()}
-                retrying={modelsQuery.isFetching}
-              />
-            ) : noModel ? (
-              <div className="glass-surface flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <p className="text-sm">未配置对话模型</p>
-                <Link to="/settings" className="text-primary text-sm font-medium underline underline-offset-4">
-                  去设置
-                </Link>
-              </div>
-            ) : null}
-
-            {activeId !== null && messagesQuery.isError ? (
-              <ErrorState
-                title="读取消息失败"
-                description={describeError(messagesQuery.error)}
-                onRetry={() => void messagesQuery.refetch()}
-                retrying={messagesQuery.isFetching}
-              />
-            ) : null}
-
-            {messagesQuery.isPending && activeId !== null ? (
-              <div role="status" className="glass-surface py-8">
-                <span className="sr-only">正在加载会话</span>
-                <Skeleton className="mx-auto h-5 w-32" />
-              </div>
-            ) : turns.length === 0 && !createError ? (
-              <div className="flex flex-col items-center justify-center px-4 py-24 text-center">
-                <div className="bg-muted mb-4 flex size-12 items-center justify-center rounded-full">
-                  <MessageSquare className="size-6" aria-hidden="true" />
+        <div
+          className={
+            showEmpty
+              ? 'flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-16'
+              : 'flex min-h-0 flex-1 flex-col'
+          }
+        >
+          {showEmpty ? (
+            <div className="mb-8 w-full max-w-2xl text-center">
+              <img src="/favicon.svg" alt="" className="mx-auto mb-4 size-12" />
+              <h1 className="text-3xl font-semibold tracking-tight">今天想聊什么？</h1>
+              {noModel ? (
+                <div className="glass-surface mt-4 flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-left">
+                  <p className="text-sm">未配置对话模型</p>
+                  <Link to="/settings" className="text-primary text-sm font-medium underline underline-offset-4">
+                    去设置
+                  </Link>
                 </div>
-                <h2 className="text-lg font-semibold">开始新的对话</h2>
-                <p className="text-muted-foreground mt-2 max-w-sm text-sm">
-                  问知识库里的内容，或者让 AI 结合资料创建待办。审批会显示在下方输入区。
-                </p>
-              </div>
-            ) : null}
-
-            <div className="space-y-5">
-              {turns.map((turn) => (
-                <TurnCard key={turn.id} turn={turn} onStop={stop} />
-              ))}
+              ) : null}
             </div>
-            <div ref={endRef} />
-          </div>
-        </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto" aria-label="会话消息">
+              <div className="mx-auto w-full max-w-3xl px-4 py-6">
+                {createError ? <ErrorState title="新建会话失败" description={createError} /> : null}
+                {deleteMutation.error ? (
+                  <ErrorState title="删除会话失败" description={describeError(deleteMutation.error)} />
+                ) : null}
+                {modelsQuery.isPending ? (
+                  <div role="status" className="py-8">
+                    <span className="sr-only">正在加载对话模型</span>
+                    <Skeleton className="mx-auto h-5 w-40" />
+                  </div>
+                ) : modelsQuery.isError ? (
+                  <ErrorState
+                    title="读取对话模型失败"
+                    description={describeError(modelsQuery.error)}
+                    onRetry={() => void modelsQuery.refetch()}
+                    retrying={modelsQuery.isFetching}
+                  />
+                ) : noModel ? (
+                  <div className="glass-surface flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                    <p className="text-sm">未配置对话模型</p>
+                    <Link to="/settings" className="text-primary text-sm font-medium underline underline-offset-4">
+                      去设置
+                    </Link>
+                  </div>
+                ) : null}
 
-        <div className="bg-background/95 shrink-0 border-t">
-          <div className="mx-auto w-full max-w-3xl p-3">
-            {pendingApproval ? (
-              <ApprovalPanel
-                approval={pendingApproval}
-                deciding={decidingId === pendingApproval.id}
-                error={decisionError}
-                onDecision={decide}
-              />
-            ) : (
-              <form
-                aria-label="发送消息"
-                className="glass-surface space-y-2 p-2.5"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  submit()
-                }}
-              >
-                <Textarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                      event.preventDefault()
-                      submit()
-                    }
-                  }}
-                  placeholder="输入问题…"
-                  rows={3}
-                  className="min-h-16 border-transparent bg-transparent shadow-none"
-                  maxLength={500}
-                  disabled={pending || models.length === 0 || activeId === null}
-                  aria-label="输入问题"
-                  aria-keyshortcuts="Meta+Enter Control+Enter"
-                />
-                <div className="flex flex-wrap items-center gap-2 px-1">
-                  {input.length >= 450 ? (
-                    <p className="text-muted-foreground text-xs tabular-nums">{input.length}/500</p>
-                  ) : null}
-                  <Button
-                    type="submit"
-                    className="ml-auto"
-                    disabled={pending || input.trim() === '' || models.length === 0 || activeId === null}
-                  >
-                    {pending ? (
-                      <Loader2 className="animate-spin" aria-hidden="true" />
-                    ) : (
-                      <SendHorizontal aria-hidden="true" />
-                    )}
-                    {pending ? '生成中' : '发送'}
-                  </Button>
+                {activeId !== null && messagesQuery.isError ? (
+                  <ErrorState
+                    title="读取消息失败"
+                    description={describeError(messagesQuery.error)}
+                    onRetry={() => void messagesQuery.refetch()}
+                    retrying={messagesQuery.isFetching}
+                  />
+                ) : null}
+
+                {messagesQuery.isPending && activeId !== null ? (
+                  <div role="status" className="glass-surface py-8">
+                    <span className="sr-only">正在加载会话</span>
+                    <Skeleton className="mx-auto h-5 w-32" />
+                  </div>
+                ) : null}
+
+                <div className="space-y-8">
+                  {turns.map((turn) => (
+                    <TurnCard key={turn.id} turn={turn} onStop={stop} />
+                  ))}
                 </div>
-              </form>
-            )}
+                <div ref={endRef} />
+              </div>
+            </div>
+          )}
+
+          <div className={showEmpty ? 'w-full max-w-2xl' : 'shrink-0 px-3 pb-3'}>
+            <div className="mx-auto w-full max-w-3xl">
+              {pendingApproval ? (
+                <ApprovalPanel
+                  approval={pendingApproval}
+                  deciding={decidingId === pendingApproval.id}
+                  error={decisionError}
+                  onDecision={decide}
+                />
+              ) : (
+                <ChatComposer
+                  onSubmit={submit}
+                  pending={pending}
+                  disabled={
+                    pending ||
+                    models.length === 0 ||
+                    activeId === null ||
+                    messagesQuery.isPending
+                  }
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -688,6 +682,66 @@ export function ChatPage() {
         </div>
       ) : null}
     </div>
+  )
+}
+
+type ChatComposerProps = {
+  onSubmit: (value: string) => void
+  pending: boolean
+  disabled: boolean
+}
+
+/** 一行起步、最多约 6 行；超过后 textarea 内部滚动。 */
+function ChatComposer({ onSubmit, pending, disabled }: ChatComposerProps) {
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+
+  const send = () => {
+    const value = ref.current?.value ?? ''
+    if (value.trim() === '') {
+      return
+    }
+    onSubmit(value)
+    if (ref.current) {
+      ref.current.value = ''
+    }
+  }
+
+  return (
+    <form
+      aria-label="发送消息"
+      className="glass-surface flex items-end gap-2 rounded-2xl border p-2"
+      onSubmit={(event) => {
+        event.preventDefault()
+        send()
+      }}
+    >
+      <Textarea
+        ref={ref}
+        placeholder="输入问题…"
+        rows={1}
+        maxLength={500}
+        disabled={disabled}
+        aria-label="输入问题"
+        aria-keyshortcuts="Meta+Enter Control+Enter"
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+            event.preventDefault()
+            send()
+          }
+        }}
+        className="placeholder:text-muted-foreground max-h-40 min-h-10 resize-none overflow-y-auto border-0 bg-transparent px-2 py-2 text-sm leading-6 shadow-none outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50"
+      />
+      <Button
+        type="button"
+        size="icon"
+        className="shrink-0 rounded-xl"
+        disabled={disabled || pending}
+        aria-label={pending ? '生成中' : '发送'}
+        onClick={send}
+      >
+        {pending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <SendHorizontal aria-hidden="true" />}
+      </Button>
+    </form>
   )
 }
 
