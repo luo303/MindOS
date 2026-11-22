@@ -37,6 +37,7 @@ export function DocumentList({
         <SlidingPill
           containerRef={listRef}
           active={activeId}
+          revision={items.map((item) => item.id).join(',')}
           selector={'[aria-current="true"]'}
           className="conversation-pill"
         />

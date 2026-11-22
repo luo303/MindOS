@@ -10,6 +10,8 @@ type Props = {
   /** 当前项选择器，默认 aria-current="page"。 */
   selector?: string
   className?: string
+  /** 列表内容变化时传一个新值，强制重新测量（新增/删除项时 active 可能不变）。 */
+  revision?: string | number
 }
 
 /**
@@ -18,7 +20,7 @@ type Props = {
  * - 移动中沿水平方向拉长，到位后回弹；
  * - 边缘用 inset 高光，和顶部导航保持同一套质感。
  */
-export function SlidingPill({ containerRef, active, selector = '[aria-current="page"]', className }: Props) {
+export function SlidingPill({ containerRef, active, selector = '[aria-current="page"]', className, revision }: Props) {
   const pillRef = useRef<HTMLSpanElement | null>(null)
 
   useLayoutEffect(() => {
@@ -26,8 +28,15 @@ export function SlidingPill({ containerRef, active, selector = '[aria-current="p
     const pill = pillRef.current
     if (container && pill) {
       placePill(container, pill, selector, true)
+      // 新条目可能在本帧稍后才完成布局；下一帧再测一次兜底。
+      if (typeof window.requestAnimationFrame === 'function') {
+        const frame = window.requestAnimationFrame(() => {
+          placePill(container, pill, selector, false)
+        })
+        return () => window.cancelAnimationFrame(frame)
+      }
     }
-  }, [active, containerRef, selector])
+  }, [active, containerRef, selector, revision])
 
   // 首次挂载时子组件的 layout effect 可能早于父级 ref 就绪；补一次无动画定位。
   useEffect(() => {
@@ -36,7 +45,7 @@ export function SlidingPill({ containerRef, active, selector = '[aria-current="p
     if (container && pill && container.dataset.pill !== 'ready') {
       placePill(container, pill, selector, false)
     }
-  }, [active, containerRef, selector])
+  }, [active, containerRef, selector, revision])
 
   useLayoutEffect(() => {
     const container = containerRef.current
@@ -66,7 +75,7 @@ export function SlidingPill({ containerRef, active, selector = '[aria-current="p
       observer.disconnect()
       mutations.disconnect()
     }
-  }, [containerRef, selector])
+  }, [containerRef, selector, revision])
 
   return <span ref={pillRef} aria-hidden="true" className={cn('sliding-pill', className)} hidden />
 }
