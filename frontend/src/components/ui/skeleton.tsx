@@ -7,7 +7,7 @@ export function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>
     <div
       data-slot="skeleton"
       aria-hidden="true"
-      className={cn('bg-muted animate-pulse rounded-md', className)}
+      className={cn('skeleton-breathe bg-muted rounded-md', className)}
       {...props}
     />
   )

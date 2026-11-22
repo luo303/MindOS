@@ -129,3 +129,30 @@
     @apply outline-ring outline-2 outline-offset-2;
   }
 }
+
+
+/* 生成前的骨架呼吸：比 Tailwind 默认 pulse 更明显的明暗与轻微缩放。 */
+@keyframes skeleton-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scaleX(0.985);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scaleX(1);
+  }
+}
+
+.skeleton-breathe {
+  animation: skeleton-breathe 1.7s ease-in-out infinite;
+  transform-origin: left center;
+  will-change: opacity, transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-breathe {
+    animation: none;
+    opacity: 0.55;
+  }
+}
