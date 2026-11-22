@@ -16,14 +16,13 @@ export function AuthShell({
   footer: ReactNode
 }) {
   return (
-    <main className="flex min-h-full items-center justify-center px-6 py-10">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center gap-2">
-          <img src="/favicon.svg" alt="" className="size-6 rounded-md" />
-          <span className="font-semibold tracking-tight">MindOS</span>
+    <main className="workspace-canvas flex min-h-full items-center justify-center px-4 py-8 sm:px-6">
+      <div className="glass-surface w-full max-w-[26rem] px-6 py-7 sm:px-9 sm:py-9">
+        <div className="brand-wordmark mb-7">
+          <img src="/favicon.svg" alt="" className="size-9" />
+          MindOS
         </div>
-
-        <h1 className="border-b pb-4 text-[1.75rem] font-semibold tracking-tight">{title}</h1>
+        <h1 className="text-[1.9rem] font-semibold tracking-tight">{title}</h1>
 
         <div className="mt-6">{children}</div>
         <div className="text-muted-foreground mt-6 text-sm">{footer}</div>

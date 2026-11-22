@@ -11,7 +11,9 @@ export function ModulePlaceholder({ moduleKey }: { moduleKey: ModuleKey }) {
   return (
     <div className="mx-auto w-full max-w-5xl">
       <PageHeader title={item.label} />
-      <EmptyState title="尚未接入" />
+      <div className="glass-surface mt-4">
+        <EmptyState title="尚未接入" />
+      </div>
     </div>
   )
 }

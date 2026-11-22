@@ -468,7 +468,7 @@ export function ChatPage() {
       ) : modelsQuery.isError ? (
         <ErrorState title="读取对话模型失败" description={describeError(modelsQuery.error)} onRetry={() => void modelsQuery.refetch()} retrying={modelsQuery.isFetching} />
       ) : noModel ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-muted px-4 py-3">
+        <div className="glass-surface flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <p className="text-sm">未配置对话模型</p>
           <Link to="/settings" className="text-primary text-sm font-medium underline underline-offset-4">
             去设置
@@ -487,7 +487,7 @@ export function ChatPage() {
           <ErrorState title="读取消息失败" description={describeError(messagesQuery.error)} onRetry={() => void messagesQuery.refetch()} retrying={messagesQuery.isFetching} />
         ) : turns.length === 0 && models.length > 0 && !createError ? (
           activeId === null || messagesQuery.isPending ? (
-            <div role="status" className="py-8">
+            <div role="status" className="glass-surface py-8">
               <span className="sr-only">正在加载会话</span>
               <Skeleton className="mx-auto h-5 w-32" />
             </div>
@@ -509,7 +509,7 @@ export function ChatPage() {
       ) : (
       <form
         aria-label="发送消息"
-        className="space-y-2 rounded-xl border border-input bg-card p-2"
+        className="glass-surface space-y-2 p-2.5"
         onSubmit={(event) => {
           event.preventDefault()
           submit()

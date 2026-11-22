@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -105,15 +105,24 @@ describe('登录、注册与路由守卫', () => {
     fetchMock.mockResolvedValue(jsonResponse(envelope({ logged_out: true })))
 
     renderApp('/')
+    await user.click(screen.getByLabelText('账号'))
     await user.click(screen.getByRole('button', { name: '退出登录' }))
 
     expect(await screen.findByRole('heading', { name: '登录' })).toBeInTheDocument()
   })
 
-  it('侧栏显示当前账号', () => {
+  it('账号可展开查看邮箱并用 Escape 关闭', async () => {
+    const user = userEvent.setup()
     renderApp('/')
 
-    expect(screen.getByText('Alice')).toBeInTheDocument()
-    expect(screen.getByText('alice@example.com')).toBeInTheDocument()
+    const trigger = screen.getByLabelText('账号')
+    const details = trigger.closest('details')!
+    expect(details).not.toHaveAttribute('open')
+    await user.click(trigger)
+    expect(details).toHaveAttribute('open')
+    expect(within(details).getByText('alice@example.com')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(details).not.toHaveAttribute('open')
+    expect(trigger).toHaveFocus()
   })
 })

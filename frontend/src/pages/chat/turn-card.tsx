@@ -24,7 +24,7 @@ export function TurnCard({ turn, onStop }: Props) {
   const streaming = turn.phase === 'streaming'
 
   return (
-    <article className="space-y-4 border-b pb-5">
+    <article className="glass-surface space-y-4 p-4 sm:p-5">
       <h2 className="ml-auto w-fit max-w-[90%] rounded-xl bg-accent px-3.5 py-2.5 text-sm leading-relaxed font-medium break-words whitespace-pre-wrap">
         {turn.question}
       </h2>

@@ -355,7 +355,7 @@ export function KnowledgePage() {
         />
       ) : null}
 
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="glass-surface flex flex-wrap items-end justify-between gap-3 px-4 py-3">
         <FilterBar filters={filters} onChange={changeFilters} />
         {settingsQuery.isSuccess && !embeddingConfigured ? (
           <Link to="/settings" className="text-muted-foreground hover:text-primary py-1.5 text-xs underline-offset-4 hover:underline">
@@ -364,8 +364,8 @@ export function KnowledgePage() {
         ) : null}
       </div>
 
-      <div className="grid gap-4 border-t lg:grid-cols-[minmax(0,17rem)_minmax(0,1fr)] lg:gap-0">
-        <section ref={listRef} tabIndex={-1} aria-label="文档列表" className="min-w-0 pt-2 lg:pr-4">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
+        <section ref={listRef} tabIndex={-1} aria-label="文档列表" className="glass-surface min-w-0 p-2 sm:p-3">
           {listQuery.isPending ? (
             <ListSkeleton />
           ) : listQuery.error ? (
@@ -389,7 +389,7 @@ export function KnowledgePage() {
           )}
         </section>
 
-        <section ref={detailRef} tabIndex={-1} aria-label="文档详情" hidden={activeId === null} className="min-w-0 border-t pt-4 lg:border-t-0 lg:border-l lg:pt-4 lg:pl-7">
+        <section ref={detailRef} tabIndex={-1} aria-label="文档详情" hidden={activeId === null} className="glass-surface min-w-0 p-4 sm:p-6">
           {activeId !== null ? (
             <Button variant="link" size="sm" className="mb-2 px-0 lg:hidden" onClick={() => listRef.current?.focus()}>
               返回文档列表

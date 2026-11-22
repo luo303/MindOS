@@ -17,16 +17,13 @@ export function ApprovalPanel({ approval, deciding, error, onDecision }: Props) 
   return (
     <section
       aria-label="待审批操作"
-      className="border-primary/30 bg-primary/5 space-y-3 rounded-xl border p-3"
+      className="glass-surface border-primary/30 space-y-3 p-4"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Badge>待审批</Badge>
         <p className="text-sm font-medium">{approval.summary}</p>
       </div>
-      <p className="text-muted-foreground text-xs">
-        AI 写操作 · {approval.tool_name} · 批准后模型会从断点继续
-      </p>
-
+      <p className="text-muted-foreground text-xs">{approval.tool_name}</p>
       {typeof approval.arguments.title === 'string' ? (
         <p className="text-sm">标题：{approval.arguments.title}</p>
       ) : null}

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ListChecks, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Check, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
@@ -80,10 +80,7 @@ function toISO(local: string): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
-function formatDue(iso?: string | null): string {
-  if (!iso) {
-    return '无截止时间'
-  }
+function formatDue(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -184,13 +181,9 @@ export function TasksPage() {
         }
       />
 
-      <p className="text-muted-foreground text-sm">
-        手动记录待办；也可以让 AI 结合知识库创建，经你审批后落库。
-      </p>
-
       {formOpen ? (
         <Card>
-          <CardContent className="space-y-3 pt-5">
+          <CardContent className="space-y-3">
             <Input
               aria-label="待办标题"
               placeholder="要做什么？"
@@ -269,15 +262,15 @@ export function TasksPage() {
           retrying={listQuery.isFetching}
         />
       ) : items.length === 0 ? (
-        <div className="rounded-lg border border-dashed">
-          <EmptyState title="还没有待办" />
+        <div className="glass-surface">
+          <EmptyState title={status ? '没有符合条件的待办' : '还没有待办'} />
         </div>
       ) : (
         <ul className="space-y-2">
           {items.map((todo) => (
             <li key={todo.id}>
-              <Card>
-                <CardContent className="flex items-start gap-3 py-4">
+              <Card className="py-0">
+                <CardContent className="flex flex-wrap items-start gap-3 px-4 py-3 sm:px-5">
                   <button
                     type="button"
                     aria-label={todo.status === 'done' ? '标记为未完成' : '标记为完成'}
@@ -297,7 +290,7 @@ export function TasksPage() {
                     {todo.status === 'done' ? <Check className="size-3" aria-hidden="true" /> : null}
                   </button>
 
-                  <div className="min-w-0 flex-1 space-y-1">
+                  <div className="min-w-0 flex-1 basis-36 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span
                         className={
@@ -315,10 +308,10 @@ export function TasksPage() {
                     {todo.description ? (
                       <p className="text-muted-foreground text-xs whitespace-pre-wrap">{todo.description}</p>
                     ) : null}
-                    <p className="text-muted-foreground text-xs">截止：{formatDue(todo.due_at)}</p>
+                    {todo.due_at ? <p className="text-muted-foreground text-xs">截止：{formatDue(todo.due_at)}</p> : null}
                   </div>
 
-                  <div className="flex shrink-0 gap-1">
+                  <div className="ml-auto flex shrink-0 gap-1">
                     <Button
                       variant="ghost"
                       size="icon"
@@ -359,12 +352,6 @@ export function TasksPage() {
         </ul>
       )}
 
-      {items.length > 0 ? (
-        <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
-          <ListChecks className="size-3.5" aria-hidden="true" />
-          共 {items.length} 条
-        </p>
-      ) : null}
     </div>
   )
 }

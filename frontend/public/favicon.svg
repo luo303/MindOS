@@ -1,4 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MindOS">
-  <rect width="64" height="64" rx="16" fill="#1f2430" />
-  <path d="M20 46V18h6l6 12 6-12h6v28h-6V30l-6 11-6-11v16z" fill="#f4f6fb" />
+  <defs>
+    <linearGradient id="glass" x2="1" y2="1"><stop stop-color="#2d7889"/><stop offset="1" stop-color="#122e46"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="17" fill="url(#glass)" stroke="#b0d5e0" />
+  <path d="M15 42V23c0-2 2.5-2.75 3.8-1.25L32 37l13.2-15.25C46.5 20.25 49 21 49 23v19" fill="none" stroke="#eaf9ff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="49" cy="23" r="2.5" fill="#ffca7e"/>
 </svg>

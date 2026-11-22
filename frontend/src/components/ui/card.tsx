@@ -1,17 +1,40 @@
-import type { HTMLAttributes } from 'react'
+import type { HTMLAttributes, PointerEvent } from 'react'
 
 import { cn } from '@/lib/utils'
 
-export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+type CardProps = HTMLAttributes<HTMLDivElement> & { interactive?: boolean }
+
+function followPointer(event: PointerEvent<HTMLDivElement>): void {
+  if (event.pointerType !== 'mouse' || !window.matchMedia('(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)').matches) return
+  const card = event.currentTarget
+  const rect = card.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+  const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+  const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
+  card.style.setProperty('--glass-x', `${x * 100}%`)
+  card.style.setProperty('--glass-y', `${y * 100}%`)
+  card.style.setProperty('--glass-rx', `${(0.5 - y) * 5}deg`)
+  card.style.setProperty('--glass-ry', `${(x - 0.5) * 5}deg`)
+  card.dataset.lit = ''
+}
+
+export function Card({ className, interactive = false, children, ...props }: CardProps) {
+  const surface = (
+    <div data-slot="card" className={cn('glass-surface text-card-foreground flex min-w-0 flex-col gap-4 py-5', className)} {...props}>
+      {children}
+    </div>
+  )
+  if (!interactive) return surface
+
   return (
     <div
-      data-slot="card"
-      className={cn(
-        'bg-card text-card-foreground flex flex-col gap-4 rounded-lg border py-5',
-        className,
-      )}
-      {...props}
-    />
+      className="glass-card"
+      onPointerMove={followPointer}
+      onPointerLeave={(event) => { delete event.currentTarget.dataset.lit }}
+      onPointerCancel={(event) => { delete event.currentTarget.dataset.lit }}
+    >
+      {surface}
+    </div>
   )
 }
 

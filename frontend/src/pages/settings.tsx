@@ -71,41 +71,41 @@ export function SettingsPage() {
         }
       />
 
-      {statusQuery.isPending ? (
-        <LoadingCard title="系统状态" />
-      ) : statusQuery.error ? (
-        <ErrorState
-          title="读取系统状态失败"
-          description={describeError(statusQuery.error)}
-          onRetry={retry}
-          retrying={retrying}
-        />
-      ) : (
-        <SystemStatusCard status={statusQuery.data} />
-      )}
-
-      {settingsQuery.isPending ? (
-        <LoadingCard title="运行配置" />
-      ) : settingsQuery.error ? (
-        <ErrorState
-          title="读取配置失败"
-          description={describeError(settingsQuery.error)}
-          onRetry={retry}
-          retrying={retrying}
-        />
-      ) : (
-        <SettingsCard settings={settingsQuery.data} />
-      )}
-
       <ChatModelsCard />
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+        {statusQuery.isPending ? (
+          <LoadingCard title="系统状态" />
+        ) : statusQuery.error ? (
+          <ErrorState
+            title="读取系统状态失败"
+            description={describeError(statusQuery.error)}
+            onRetry={retry}
+            retrying={retrying}
+          />
+        ) : (
+          <SystemStatusCard status={statusQuery.data} />
+        )}
 
+        {settingsQuery.isPending ? (
+          <LoadingCard title="运行配置" />
+        ) : settingsQuery.error ? (
+          <ErrorState
+            title="读取配置失败"
+            description={describeError(settingsQuery.error)}
+            onRetry={retry}
+            retrying={retrying}
+          />
+        ) : (
+          <SettingsCard settings={settingsQuery.data} />
+        )}
+      </div>
     </div>
   )
 }
 
 function SystemStatusCard({ status }: { status: SystemStatus }) {
   return (
-    <section aria-labelledby="system-status-heading" className="space-y-3">
+    <section aria-labelledby="system-status-heading" className="glass-surface min-w-0 space-y-3 p-4 sm:p-6">
       <header className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="system-status-heading" className="font-semibold">系统状态</h2>
         <p className="text-muted-foreground text-xs">版本 {status.version}</p>
@@ -149,7 +149,7 @@ function SettingsCard({ settings }: { settings: SettingsView }) {
   const probe = useMutation({ mutationFn: testEmbedding })
 
   return (
-    <section aria-labelledby="runtime-settings-heading" className="space-y-4 border-t pt-5">
+    <section aria-labelledby="runtime-settings-heading" className="glass-surface min-w-0 space-y-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="runtime-settings-heading" className="font-semibold">运行配置</h2>
         <p className="text-muted-foreground text-xs">只读 · backend/.env</p>
@@ -230,7 +230,7 @@ function StatusRow({ label, detail, pill }: { label: string; detail?: string; pi
 
 function LoadingCard({ title }: { title: string }) {
   return (
-    <section aria-label={title} aria-busy="true" className="space-y-3 border-b pb-4">
+    <section aria-label={title} aria-busy="true" className="glass-surface space-y-3 p-4 sm:p-6">
       <h2 className="font-semibold">{title}</h2>
       <p className="sr-only">正在加载</p>
       <div className="space-y-3">

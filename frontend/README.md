@@ -73,7 +73,8 @@ npm run build        # tsc --noEmit && vite build，产物在 dist/
 - 导航项的路径、名称和图标集中在 `src/app/modules.ts`，工作台也复用这份入口定义。
 - 页面标题只放名称和操作；用列表、分隔线与原生表单表达层级。空态只说当前状态，诊断信息按需展开，失败原因留在操作附近。
 - 新增页面：`modules.ts` 加一条 → `src/pages/` 建组件 → `router.tsx` 挂到 `AppShell` 的 children → 在 `app.test.tsx` 里补一条可见性用例。
-- 窄屏导航收进抽屉（`< md`），主内容区不被侧边栏挤压。
+- 桌面导航位于顶栏，窄屏（`< md`）占独立一行；当前项仍由路由的 `aria-current` 决定，胶囊只是视觉层。
+- 磨砂面板共用 `workspace.css` 的 `.glass-surface`。仅对快捷入口等短卡片启用 `Card interactive`；表单和正文保持静止。触屏和开启「减少动态效果」时不跟随光标倾斜。
 - 知识页是第一个真实业务页：上传走 `FormData`（客户端只在 `apiRequest` 一处判断，不手写 `Content-Type`），分块偏移是**码点**而不是 UTF-16 下标；需要高亮原文时用 `Array.from(text).slice(start, end)`，不要用 `String.slice`。
 - 问答页（`/chat`）的 SSE **不用 EventSource**：它只支持 GET、带不了 JSON body，而 `POST /ask` 的提问在 body 里。所以 `src/api/ask.ts` 用 fetch + ReadableStream 手写解析——按空行切事件、先去掉 `\r`（有的代理会改写换行）、坏事件跳过、流结束时把缓冲里最后一条也分发。这是对"原生 EventSource"直觉的一处有意偏离，理由就写在这里与 `ask.ts` 头部注释。
 - 问答页正文里的 `[n]` 引用只在 citation 事件到达后才渲染成链接（`/knowledge?doc=&chunk=` 深链）：裁决之前没有任何引用是可信的，编号越界的回答会被整段撤回。
@@ -90,6 +91,7 @@ npx vitest run src/pages/test/settings.test.tsx   # 单个文件
 - `src/test/fixtures.ts` 提供信封、状态与配置的固定数据，避免每个用例手写一大坨 JSON。
 - 请求用 `vi.stubGlobal('fetch', ...)` 替换，不启真实后端；`afterEach` 里 `vi.unstubAllGlobals()`。
 - 覆盖重点：成功解析、六类失败分支、加载态、空态、重试后恢复。
+- `src/app/test/workspace-motion.test.tsx` 离线验证胶囊关键帧、按路由定位及卡片指针交互。视觉验收用现有浏览器打开开发服务器（`localhost:5173`），登录后检查桌面和手机宽度、快速切换与后退导航、卡片四角悬停和移出；用浏览器开发者工具模拟 `prefers-reduced-motion: reduce` 后再检查一次。
 
 ## 当前限制
 

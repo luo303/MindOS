@@ -128,7 +128,7 @@ export function ChatModelsCard() {
   const formError = createMutation.error ?? updateMutation.error
 
   return (
-    <section aria-labelledby="chat-models-heading" className="space-y-4 border-t pt-5">
+    <section aria-labelledby="chat-models-heading" className="glass-surface space-y-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-center justify-between gap-2">
         <h2 id="chat-models-heading" className="font-semibold">对话模型</h2>
         {!editing ? (
