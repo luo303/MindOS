@@ -723,6 +723,16 @@ function ChatComposer({ onSubmit, pending, disabled }: ChatComposerProps) {
         disabled={disabled}
         aria-label="输入问题"
         aria-keyshortcuts="Meta+Enter Control+Enter"
+        onInput={(event) => {
+          // 兼容不支持 field-sizing:content 的浏览器；jsdom 的 scrollHeight=0 时跳过。
+          const el = event.currentTarget
+          if (el.scrollHeight === 0) {
+            return
+          }
+          el.style.height = 'auto'
+          el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+          el.style.overflowY = el.scrollHeight > 160 ? 'auto' : 'hidden'
+        }}
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
             event.preventDefault()
