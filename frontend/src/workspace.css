@@ -89,6 +89,13 @@
     scrollbar-gutter: stable;
   }
 
+  /* 对话页自己管理滚动：会话列表 + 固定底部输入框，整页不再滚动。 */
+  .workspace-main-chat {
+    min-height: 0;
+    overflow: hidden;
+    padding: 0;
+  }
+
   .account-menu { position: relative; justify-self: end; }
   .account-trigger {
     display: flex;

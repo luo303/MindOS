@@ -1,5 +1,5 @@
 import { ChevronDown, LogOut } from 'lucide-react'
-import { Link, Outlet } from 'react-router'
+import { Link, Outlet, useLocation } from 'react-router'
 
 import { useLogout, useMe } from '@/app/auth'
 import { WorkspaceNav } from '@/app/workspace-nav'
@@ -7,6 +7,9 @@ import { describeError } from '@/api/errors'
 import { Button } from '@/components/ui/button'
 
 export function AppShell() {
+  const { pathname } = useLocation()
+  const fixedChat = pathname.startsWith('/chat')
+
   return (
     <div className="workspace-canvas flex h-full min-w-0 flex-col">
       <a href="#workspace" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded-md focus:bg-background focus:p-3">
@@ -23,7 +26,11 @@ export function AppShell() {
         </div>
       </header>
 
-      <main id="workspace" tabIndex={-1} className="workspace-main">
+      <main
+        id="workspace"
+        tabIndex={-1}
+        className={fixedChat ? 'workspace-main workspace-main-chat' : 'workspace-main'}
+      >
         <Outlet />
       </main>
     </div>
