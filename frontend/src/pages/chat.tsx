@@ -117,6 +117,8 @@ export function ChatPage() {
   const [createError, setCreateError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const creatingRef = useRef(false)
+  // 用户主动点“新对话”后进入空白草稿，不要被自动选择逻辑选回旧会话。
+  const draftRef = useRef(false)
   const endRef = useRef<HTMLDivElement | null>(null)
   // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
   const syncedConversationRef = useRef<number | null>(null)
@@ -131,6 +133,10 @@ export function ChatPage() {
       )
       setActiveId((current) => (current === conversationId ? null : current))
       setTurns((current) => (activeId === conversationId ? [] : current))
+      // 删除当前会话后允许自动选下一条；如果删的是别的，不影响当前。
+      if (activeId === conversationId) {
+        draftRef.current = false
+      }
       setDeleteTarget(null)
       setContextMenu(null)
       void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
@@ -171,8 +177,6 @@ export function ChatPage() {
     enabled: activeId !== null,
     staleTime: 5_000,
   })
-  // 当前会话还是空白时不允许再建新会话，避免列表里堆一串空对话。
-  const activeIsEmpty = activeId !== null && messagesQuery.isSuccess && (messagesQuery.data?.length ?? 0) === 0
 
   // 审批是会话历史的一部分：按 user_message_id 挂回对应轮次。
   const approvalsQuery = useQuery({
@@ -253,35 +257,16 @@ export function ChatPage() {
     setSelectedId(fallback.id)
   }, [models, selectedId])
 
-  // 没有会话时自动建一个；有会话时默认选最近更新的一条。
+  // 有历史会话时默认选最近一条；没有就停在空白草稿，不发创建请求。
   useEffect(() => {
-    if (activeId !== null || !conversationsQuery.isSuccess || models.length === 0) {
+    if (activeId !== null || draftRef.current || !conversationsQuery.isSuccess || models.length === 0) {
       return
     }
     const list = conversationsQuery.data
     if (list.length > 0) {
       setActiveId(list[0].id)
-      return
     }
-    if (creatingRef.current) {
-      return
-    }
-    creatingRef.current = true
-    void (async () => {
-      try {
-        const conv = await createConversation()
-        setCreateError('')
-        setActiveId(conv.id)
-        setTurns([])
-        setSidebarOpen(false)
-        await queryClient.invalidateQueries({ queryKey: conversationKeys.all })
-      } catch (error) {
-        setCreateError(describeError(error))
-      } finally {
-        creatingRef.current = false
-      }
-    })()
-  }, [activeId, conversationsQuery.isSuccess, conversationsQuery.data, models.length, queryClient])
+  }, [activeId, conversationsQuery.isSuccess, conversationsQuery.data, models.length])
 
   // 历史加载完成后还原 turns；流式过程中不要用缓存覆盖正在生成的内容。
   useEffect(() => {
@@ -304,31 +289,44 @@ export function ChatPage() {
     }
   }
 
-  const createNewConversation = async () => {
-    if (creatingRef.current || activeIsEmpty) {
+  const startNewConversation = () => {
+    if (pending || activeId === null) {
       return
     }
-    creatingRef.current = true
+    draftRef.current = true
+    setActiveId(null)
+    setTurns([])
     setCreateError('')
-    setPending(true)
-    try {
-      const conv = await createConversation()
-      setActiveId(conv.id)
-      setTurns([])
-      await queryClient.invalidateQueries({ queryKey: conversationKeys.all })
-    } catch (error) {
-      setCreateError(describeError(error))
-    } finally {
-      setPending(false)
-      creatingRef.current = false
-    }
+    setSidebarOpen(false)
   }
 
   const run = async (question: string) => {
-    const conversationId = activeId
+    let conversationId = activeId
+    // 空白草稿不落库；用户发出第一句话时才创建会话。
     if (conversationId === null) {
-      return
+      if (creatingRef.current) {
+        return
+      }
+      creatingRef.current = true
+      setPending(true)
+      try {
+        const conv = await createConversation()
+        conversationId = conv.id
+        draftRef.current = false
+        setCreateError('')
+        setActiveId(conv.id)
+        queryClient.setQueryData<Conversation[]>(conversationKeys.all, (old) =>
+          old ? [conv, ...old] : [conv],
+        )
+      } catch (error) {
+        setCreateError(describeError(error))
+        setPending(false)
+        creatingRef.current = false
+        return
+      }
+      creatingRef.current = false
     }
+
     // 本地已经有一个正在生成的轮次；后续 messages 刷新不要用旧缓存覆盖它。
     syncedConversationRef.current = conversationId
     const id = newId()
@@ -408,7 +406,7 @@ export function ChatPage() {
 
   const submit = (raw: string) => {
     const question = raw.trim()
-    if (question === '' || pending || activeId === null) {
+    if (question === '' || pending) {
       return
     }
     void run(question)
@@ -420,12 +418,10 @@ export function ChatPage() {
   const conversations = conversationsQuery.data ?? []
   const activeConversation = conversations.find((conv) => conv.id === activeId) ?? null
   const showEmpty =
-    activeId !== null &&
-    messagesQuery.isSuccess &&
     turns.length === 0 &&
     !createError &&
-    !messagesQuery.isError &&
-    !pendingApproval
+    !pendingApproval &&
+    (activeId === null || (messagesQuery.isSuccess && !messagesQuery.isError))
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden">
@@ -449,15 +445,15 @@ export function ChatPage() {
           <Button
             className="w-full justify-start"
             size="sm"
-            onClick={() => void createNewConversation()}
-            disabled={pending || models.length === 0 || activeIsEmpty}
+            onClick={startNewConversation}
+            disabled={pending || models.length === 0 || activeId === null}
           >
             <Plus aria-hidden="true" />
             新对话
           </Button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        <div className="chat-scroll min-h-0 flex-1 overflow-y-auto p-2">
           {conversationsQuery.isPending ? (
             <div className="space-y-2 p-1">
               <Skeleton className="h-8 w-full" />
@@ -479,6 +475,7 @@ export function ChatPage() {
                       (conv.id === activeId ? 'bg-muted font-medium' : 'text-muted-foreground')
                     }
                     onClick={() => {
+                      draftRef.current = false
                       setActiveId(conv.id)
                       setTurns([])
                       setSidebarOpen(false)
@@ -546,7 +543,7 @@ export function ChatPage() {
               ) : null}
             </div>
           ) : (
-            <div className="min-h-0 flex-1 overflow-y-auto" aria-label="会话消息">
+            <div className="chat-scroll min-h-0 flex-1 overflow-y-auto" aria-label="会话消息">
               <div className="mx-auto w-full max-w-3xl px-4 py-6">
                 {createError ? <ErrorState title="新建会话失败" description={createError} /> : null}
                 {deleteMutation.error ? (
@@ -589,7 +586,7 @@ export function ChatPage() {
                   </div>
                 ) : null}
 
-                <div className="space-y-8">
+                <div className="space-y-6">
                   {turns.map((turn) => (
                     <TurnCard key={turn.id} turn={turn} onStop={stop} />
                   ))}
@@ -615,8 +612,7 @@ export function ChatPage() {
                   disabled={
                     pending ||
                     models.length === 0 ||
-                    activeId === null ||
-                    messagesQuery.isPending
+                    (activeId !== null && messagesQuery.isPending)
                   }
                 />
               )}

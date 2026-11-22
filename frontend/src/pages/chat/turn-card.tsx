@@ -24,7 +24,7 @@ export function TurnCard({ turn, onStop }: Props) {
   const streaming = turn.phase === 'streaming'
 
   return (
-    <article className="glass-surface space-y-4 p-4 sm:p-5">
+    <article className="space-y-3">
       <h2 className="bg-muted ml-auto w-fit max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
         {turn.question}
       </h2>
@@ -100,7 +100,7 @@ function AnswerBody({ turn }: { turn: Turn }) {
 
 function CitationList({ items }: { items: AskCitationItem[] }) {
   return (
-    <div className="space-y-1.5 border-t pt-3">
+    <div className="space-y-1.5 pt-1">
       <p className="text-muted-foreground text-xs">引用来源</p>
       <ul className="grid gap-1.5 sm:grid-cols-2">
         {items.map((item) => (

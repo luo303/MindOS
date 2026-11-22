@@ -96,6 +96,27 @@
     padding: 0;
   }
 
+  /* 对话区/会话列表的细滚动条：默认几乎透明，悬停才明显。 */
+  .chat-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #8baab84d transparent;
+  }
+  .chat-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .chat-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .chat-scroll::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: #8baab84d padding-box;
+  }
+  .chat-scroll:hover::-webkit-scrollbar-thumb {
+    background: #6f96a780 padding-box;
+  }
+
   .account-menu { position: relative; justify-self: end; }
   .account-trigger {
     display: flex;
