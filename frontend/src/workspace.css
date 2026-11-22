@@ -108,24 +108,24 @@
     padding: 0;
   }
 
-  /* 对话区/会话列表的细滚动条：默认几乎透明，悬停才明显。 */
-  .chat-scroll {
+  /* 全局细滚动条：所有页面复用会话列表同一套 UI。 */
+  * {
     scrollbar-width: thin;
     scrollbar-color: #8baab84d transparent;
   }
-  .chat-scroll::-webkit-scrollbar {
+  *::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
-  .chat-scroll::-webkit-scrollbar-track {
+  *::-webkit-scrollbar-track {
     background: transparent;
   }
-  .chat-scroll::-webkit-scrollbar-thumb {
+  *::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 999px;
     background: #8baab84d padding-box;
   }
-  .chat-scroll:hover::-webkit-scrollbar-thumb {
+  *:hover::-webkit-scrollbar-thumb {
     background: #6f96a780 padding-box;
   }
 
@@ -344,13 +344,15 @@
   box-shadow: inset 0 1px 0 #ffffff30, 0 12px 29px #00000066;
 }
 
-.dark .chat-scroll {
+.dark,
+.dark * {
   scrollbar-color: #ffffff26 transparent;
 }
-.dark .chat-scroll::-webkit-scrollbar-thumb {
+html.dark::-webkit-scrollbar-thumb,
+.dark *::-webkit-scrollbar-thumb {
   background: #ffffff26 padding-box;
 }
-.dark .chat-scroll:hover::-webkit-scrollbar-thumb {
+.dark *:hover::-webkit-scrollbar-thumb {
   background: #ffffff3d padding-box;
 }
 
