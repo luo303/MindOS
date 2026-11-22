@@ -4,6 +4,7 @@ import { RouterProvider } from 'react-router'
 
 import { createQueryClient } from '@/app/query-client'
 import { router } from '@/app/router'
+import { ThemeProvider } from '@/app/theme'
 
 export function App() {
   // 用 useState 的惰性初始化而不是模块级常量：StrictMode 下组件会挂载两次，
@@ -11,8 +12,10 @@ export function App() {
   const [queryClient] = useState(createQueryClient)
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </ThemeProvider>
   )
 }

@@ -1,7 +1,8 @@
-import { ChevronDown, LogOut } from 'lucide-react'
+import { ChevronDown, LogOut, Moon, Sun } from 'lucide-react'
 import { Link, Outlet, useLocation } from 'react-router'
 
 import { useLogout, useMe } from '@/app/auth'
+import { useTheme } from '@/app/theme-context'
 import { WorkspaceNav } from '@/app/workspace-nav'
 import { describeError } from '@/api/errors'
 import { Button } from '@/components/ui/button'
@@ -40,10 +41,22 @@ export function AppShell() {
 function AccountPanel() {
   const { data } = useMe()
   const logout = useLogout()
+  const { theme, toggle } = useTheme()
   const name = data?.display_name || data?.email || '账号'
 
   return (
-    <details
+    <div className="flex items-center justify-self-end gap-1">
+      <Button
+        variant="ghost"
+        size="icon"
+        className="rounded-full"
+        aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}
+        title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}
+        onClick={toggle}
+      >
+        {theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
+      </Button>
+      <details
       className="account-menu"
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false
@@ -70,6 +83,7 @@ function AccountPanel() {
         </Button>
         {logout.error ? <p role="alert" className="text-destructive px-3 py-2 text-xs">{describeError(logout.error)}</p> : null}
       </div>
-    </details>
+      </details>
+    </div>
   )
 }
