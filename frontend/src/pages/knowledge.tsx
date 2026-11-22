@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, NotebookPen, Sparkles, Upload, X } from 'lucide-react'
+import { Loader2, NotebookPen, SlidersHorizontal, Sparkles, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { useSearchParams } from 'react-router'
 
 import {
   backfillEmbeddings,
@@ -23,7 +23,6 @@ import { describeError } from '@/api/errors'
 import type { DocumentFilters, DocumentPatch, DocumentQuery, ImportedDocumentView } from '@/api/types'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
-import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 
@@ -42,8 +41,6 @@ const emptyFilters: DocumentFilters = { collection: '', tag: '', status: '' }
 export function KnowledgePage() {
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const listRef = useRef<HTMLElement>(null)
-  const detailRef = useRef<HTMLElement>(null)
   // 问答页的引用 chip 会带 ?doc=&chunk= 跳进来。
   // chunk 是 0 基的分块序号，只用于滚动与高亮；doc 决定打开哪篇文档。
   const [searchParams] = useSearchParams()
@@ -61,6 +58,7 @@ export function KnowledgePage() {
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [importNotice, setImportNotice] = useState<{ existed: boolean; title: string } | null>(null)
   const [backfillNotice, setBackfillNotice] = useState<string | null>(null)
+  const [filterOpen, setFilterOpen] = useState(false)
 
   // URL 里的 doc 变化时切换选中（例如在页面内又点了一次别的引用）。
   // 用 ref 记住上次处理过的值：否则用户点列表换文档后，这个 effect 会因为
@@ -243,13 +241,11 @@ export function KnowledgePage() {
     setFilters(next)
     setPage(1)
     setSelectedId(null)
+    setFilterOpen(false)
   }
 
   const selectDocument = (id: number) => {
     setSelectedId(id)
-    if (window.matchMedia?.('(width < 64rem)').matches) {
-      detailRef.current?.focus()
-    }
   }
 
   const actionError =
@@ -262,26 +258,60 @@ export function KnowledgePage() {
   // 有筛选条件时的空结果与"一条文档都没有"是两种状态，文案要分开。
   const isFiltered = filters.collection !== '' || filters.tag !== '' || filters.status !== ''
 
+  const filterCount = [filters.collection, filters.tag, filters.status].filter(Boolean).length
+
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-5">
-      <PageHeader
-        title="知识库"
-        actions={
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".md,.markdown,.txt,.text"
-              className="hidden"
-              onChange={onFileChange}
-              aria-label="选择要导入的文件"
-            />
+    <div className="flex h-full min-h-0 flex-col md:flex-row">
+      <aside className="bg-muted/20 flex max-h-[45%] w-full shrink-0 flex-col border-b md:max-h-none md:w-72 md:border-r md:border-b-0">
+        <div className="space-y-2 border-b p-3">
+          <div className="flex items-baseline justify-between">
+            <h1 className="text-lg font-semibold tracking-tight">知识库</h1>
+            <span className="text-muted-foreground text-xs tabular-nums">{total}</span>
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".md,.markdown,.txt,.text"
+            className="hidden"
+            onChange={onFileChange}
+            aria-label="选择要导入的文件"
+          />
+
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              size="sm"
+              onClick={() => {
+                setComposerOpen((open) => !open)
+                setUploadOpen(false)
+              }}
+              aria-expanded={composerOpen}
+              className="justify-start"
+            >
+              <NotebookPen aria-hidden="true" />
+              写笔记
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={startUpload}
+              disabled={uploadMutation.isPending}
+              className="justify-start"
+            >
+              {uploadMutation.isPending ? (
+                <Loader2 className="animate-spin" aria-hidden="true" />
+              ) : (
+                <Upload aria-hidden="true" />
+              )}
+              {uploadMutation.isPending ? '导入中' : '上传文件'}
+            </Button>
             {embeddingConfigured ? (
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => backfillMutation.mutate()}
                 disabled={backfillMutation.isPending}
+                className="justify-start"
               >
                 {backfillMutation.isPending ? (
                   <Loader2 className="animate-spin" aria-hidden="true" />
@@ -292,147 +322,153 @@ export function KnowledgePage() {
               </Button>
             ) : null}
             <Button
+              variant="outline"
               size="sm"
-              onClick={() => {
-                setComposerOpen((open) => !open)
-                setUploadOpen(false)
-              }}
-              aria-expanded={composerOpen}
+              onClick={() => setFilterOpen(true)}
+              className="justify-start"
             >
-              <NotebookPen aria-hidden="true" />
-              写笔记
+              <SlidersHorizontal aria-hidden="true" />
+              筛选
+              {filterCount > 0 ? (
+                <span className="bg-primary text-primary-foreground ml-auto rounded-full px-1.5 text-[10px] tabular-nums">
+                  {filterCount}
+                </span>
+              ) : null}
             </Button>
-            <Button variant="outline" size="sm" onClick={startUpload} disabled={uploadMutation.isPending}>
-              {uploadMutation.isPending ? (
-                <Loader2 className="animate-spin" aria-hidden="true" />
-              ) : (
-                <Upload aria-hidden="true" />
-              )}
-              {uploadMutation.isPending ? '导入中' : '上传文件'}
-            </Button>
-          </>
-        }
-      />
-
-      {uploadMutation.error ? (
-        <InlineError title="文件导入失败" description={describeError(uploadMutation.error)} />
-      ) : null}
-      {noteMutation.error ? (
-        <InlineError title="笔记保存失败" description={describeError(noteMutation.error)} />
-      ) : null}
-      {actionError ? <InlineError title="操作失败" description={describeError(actionError)} /> : null}
-      {importNotice ? <ImportNotice notice={importNotice} onDismiss={() => setImportNotice(null)} /> : null}
-      {backfillNotice ? (
-        <div role="status" className="border-border bg-muted/50 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
-          <p className="text-sm">{backfillNotice}</p>
-          <Button variant="ghost" size="sm" onClick={() => setBackfillNotice(null)} aria-label="关闭提示">
-            <X aria-hidden="true" />
-          </Button>
+          </div>
         </div>
-      ) : null}
-      {composerOpen ? (
-        <NoteComposer
-          saving={noteMutation.isPending}
-          onCancel={() => setComposerOpen(false)}
-          onSubmit={(draft) => noteMutation.mutate(draft)}
-        />
-      ) : null}
 
-      {uploadOpen ? (
-        <UploadComposer
-          file={pendingFile}
-          saving={uploadMutation.isPending}
-          onChooseFile={() => fileInputRef.current?.click()}
-          onCancel={() => {
-            setUploadOpen(false)
-            setPendingFile(null)
-          }}
-          onSubmit={(draft) => {
-            if (pendingFile) {
-              uploadMutation.mutate({ ...draft, file: pendingFile })
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {uploadMutation.error ? (
+            <InlineError title="文件导入失败" description={describeError(uploadMutation.error)} />
+          ) : null}
+          {noteMutation.error ? (
+            <InlineError title="笔记保存失败" description={describeError(noteMutation.error)} />
+          ) : null}
+          {actionError ? <InlineError title="操作失败" description={describeError(actionError)} /> : null}
+          {importNotice ? <ImportNotice notice={importNotice} onDismiss={() => setImportNotice(null)} /> : null}
+          {backfillNotice ? (
+            <div role="status" className="border-border bg-muted/50 mb-2 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
+              <p className="text-sm">{backfillNotice}</p>
+              <Button variant="ghost" size="sm" onClick={() => setBackfillNotice(null)} aria-label="关闭提示">
+                <X aria-hidden="true" />
+              </Button>
+            </div>
+          ) : null}
+
+          <section aria-label="文档列表">
+            {listQuery.isPending ? (
+              <ListSkeleton />
+            ) : listQuery.error ? (
+              <ErrorState
+                title="读取文档列表失败"
+                description={describeError(listQuery.error)}
+                onRetry={() => void listQuery.refetch()}
+                retrying={listQuery.isFetching}
+              />
+            ) : items.length === 0 ? (
+              <EmptyState title={isFiltered ? '没有符合条件的文档' : '还没有文档'} />
+            ) : (
+              <DocumentList
+                items={items}
+                total={total}
+                page={page}
+                activeId={activeId}
+                onSelect={selectDocument}
+                onPageChange={setPage}
+              />
+            )}
+          </section>
+        </div>
+      </aside>
+
+      <main className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-4xl p-4 sm:p-6">
+          {composerOpen ? (
+            <NoteComposer
+              saving={noteMutation.isPending}
+              onCancel={() => setComposerOpen(false)}
+              onSubmit={(draft) => noteMutation.mutate(draft)}
+            />
+          ) : null}
+
+          {uploadOpen ? (
+            <UploadComposer
+              file={pendingFile}
+              saving={uploadMutation.isPending}
+              onChooseFile={() => fileInputRef.current?.click()}
+              onCancel={() => {
+                setUploadOpen(false)
+                setPendingFile(null)
+              }}
+              onSubmit={(draft) => {
+                if (pendingFile) {
+                  uploadMutation.mutate({ ...draft, file: pendingFile })
+                }
+              }}
+            />
+          ) : null}
+
+          {activeId !== null ? (
+            <section aria-label="文档详情">
+              {detailQuery.isPending ? (
+                <ListSkeleton />
+              ) : detailQuery.error ? (
+                <ErrorState
+                  title="读取文档详情失败"
+                  description={describeError(detailQuery.error)}
+                  onRetry={() => void detailQuery.refetch()}
+                  retrying={detailQuery.isFetching}
+                />
+              ) : (
+                <DocumentDetail
+                  key={detailQuery.data.id}
+                  doc={detailQuery.data}
+                  chunks={chunksQuery.data?.items ?? []}
+                  chunkTotal={chunksQuery.data?.total ?? 0}
+                  chunksLoading={chunksQuery.isPending}
+                  highlightSeq={activeId === deepLinkDoc ? deepLinkChunk : null}
+                  savingMeta={updateMutation.isPending}
+                  reindexing={reindexMutation.isPending}
+                  embedding={embedMutation.isPending}
+                  cancelling={cancelMutation.isPending}
+                  deleting={deleteMutation.isPending}
+                  editing={editingId === detailQuery.data.id}
+                  onStartEdit={() => setEditingId(detailQuery.data.id)}
+                  onCancelEdit={() => setEditingId(null)}
+                  onSaveMeta={(patch) => updateMutation.mutate(patch)}
+                  onReindex={() => reindexMutation.mutate()}
+                  onEmbed={() => embedMutation.mutate()}
+                  onCancelProcessing={() => cancelMutation.mutate()}
+                  onDelete={() => deleteMutation.mutate()}
+                />
+              )}
+            </section>
+          ) : null}
+        </div>
+      </main>
+
+      {filterOpen ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-start justify-center bg-black/35 p-4 pt-[12vh]"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setFilterOpen(false)
             }
           }}
-        />
+        >
+          <div role="dialog" aria-modal="true" aria-label="筛选文档" className="bg-background w-full max-w-xl rounded-2xl border p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-base font-semibold">筛选</h2>
+              <Button variant="ghost" size="icon" aria-label="关闭筛选" onClick={() => setFilterOpen(false)}>
+                <X aria-hidden="true" />
+              </Button>
+            </div>
+            <FilterBar filters={filters} onChange={changeFilters} />
+          </div>
+        </div>
       ) : null}
-
-      <div className="glass-surface flex flex-wrap items-end justify-between gap-3 px-4 py-3">
-        <FilterBar filters={filters} onChange={changeFilters} />
-        {settingsQuery.isSuccess && !embeddingConfigured ? (
-          <Link to="/settings" className="text-muted-foreground hover:text-primary py-1.5 text-xs underline-offset-4 hover:underline">
-            仅关键词检索 · 向量设置
-          </Link>
-        ) : null}
-      </div>
-
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
-        <section ref={listRef} tabIndex={-1} aria-label="文档列表" className="glass-surface min-w-0 p-2 sm:p-3">
-          {listQuery.isPending ? (
-            <ListSkeleton />
-          ) : listQuery.error ? (
-            <ErrorState
-              title="读取文档列表失败"
-              description={describeError(listQuery.error)}
-              onRetry={() => void listQuery.refetch()}
-              retrying={listQuery.isFetching}
-            />
-          ) : items.length === 0 ? (
-            <EmptyState title={isFiltered ? '没有符合条件的文档' : '还没有文档'} />
-          ) : (
-            <DocumentList
-              items={items}
-              total={total}
-              page={page}
-              activeId={activeId}
-              onSelect={selectDocument}
-              onPageChange={setPage}
-            />
-          )}
-        </section>
-
-        <section ref={detailRef} tabIndex={-1} aria-label="文档详情" hidden={activeId === null} className="glass-surface min-w-0 p-4 sm:p-6">
-          {activeId !== null ? (
-            <Button variant="link" size="sm" className="mb-2 px-0 lg:hidden" onClick={() => listRef.current?.focus()}>
-              返回文档列表
-            </Button>
-          ) : null}
-          {activeId === null ? null : detailQuery.isPending ? (
-            <ListSkeleton />
-          ) : detailQuery.error ? (
-            <ErrorState
-              title="读取文档详情失败"
-              description={describeError(detailQuery.error)}
-              onRetry={() => void detailQuery.refetch()}
-              retrying={detailQuery.isFetching}
-            />
-          ) : (
-            <DocumentDetail
-              // key 换文档时重建组件，把编辑态与表单草稿一起复位——
-              // 比在 useEffect 里监听 id 变化再 setState 更直接。
-              key={detailQuery.data.id}
-              doc={detailQuery.data}
-              chunks={chunksQuery.data?.items ?? []}
-              chunkTotal={chunksQuery.data?.total ?? 0}
-              chunksLoading={chunksQuery.isPending}
-              // 只有当前打开的就是 URL 指向的那篇时才高亮：用户切到别的文档后，
-              // 还按 URL 里的 chunk 去滚动会跳到不相干的段落。
-              highlightSeq={activeId === deepLinkDoc ? deepLinkChunk : null}
-              savingMeta={updateMutation.isPending}
-              reindexing={reindexMutation.isPending}
-              embedding={embedMutation.isPending}
-              cancelling={cancelMutation.isPending}
-              deleting={deleteMutation.isPending}
-              editing={editingId === detailQuery.data.id}
-              onStartEdit={() => setEditingId(detailQuery.data.id)}
-              onCancelEdit={() => setEditingId(null)}
-              onSaveMeta={(patch) => updateMutation.mutate(patch)}
-              onReindex={() => reindexMutation.mutate()}
-              onEmbed={() => embedMutation.mutate()}
-              onCancelProcessing={() => cancelMutation.mutate()}
-              onDelete={() => deleteMutation.mutate()}
-            />
-          )}
-        </section>
-      </div>
     </div>
   )
 }

@@ -70,20 +70,17 @@ describe('知识库页面', () => {
     expect(screen.getByText(/\[0, 12\)/)).toBeInTheDocument()
   })
 
-  it('窄屏选中条目后聚焦详情，也能回到列表', async () => {
-    vi.stubGlobal('matchMedia', () => ({ matches: true }))
-    mockHappyPath(documentFixture(), '正文')
+  it('点击左侧列表后右侧展示对应文档', async () => {
+    mockHappyPath(documentFixture({ title: '左侧选中的文档' }), '正文')
     const user = userEvent.setup()
     renderApp('/knowledge')
 
     const list = screen.getByRole('region', { name: '文档列表' })
-    const row = await within(list).findByRole('button', { name: /集成测试笔记/ })
+    const row = await within(list).findByRole('button', { name: /左侧选中的文档/ })
     await user.click(row)
 
     const detail = screen.getByRole('region', { name: '文档详情' })
-    expect(detail).toHaveFocus()
-    await user.click(within(detail).getByRole('button', { name: '返回文档列表' }))
-    expect(list).toHaveFocus()
+    expect(within(detail).getByRole('heading', { name: '左侧选中的文档' })).toBeInTheDocument()
   })
 
   it('重建向量走 embed 接口，不触发重新切分', async () => {
@@ -156,7 +153,6 @@ describe('知识库页面', () => {
     renderApp('/knowledge')
 
     expect(await screen.findByText('未配置向量模型')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '仅关键词检索 · 向量设置' })).toHaveAttribute('href', '/settings')
   })
 
   it('空列表显示空态而不是空白面板', async () => {
@@ -483,8 +479,9 @@ describe('知识库页面的文档管理', () => {
     renderApp('/knowledge')
     await screen.findByText('带 go 标签')
 
-    await user.type(screen.getByLabelText('按标签筛选'), 'go')
     await user.click(screen.getByRole('button', { name: '筛选' }))
+    await user.type(screen.getByLabelText('按标签筛选'), 'go')
+    await user.click(screen.getByRole('button', { name: '应用筛选' }))
 
     await vi.waitFor(() => {
       expect(requested).toContain('/api/v1/documents?limit=20&offset=0&tag=go')

@@ -9,7 +9,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { StatusPill } from '@/components/status-pill'
 
 import {
-  CHUNK_PAGE_SIZE,
   embedMeta,
   formatBytes,
   formatDate,
@@ -102,7 +101,6 @@ export function DocumentDetail({
             {/* 两条独立的进度线：内容可用（上一枚）不等于可语义检索（这一枚）。 */}
             <StatusPill tone={embedLabel.tone}>{embedLabel.label}</StatusPill>
           </div>
-          <p className="text-muted-foreground text-xs">更新于 {formatDate(doc.updated_at)}</p>
           {embed.status === 'failed' && embed.error_message ? (
             <p role="alert" className="text-destructive text-xs break-words">
               向量化失败：{embed.error_message}
@@ -209,12 +207,7 @@ export function DocumentDetail({
           <Skeleton className="h-24 w-full" />
         </div>
       ) : (
-        <ChunkList
-          chunks={chunks}
-          total={chunkTotal}
-          maxReturned={CHUNK_PAGE_SIZE}
-          highlightSeq={highlightSeq}
-        />
+        <ChunkList chunks={chunks} total={chunkTotal} highlightSeq={highlightSeq} />
       )}
     </div>
   )
@@ -240,24 +233,18 @@ function embedActionLabel(status: EmbedStatus): string {
   }
 }
 
-function MetadataRow({ doc }: { doc: DocumentView }) {  return (
-    <div className="flex flex-wrap items-center gap-2 text-xs">
-      <span className="text-muted-foreground">分类</span>
-      {doc.collection === '' ? (
-        <span className="text-muted-foreground">未分类</span>
-      ) : (
-        <Badge variant="secondary">{doc.collection}</Badge>
-      )}
-      <span className="text-muted-foreground ml-2">标签</span>
-      {doc.tags.length === 0 ? (
-        <span className="text-muted-foreground">无</span>
-      ) : (
-        doc.tags.map((tag) => (
-          <Badge key={tag} variant="outline" className="font-normal">
-            {tag}
-          </Badge>
-        ))
-      )}
+function MetadataRow({ doc }: { doc: DocumentView }) {
+  if (doc.collection === '' && doc.tags.length === 0) {
+    return null
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      {doc.collection !== '' ? <Badge variant="secondary">{doc.collection}</Badge> : null}
+      {doc.tags.map((tag) => (
+        <Badge key={tag} variant="outline" className="font-normal">
+          {tag}
+        </Badge>
+      ))}
     </div>
   )
 }
@@ -334,23 +321,15 @@ function MetadataForm({
 function ChunkList({
   chunks,
   total,
-  maxReturned,
   highlightSeq,
 }: {
   chunks: ChunkView[]
   total: number
-  maxReturned: number
   highlightSeq: number | null
 }) {
   return (
     <section className="space-y-3 border-t pt-4" aria-labelledby="chunks-heading">
       <h3 id="chunks-heading" className="text-sm font-semibold">分块预览</h3>
-
-      {chunks.length < total ? (
-        <p className="text-muted-foreground text-xs">
-          共 {total} 块，这里只显示前 {maxReturned} 块。
-        </p>
-      ) : null}
 
       {total === 0 ? <p className="text-muted-foreground text-sm">暂无分块</p> : null}
 

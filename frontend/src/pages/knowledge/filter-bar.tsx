@@ -64,7 +64,7 @@ export function FilterBar({
       </label>
       <Button type="submit" variant="outline" size="sm">
         <Filter aria-hidden="true" />
-        筛选
+        应用筛选
       </Button>
       {isFiltered ? (
         <Button type="button" variant="ghost" size="sm" onClick={reset}>

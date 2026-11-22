@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 
 export function AppShell() {
   const { pathname } = useLocation()
-  const fixedChat = pathname.startsWith('/chat')
+  const fixedWorkspace = pathname.startsWith('/chat') || pathname.startsWith('/knowledge')
 
   return (
     <div className="workspace-canvas flex h-full min-w-0 flex-col">
@@ -30,7 +30,7 @@ export function AppShell() {
       <main
         id="workspace"
         tabIndex={-1}
-        className={fixedChat ? 'workspace-main workspace-main-chat' : 'workspace-main'}
+        className={fixedWorkspace ? 'workspace-main workspace-main-fixed' : 'workspace-main'}
       >
         <Outlet />
       </main>
