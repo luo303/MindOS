@@ -1,6 +1,8 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useRef } from 'react'
 
 import type { DocumentView } from '@/api/types'
+import { SlidingPill } from '@/components/sliding-pill'
 import { Button } from '@/components/ui/button'
 
 import { formatDate, PAGE_SIZE, sourceLabel, statusMeta } from './format'
@@ -27,20 +29,32 @@ export function DocumentList({
   onPageChange: (page: number) => void
 }) {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const listRef = useRef<HTMLUListElement | null>(null)
 
   return (
-    <div className="space-y-3">
-      <ul className="space-y-0.5">
+    <div className="space-y-2">
+      <ul ref={listRef} className="relative isolate space-y-1">
+        <SlidingPill
+          containerRef={listRef}
+          active={activeId}
+          selector={'[aria-current="true"]'}
+          className="conversation-pill"
+        />
         {items.map((doc) => (
           <li key={doc.id}>
             <button
               type="button"
               onClick={() => onSelect(doc.id)}
               aria-current={doc.id === activeId ? 'true' : undefined}
-              className="hover:bg-accent/60 aria-[current=true]:bg-accent bg-transparent focus-visible:outline-ring w-full space-y-1 rounded-md px-3 py-2.5 text-left transition-colors focus-visible:outline-2"
+              className={
+                'relative z-10 flex w-full flex-col gap-0.5 rounded-xl px-3 py-2.5 text-left transition-colors ' +
+                (doc.id === activeId
+                  ? 'text-foreground'
+                  : 'text-muted-foreground hover:bg-white/45 dark:hover:bg-white/5')
+              }
             >
-              <span className="block truncate text-sm font-medium">{doc.title}</span>
-              <span className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <span className="block w-full truncate text-sm font-medium">{doc.title}</span>
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
                 <span>{sourceLabel[doc.source_type]}</span>
                 <span aria-hidden="true">·</span>
                 <span>{doc.status === 'ready' ? formatDate(doc.created_at) : statusMeta[doc.status].label}</span>

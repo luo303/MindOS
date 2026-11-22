@@ -25,6 +25,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Toast } from '@/components/ui/toast'
 
 import { DocumentDetail } from '@/pages/knowledge/document-detail'
 import { DocumentList } from '@/pages/knowledge/document-list'
@@ -278,15 +279,16 @@ export function KnowledgePage() {
             aria-label="选择要导入的文件"
           />
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="flex flex-col gap-2">
             <Button
+              variant="outline"
               size="sm"
               onClick={() => {
                 setComposerOpen((open) => !open)
                 setUploadOpen(false)
               }}
               aria-expanded={composerOpen}
-              className="justify-start"
+              className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
             >
               <NotebookPen aria-hidden="true" />
               写笔记
@@ -296,7 +298,7 @@ export function KnowledgePage() {
               size="sm"
               onClick={startUpload}
               disabled={uploadMutation.isPending}
-              className="justify-start"
+              className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
             >
               {uploadMutation.isPending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
@@ -307,11 +309,11 @@ export function KnowledgePage() {
             </Button>
             {embeddingConfigured ? (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
                 onClick={() => backfillMutation.mutate()}
                 disabled={backfillMutation.isPending}
-                className="justify-start"
+                className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
               >
                 {backfillMutation.isPending ? (
                   <Loader2 className="animate-spin" aria-hidden="true" />
@@ -325,7 +327,7 @@ export function KnowledgePage() {
               variant="outline"
               size="sm"
               onClick={() => setFilterOpen(true)}
-              className="justify-start"
+              className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
             >
               <SlidersHorizontal aria-hidden="true" />
               筛选
@@ -346,16 +348,6 @@ export function KnowledgePage() {
             <InlineError title="笔记保存失败" description={describeError(noteMutation.error)} />
           ) : null}
           {actionError ? <InlineError title="操作失败" description={describeError(actionError)} /> : null}
-          {importNotice ? <ImportNotice notice={importNotice} onDismiss={() => setImportNotice(null)} /> : null}
-          {backfillNotice ? (
-            <div role="status" className="border-border bg-muted/50 mb-2 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
-              <p className="text-sm">{backfillNotice}</p>
-              <Button variant="ghost" size="sm" onClick={() => setBackfillNotice(null)} aria-label="关闭提示">
-                <X aria-hidden="true" />
-              </Button>
-            </div>
-          ) : null}
-
           <section aria-label="文档列表">
             {listQuery.isPending ? (
               <ListSkeleton />
@@ -448,6 +440,19 @@ export function KnowledgePage() {
         </div>
       </main>
 
+      {importNotice ? (
+        <Toast
+          message={
+            importNotice.existed
+              ? `内容与已有文档一致，已复用《${importNotice.title}》，没有重复入库。`
+              : `已受理《${importNotice.title}》，正在后台解析。`
+          }
+          onClose={() => setImportNotice(null)}
+        />
+      ) : backfillNotice ? (
+        <Toast message={backfillNotice} onClose={() => setBackfillNotice(null)} />
+      ) : null}
+
       {filterOpen ? (
         <div
           className="fixed inset-0 z-[80] flex items-start justify-center bg-black/35 p-4 pt-[12vh]"
@@ -469,28 +474,6 @@ export function KnowledgePage() {
           </div>
         </div>
       ) : null}
-    </div>
-  )
-}
-
-function ImportNotice({
-  notice,
-  onDismiss,
-}: {
-  notice: { existed: boolean; title: string }
-  onDismiss: () => void
-}) {
-  return (
-    // role=status：这是"操作完成"的提示，不是错误，用 status 让读屏器温和播报。
-    <div role="status" className="border-border bg-muted/50 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
-      <p className="text-sm">
-        {notice.existed
-          ? `内容与已有文档一致，已复用《${notice.title}》，没有重复入库。`
-          : `已受理《${notice.title}》，正在后台解析，完成后会自动刷新。`}
-      </p>
-      <Button variant="ghost" size="sm" onClick={onDismiss} aria-label="关闭提示">
-        <X aria-hidden="true" />
-      </Button>
     </div>
   )
 }
