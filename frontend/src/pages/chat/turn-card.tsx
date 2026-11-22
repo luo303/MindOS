@@ -42,14 +42,13 @@ export function TurnCard({ turn, onStop }: Props) {
             </Button>
           ) : null}
           {turn.done ? (
-            <details className="text-muted-foreground text-xs">
-              <summary className="w-fit cursor-pointer py-1">运行信息</summary>
-              <p className="pt-1">
-                {(turn.done.latency_ms / 1000).toFixed(1)}s · 输入 {turn.done.prompt_tokens} / 输出{' '}
-                {turn.done.completion_tokens} tokens
-                {turn.done.run_id > 0 ? ` · #${turn.done.run_id}` : ''}
-              </p>
-            </details>
+            <p className="text-muted-foreground text-xs">
+              <span>运行信息</span>
+              {' · '}
+              {(turn.done.latency_ms / 1000).toFixed(1)}s · 输入 {turn.done.prompt_tokens} / 输出{' '}
+              {turn.done.completion_tokens} tokens
+              {turn.done.run_id > 0 ? ` · #${turn.done.run_id}` : ''}
+            </p>
           ) : null}
         </div>
       </div>
