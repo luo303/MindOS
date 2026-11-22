@@ -145,9 +145,14 @@
 }
 
 .skeleton-breathe {
+  background-color: #adc0c8;
   animation: skeleton-breathe 1.7s ease-in-out infinite;
   transform-origin: left center;
   will-change: opacity, transform;
+}
+
+.dark .skeleton-breathe {
+  background-color: #3b454a;
 }
 
 @media (prefers-reduced-motion: reduce) {
