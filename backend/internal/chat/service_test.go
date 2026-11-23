@@ -3,9 +3,12 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	openai "github.com/meguminnnnnnnnn/go-openai"
 
 	"github.com/luo303/mindos/backend/internal/agent"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
@@ -396,5 +399,24 @@ func TestParseCitations(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestClassifyRunErrorPrefersVendorMessage(t *testing.T) {
+	err := fmt.Errorf("model call: %w", &openai.APIError{
+		HTTPStatusCode: 429,
+		Message:        "quota exceeded for this billing cycle",
+	})
+	code, message, retryable := classifyRunError(err)
+	if code != "model_rate_limited" || message != "quota exceeded for this billing cycle" || !retryable {
+		t.Fatalf("classify = (%q, %q, %v)", code, message, retryable)
+	}
+}
+
+func TestClassifyRunErrorVendorAuthWithoutMessage(t *testing.T) {
+	err := fmt.Errorf("model call: %w", &openai.APIError{HTTPStatusCode: 401})
+	code, message, retryable := classifyRunError(err)
+	if code != "model_auth_failed" || message == "" || retryable {
+		t.Fatalf("classify = (%q, %q, %v)", code, message, retryable)
 	}
 }

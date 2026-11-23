@@ -642,6 +642,32 @@ func classifyRunError(err error) (code, message string, retryable bool) {
 		// 检索现在发生在工具里，没配向量模型会在 run 中途暴露：
 		// 不能像以前那样返回 503，但至少给出可操作的原因。
 		return "embedding_not_configured", "向量模型未配置，请先在 .env 配置 EMBEDDING_*", false
+	}
+
+	// 厂商返回了结构化错误时，优先展示厂商 message；它通常比
+	// “模型服务暂时不可用”更具体（限流、余额、模型名、鉴权等）。
+	if status, vendorMessage, ok := agent.UpstreamErrorInfo(err); ok {
+		code, fallback, retryable := classifyUpstreamStatus(status)
+		if vendorMessage != "" {
+			return code, vendorMessage, retryable
+		}
+		return code, fallback, retryable
+	}
+
+	return ReasonUpstreamError, "模型服务暂时不可用，请稍后重试", true
+}
+
+// classifyUpstreamStatus 把 HTTP 状态翻译成稳定错误码与兜底文案。
+func classifyUpstreamStatus(status int) (code, message string, retryable bool) {
+	switch {
+	case status == 401 || status == 403:
+		return "model_auth_failed", "模型服务鉴权失败，请检查 API Key 权限", false
+	case status == 400 || status == 404 || status == 422:
+		return "model_bad_request", "模型请求被拒绝，请检查模型名与参数", false
+	case status == 429:
+		return "model_rate_limited", "模型服务限流或额度不足，请稍后重试", true
+	case status == 408 || status >= 500:
+		return "model_unavailable", "模型厂商服务异常，请稍后重试", true
 	default:
 		return ReasonUpstreamError, "模型服务暂时不可用，请稍后重试", true
 	}
