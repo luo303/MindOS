@@ -318,7 +318,7 @@ func Load() (*Config, error) {
 			MaxIdleConns:    reader.integer("DB_MAX_IDLE_CONNS", 10),
 			ConnMaxLifetime: reader.duration("DB_CONN_MAX_LIFETIME", 30*time.Minute),
 			PingTimeout:     reader.duration("DB_PING_TIMEOUT", 3*time.Second),
-			LogSQL:          reader.boolean("DB_LOG_SQL", env == "dev"),
+			LogSQL:          reader.boolean("DB_LOG_SQL", false),
 		},
 		AI: AIConfig{
 			DBUser:     reader.text("AI_DB_USER", ""),

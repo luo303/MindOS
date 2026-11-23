@@ -203,8 +203,8 @@ func TestLoadUsesDefaultsForBlankValues(t *testing.T) {
 	if cfg.DB.MaxOpenConns != 25 {
 		t.Fatalf("MaxOpenConns = %d, want 25", cfg.DB.MaxOpenConns)
 	}
-	if !cfg.DB.LogSQL {
-		t.Fatal("DB.LogSQL = false, want dev default true")
+	if cfg.DB.LogSQL {
+		t.Fatal("DB.LogSQL = true, want default false")
 	}
 }
 
