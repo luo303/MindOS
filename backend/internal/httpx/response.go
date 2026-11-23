@@ -106,6 +106,8 @@ func Fail(c *gin.Context, err error) {
 	if !errors.As(err, &appErr) {
 		appErr = ErrInternal.Wrap(err)
 	}
+	// 访问日志需要真实原因；响应体仍只返回 appErr.Message。
+	_ = c.Error(err)
 	c.AbortWithStatusJSON(appErr.HTTPStatus, Envelope{
 		Code:      appErr.Code,
 		Message:   appErr.Message,
