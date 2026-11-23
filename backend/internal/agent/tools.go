@@ -143,3 +143,31 @@ func truncateRunes(s string, limit int) string {
 	}
 	return string(runes[:limit]) + "…"
 }
+
+// budgetGuardedTool 把"工具调用次数用尽"翻译成普通工具结果，
+// 而不是让 ToolsNode 抛错中断整个 run。
+//
+// Eino 会把工具返回的 error 变成 NodeRunError；模型收不到结果，用户只看到
+// upstream_error。预算用尽应该让模型基于已有信息收尾，而不是把整轮判失败。
+type budgetGuardedTool struct {
+	tool.InvokableTool
+}
+
+func (g budgetGuardedTool) InvokableRun(
+	ctx context.Context, argumentsInJSON string, opts ...tool.Option,
+) (string, error) {
+	out, err := g.InvokableTool.InvokableRun(ctx, argumentsInJSON, opts...)
+	if errors.Is(err, ErrToolCallLimit) {
+		return "本次工具调用次数已用尽，请停止调用工具，基于已有信息直接回答。", nil
+	}
+	return out, err
+}
+
+func guardTools(tools []tool.BaseTool) []tool.BaseTool {
+	for i, item := range tools {
+		if invokable, ok := item.(tool.InvokableTool); ok {
+			tools[i] = budgetGuardedTool{InvokableTool: invokable}
+		}
+	}
+	return tools
+}

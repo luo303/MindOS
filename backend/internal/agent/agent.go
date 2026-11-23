@@ -90,7 +90,7 @@ type Limits struct {
 // 这些值刻意不做成配置项：它们不是部署差异，而是产品约束。
 // 做成配置只会让人以为可以放开，然后某天收到一张意外的账单。
 func DefaultLimits() Limits {
-	return Limits{MaxToolCalls: 3, MaxIterations: 5, MaxTokens: 60000}
+	return Limits{MaxToolCalls: 6, MaxIterations: 10, MaxTokens: 60000}
 }
 
 // ErrBudgetExceeded 表示本次问答消耗的 token 超过上限。
@@ -231,6 +231,8 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 	if a.todos != nil && a.approvals != nil {
 		instr += todoInstruction
 	}
+
+	tools = guardTools(tools)
 
 	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "mindos-rag",
@@ -411,6 +413,8 @@ func (a *Agent) Resume(ctx context.Context, checkpointID, interruptID string, de
 	if a.todos != nil && a.approvals != nil {
 		instr += todoInstruction
 	}
+	tools = guardTools(tools)
+
 	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name: "mindos-rag", Description: "基于个人知识库回答问题，按需检索或统计",
 		Instruction: instr, Model: a.chatModel,
