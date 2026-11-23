@@ -5,6 +5,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 
@@ -75,6 +76,11 @@ func NewSessionMiddleware(svc *Service) gin.HandlerFunc {
 		}
 		p, err := svc.Authenticate(c.Request.Context(), token)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				c.Status(499)
+				c.Abort()
+				return
+			}
 			httpx.Abort(c, mapError(err))
 			return
 		}

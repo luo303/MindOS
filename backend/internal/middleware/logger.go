@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -39,6 +41,12 @@ func Logger(log *zap.Logger) gin.HandlerFunc {
 		// gin 会把 handler 里 c.Error(err) 记录的错误收集到 c.Errors。
 		if len(c.Errors) > 0 {
 			fields = append(fields, zap.Strings("errors", c.Errors.Errors()))
+		}
+
+		// 客户端主动断开是正常现象，尤其轮询/切页；不能记成服务端错误。
+		if errors.Is(c.Request.Context().Err(), context.Canceled) {
+			log.Debug("http request canceled", fields...)
+			return
 		}
 
 		switch {

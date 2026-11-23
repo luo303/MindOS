@@ -5,6 +5,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,5 +53,28 @@ func TestLoggerLevelsByStatus(t *testing.T) {
 				t.Fatalf("request_id = %v, want test-rid", got)
 			}
 		})
+	}
+}
+
+func TestLoggerDowngradesCanceledRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	core, recorded := observer.New(zapcore.DebugLevel)
+	log := zap.New(core)
+
+	e := gin.New()
+	e.Use(Logger(log))
+	e.GET("/probe", func(c *gin.Context) { c.Status(499) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "/probe", nil).WithContext(ctx)
+	e.ServeHTTP(httptest.NewRecorder(), req)
+
+	entries := recorded.All()
+	if len(entries) != 1 {
+		t.Fatalf("got %d log entries, want 1", len(entries))
+	}
+	if entries[0].Level != zapcore.DebugLevel || entries[0].Message != "http request canceled" {
+		t.Fatalf("entry = %s %q, want debug canceled", entries[0].Level, entries[0].Message)
 	}
 }
