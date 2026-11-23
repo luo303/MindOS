@@ -258,5 +258,15 @@ export type AskEvent =
   | { type: 'delta'; seq: number; payload: { text: string } }
   | { type: 'verdict'; seq: number; payload: { status: AskVerdict; reason: string } }
   | { type: 'citation'; seq: number; payload: { items: AskCitationItem[] } }
-  | { type: 'error'; seq: number; payload: { code: string; message: string; retryable: boolean } }
+  | {
+      type: 'error'
+      seq: number
+      payload: {
+        code: string
+        message: string
+        retryable: boolean
+        detail?: string
+        request_id?: string
+      }
+    }
   | { type: 'done'; seq: number; payload: AskDonePayload }

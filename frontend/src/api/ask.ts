@@ -21,7 +21,13 @@ export type AskHandlers = {
   onDelta?: (text: string) => void
   onVerdict?: (status: AskVerdict, reason: string) => void
   onCitation?: (items: AskCitationItem[]) => void
-  onError?: (code: string, message: string, retryable: boolean) => void
+  onError?: (
+    code: string,
+    message: string,
+    retryable: boolean,
+    detail?: string,
+    requestId?: string,
+  ) => void
   onDone?: (payload: AskDonePayload) => void
 }
 
@@ -168,7 +174,13 @@ function route(event: AskEvent, handlers: AskHandlers): void {
       handlers.onCitation?.(event.payload.items)
       break
     case 'error':
-      handlers.onError?.(event.payload.code, event.payload.message, event.payload.retryable)
+      handlers.onError?.(
+        event.payload.code,
+        event.payload.message,
+        event.payload.retryable,
+        event.payload.detail,
+        event.payload.request_id,
+      )
       break
     case 'done':
       handlers.onDone?.(event.payload)

@@ -77,6 +77,23 @@ function AnswerBody({ turn }: { turn: Turn }) {
           没有拿到回答
         </p>
         <p className="text-muted-foreground text-xs break-words">{turn.error?.message}</p>
+        {turn.error?.detail ? (
+          <details className="text-xs">
+            <summary className="text-muted-foreground w-fit cursor-pointer">
+              诊断信息 · {turn.error.code}
+            </summary>
+            <code className="bg-background/60 mt-1 block rounded border p-2 text-[11px] break-all whitespace-pre-wrap">
+              {turn.error.detail}
+            </code>
+          </details>
+        ) : null}
+        {turn.error?.requestId || turn.done?.run_id ? (
+          <p className="text-muted-foreground font-mono text-[10px] break-all">
+            {turn.error?.requestId ? '请求 ' + turn.error.requestId : ''}
+            {turn.error?.requestId && turn.done?.run_id ? ' · ' : ''}
+            {turn.done?.run_id ? '运行 #' + turn.done.run_id : ''}
+          </p>
+        ) : null}
         {answer ? <p className="text-sm whitespace-pre-wrap">{answer}</p> : null}
       </div>
     )

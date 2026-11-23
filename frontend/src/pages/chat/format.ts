@@ -22,7 +22,7 @@ export type Turn = {
   reason?: string
   hits: AskRetrievalItem[]
   citations: AskCitationItem[]
-  error?: { code: string; message: string }
+  error?: { code: string; message: string; detail?: string; requestId?: string }
   done?: AskDonePayload
 }
 

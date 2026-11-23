@@ -23,6 +23,7 @@ import (
 	"github.com/luo303/mindos/backend/internal/approval"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/knowledge"
+	"github.com/luo303/mindos/backend/internal/middleware"
 	"github.com/luo303/mindos/backend/internal/todo"
 )
 
@@ -452,9 +453,12 @@ func (s *Service) finishFailed(
 	conversationID *int64, userMessageID int64,
 ) error {
 	code, message, retryable := classifyRunError(runErr)
+	detail := errorDetail(runErr)
 	s.log.Warn("agent run failed",
+		zap.String("request_id", middleware.RequestIDFromContext(ctx)),
 		zap.Int64("chat_model_id", resolved.ID),
 		zap.String("error_code", code),
+		zap.String("error_detail", detail),
 		zap.Error(runErr),
 	)
 
@@ -521,7 +525,13 @@ func (s *Service) finishFailed(
 	if conversationID != nil {
 		done.ConversationID = *conversationID
 	}
-	_ = emit.Error(code, message, retryable)
+	if detailed, ok := emit.(interface {
+		ErrorDetail(code, message, detail string, retryable bool) error
+	}); ok {
+		_ = detailed.ErrorDetail(code, message, detail, retryable)
+	} else {
+		_ = emit.Error(code, message, retryable)
+	}
 	_ = emit.Done(done)
 	return nil
 }
@@ -540,6 +550,8 @@ func (s *Service) saveRun(ctx context.Context, run *Run) int64 {
 // 只认 1~3 位数字：分块数量不可能上万，把 \d+ 放开反而会误匹配
 // 代码里的 [12345] 之类的下标。
 var citationPattern = regexp.MustCompile(`\[(\d{1,3})\]`)
+
+var diagnosticSecretPattern = regexp.MustCompile(`(?i)(sk-|bearer\s+|api[_-]?key[=: ]+)[A-Za-z0-9_\-]{8,}`)
 
 // citationsFromAnswer 把正文里的 [n] 映射成 citation，**只做展示，不做校验**。
 //
@@ -701,4 +713,20 @@ func marshalJSON(v any) RawJSON {
 		return RawJSON("[]")
 	}
 	return RawJSON(data)
+}
+
+// errorDetail 给用户看的诊断摘要：截断、去空白、遮盖疑似密钥。
+// 它不替代服务端完整 error 日志，只用于让失败卡片能定位到问题。
+func errorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	detail := strings.Join(strings.Fields(err.Error()), " ")
+	if detail == "" {
+		return ""
+	}
+	// 避免把厂商/内部完整响应原样塞进 SSE。
+	detail = diagnosticSecretPattern.ReplaceAllString(detail, "$1***")
+	detail = truncateRunes(detail, 600)
+	return detail
 }

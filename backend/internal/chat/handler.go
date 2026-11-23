@@ -110,7 +110,21 @@ func (w *sseWriter) Done(payload DonePayload) error {
 }
 
 func (w *sseWriter) Error(code, message string, retryable bool) error {
-	return w.send("error", gin.H{"code": code, "message": message, "retryable": retryable})
+	return w.ErrorDetail(code, message, "", retryable)
+}
+
+// ErrorDetail 在错误事件里带上 request_id 和诊断摘要，便于用户/日志关联。
+func (w *sseWriter) ErrorDetail(code, message, detail string, retryable bool) error {
+	payload := gin.H{
+		"code":       code,
+		"message":    message,
+		"retryable":  retryable,
+		"request_id": httpx.RequestID(w.c),
+	}
+	if detail != "" {
+		payload["detail"] = detail
+	}
+	return w.send("error", payload)
 }
 
 func (w *sseWriter) send(eventType string, payload any) error {

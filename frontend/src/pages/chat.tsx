@@ -414,8 +414,12 @@ export function ChatPage() {
           onDelta: (text) => patch((turn) => ({ ...turn, answer: turn.answer + text })),
           onVerdict: (status, reason) => patch((turn) => applyVerdict(turn, status, reason)),
           onCitation: (items) => patch((turn) => ({ ...turn, citations: items })),
-          onError: (code, message) =>
-            patch((turn) => ({ ...turn, phase: 'failed', error: { code, message } })),
+          onError: (code, message, _retryable, detail, requestId) =>
+            patch((turn) => ({
+              ...turn,
+              phase: 'failed',
+              error: { code, message, detail, requestId },
+            })),
           onDone: (payload) => {
             patch((turn) => ({
               ...turn,
