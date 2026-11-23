@@ -90,7 +90,7 @@ type Limits struct {
 // 这些值刻意不做成配置项：它们不是部署差异，而是产品约束。
 // 做成配置只会让人以为可以放开，然后某天收到一张意外的账单。
 func DefaultLimits() Limits {
-	return Limits{MaxToolCalls: 6, MaxIterations: 10, MaxTokens: 60000}
+	return Limits{MaxToolCalls: 12, MaxIterations: 20, MaxTokens: 120000}
 }
 
 // ErrBudgetExceeded 表示本次问答消耗的 token 超过上限。
