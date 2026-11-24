@@ -57,7 +57,7 @@ export type SettingsView = {
   }
   // 对话模型不在 .env 里：它由用户配置并存库，接口在 /chat-models。
   embedding: ModelSettings
-  agent: { max_steps: number; token_budget: number; run_timeout_seconds: number }
+  agent: { max_steps: number; token_budget: number }
 }
 
 /** 文档状态。Phase 4 同步导入，成功即 ready。 */

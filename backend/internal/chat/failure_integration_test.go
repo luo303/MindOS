@@ -3,7 +3,6 @@ package chat
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 )
@@ -19,7 +18,6 @@ func TestAskFailurePersistsAssistantMessage(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		Settings{Timeout: 10 * time.Second},
 		nil,
 	)
 	conv, err := svc.CreateConversation(ctx, owner, "")
@@ -60,7 +58,6 @@ func TestStopPersistsNormalAssistantMessage(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		Settings{Timeout: 10 * time.Second},
 		nil,
 	)
 	conv, err := svc.CreateConversation(ctx, owner, "")

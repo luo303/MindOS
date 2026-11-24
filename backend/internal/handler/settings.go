@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -120,9 +119,8 @@ type settingsView struct {
 	// "配了但读不到"，不如干脆不出现。
 	Embedding modelSettingsView `json:"embedding"`
 	Agent     struct {
-		MaxSteps         int   `json:"max_steps"`
-		TokenBudget      int64 `json:"token_budget"`
-		RunTimeoutSecond int64 `json:"run_timeout_seconds"`
+		MaxSteps    int   `json:"max_steps"`
+		TokenBudget int64 `json:"token_budget"`
 	} `json:"agent"`
 }
 
@@ -150,7 +148,6 @@ func (h *SettingsHandler) Get(c *gin.Context) {
 	view.Embedding = modelView(cfg.Embedding.APIBase, cfg.Embedding.APIKey, cfg.Embedding.Model)
 	view.Agent.MaxSteps = cfg.Agent.MaxSteps
 	view.Agent.TokenBudget = cfg.Agent.TokenBudget
-	view.Agent.RunTimeoutSecond = int64(cfg.Agent.RunTimeout / time.Second)
 
 	httpx.OK(c, view)
 }

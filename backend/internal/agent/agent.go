@@ -35,7 +35,7 @@ type Retriever interface {
 
 // Limits 是一次问答的硬上限（AGENTS 的三重预算：步数、token、超时）。
 //
-// 超时不在这个结构体里：它由调用方的 context 控制（chat 层用 RAG_TIMEOUT），
+// 超时不在这个结构体里：单次模型调用由 NewChatModel 的 Timeout 控制；
 // 而 ctx 会一路传到模型调用，不需要第二处配置。
 type Limits struct {
 	// MaxToolCalls 是工具调用次数上限。模型收到"工具失败"通常会收手。
@@ -216,7 +216,7 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: chatAgent, EnableStreaming: true, CheckPointStore: a.checkpoints})
 
-	// 取消句柄：ctx 被取消（客户端断开、整体超时）时立刻请求停止，
+	// 取消句柄：ctx 被取消（客户端断开、单次调用超时）时立刻请求停止，
 	// 并在退出前等它真正收尾——不等就可能留下一个还在烧 token 的 goroutine。
 	cancelOpt, cancelFn := adk.WithCancel()
 	defer func() {

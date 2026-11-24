@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"gorm.io/gorm"
@@ -99,7 +98,6 @@ func TestAskInConversationIntegration(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		Settings{Timeout: 10 * time.Second},
 		nil,
 	)
 
@@ -161,7 +159,6 @@ func TestAskInConversationIntegration(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		Settings{Timeout: 10 * time.Second},
 		nil,
 	)
 	if err := otherSvc.AskInConversation(ctx, other, conv.ID, AskInput{Question: "越权"}, &fakeEmitter{}); !errors.Is(err, ErrConversationNotFound) {

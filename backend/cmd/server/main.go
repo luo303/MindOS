@@ -366,9 +366,6 @@ func run() error {
 		chatMemory,
 		approvalSvc,
 		todoSvc,
-		chat.Settings{
-			Timeout: cfg.Rag.Timeout,
-		},
 		log.Named("chat"),
 	)
 

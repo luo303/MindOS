@@ -198,8 +198,7 @@ func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approv
 	if s.builder == nil || s.models == nil {
 		return nil, errors.New("resume is not configured")
 	}
-	runCtx, cancel := context.WithTimeout(ctx, s.settings.normalized().Timeout)
-	defer cancel()
+	runCtx := ctx
 	meta := agent.RunMeta{OwnerID: ownerID, CheckpointID: *req.CheckpointID, ChatModelID: 0}
 	if req.ConversationID != nil {
 		meta.ConversationID = *req.ConversationID

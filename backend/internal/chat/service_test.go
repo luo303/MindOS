@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	openai "github.com/meguminnnnnnnnn/go-openai"
 
@@ -190,7 +189,7 @@ func newTestService(t *testing.T, opts testDeps) *Service {
 	if opts.runs == nil {
 		opts.runs = &fakeRunStore{}
 	}
-	return NewService(opts.models, opts.runs, opts.builder, nil, nil, nil, nil, Settings{Timeout: 10 * time.Second}, nil)
+	return NewService(opts.models, opts.runs, opts.builder, nil, nil, nil, nil, nil)
 }
 
 func hitFixture() *agent.Hit {

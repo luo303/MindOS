@@ -31,9 +31,6 @@ const (
 	// maxQuestionRunes 与前端输入限制一致。
 	maxQuestionRunes = 500
 
-	// defaultTimeout 覆盖模型与工具调用的整段时间。
-	defaultTimeout = 60 * time.Second
-
 	// snippetRunes 是 retrieval 事件里给前端看的前缀长度。
 	// 只给个开头让人判断"是不是这篇"，正文仍要点进去看。
 	snippetRunes = 120
@@ -58,22 +55,6 @@ var (
 	// ErrApprovalPending 表示会话还有待审批写操作；审批完成前不能继续对话。
 	ErrApprovalPending = errors.New("conversation has a pending approval")
 )
-
-// Settings 是问答的可调参数。
-//
-// 检索条数不在这里：它由 RAG_TOP_K 交给 agent.Builder 作为工具上限，
-// 因为"查几条"现在是模型在工具调用里决定的。阈值已随预检索一起删除。
-type Settings struct {
-	// Timeout 覆盖模型与工具调用的整段时间。
-	Timeout time.Duration
-}
-
-func (s Settings) normalized() Settings {
-	if s.Timeout <= 0 {
-		s.Timeout = defaultTimeout
-	}
-	return s
-}
 
 // ModelResolver 是对话模型配置的读取能力。*chatmodel.Service 满足它。
 type ModelResolver interface {
@@ -167,12 +148,11 @@ type Service struct {
 	memory    *ConversationMemory
 	approvals *approval.Service
 	todos     *todo.Service
-	settings  Settings
 	log       *zap.Logger
 }
 
 // NewService 组装编排层。依赖全部由 cmd/server 注入；memory 允许为 nil。
-func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, convs *ConversationRepository, memory *ConversationMemory, approvals *approval.Service, todos *todo.Service, settings Settings, log *zap.Logger) *Service {
+func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, convs *ConversationRepository, memory *ConversationMemory, approvals *approval.Service, todos *todo.Service, log *zap.Logger) *Service {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -184,7 +164,6 @@ func NewService(models ModelResolver, runs RunStore, builder AnswererBuilder, co
 		memory:    memory,
 		approvals: approvals,
 		todos:     todos,
-		settings:  settings,
 		log:       log,
 	}
 }
@@ -316,9 +295,9 @@ func (s *Service) execute(
 	start := time.Now()
 	question := strings.TrimSpace(in.Question)
 
-	settings := s.settings.normalized()
-	runCtx, cancel := context.WithTimeout(ctx, settings.Timeout)
-	defer cancel()
+	// 不设整轮 wall-clock 超时：长回答/多步工具链由单次外部调用超时
+	// 与 token/工具预算约束；到达超时时，正在流式的回答不应被整轮计时器截断。
+	runCtx := ctx
 
 	// 每次 run 一个 checkpoint：写工具中断后，审批 API 用它恢复。
 	checkpointID := uuid.NewString()

@@ -65,8 +65,7 @@ func NewBuilder(retriever Retriever, sqlRunner SQLRunner, todos *todo.Service, a
 
 // Build 用给定配置与本次的编号表构造 Runner。
 //
-// 模型客户端的超时不在这里设：一次问答的整体超时由调用方的 ctx 控制，
-// 两处都设会让"到底是哪一层超时"变成猜谜。
+// 模型客户端使用单次调用超时；不在这里再包一层整轮 wall-clock 超时。
 func (b *Builder) Build(ctx context.Context, ownerID int64, target *chatmodel.Resolved, registry *Registry, onHits func([]Numbered)) (Runner, error) {
 	chatModel, err := NewChatModel(ctx, FromResolved(target, 0))
 	if err != nil {

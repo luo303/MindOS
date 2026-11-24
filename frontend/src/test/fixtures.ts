@@ -55,7 +55,7 @@ export function settingsFixture(overrides: Partial<SettingsView> = {}): Settings
     },
     // 对话模型不在 /settings 里：它由用户配置并存库（/chat-models）。
     embedding: { api_base: '', model: '', api_key_masked: '', api_key_configured: false },
-    agent: { max_steps: 12, token_budget: 200000, run_timeout_seconds: 300 },
+    agent: { max_steps: 12, token_budget: 200000 },
     ...overrides,
   }
 }

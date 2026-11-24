@@ -171,7 +171,6 @@ function SettingsCard({ settings }: { settings: SettingsView }) {
           <ModelField label="Embedding" model={settings.embedding} />
           <Field label="Agent 步数上限" value={String(settings.agent.max_steps)} />
           <Field label="Agent token 预算" value={tokenBudget} />
-          <Field label="单次运行超时" value={`${settings.agent.run_timeout_seconds}s`} />
         </dl>
 
         <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4">

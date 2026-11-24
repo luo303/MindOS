@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -43,7 +42,7 @@ func TestSettingsGetMasksSecrets(t *testing.T) {
 		Embedding: config.EmbeddingConfig{
 			APIBase: "https://api.example.com/v1", APIKey: apiKey, Model: "BAAI/bge-m3",
 		},
-		Agent: config.AgentConfig{MaxSteps: 30, TokenBudget: 200000, RunTimeout: 5 * time.Minute},
+		Agent: config.AgentConfig{MaxSteps: 30, TokenBudget: 200000},
 	}
 	h := NewSettingsHandler(cfg, nil)
 
@@ -72,9 +71,6 @@ func TestSettingsGetMasksSecrets(t *testing.T) {
 				APIKeyConfigured bool   `json:"api_key_configured"`
 				Model            string `json:"model"`
 			} `json:"embedding"`
-			Agent struct {
-				RunTimeoutSecond int64 `json:"run_timeout_seconds"`
-			} `json:"agent"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
@@ -88,9 +84,6 @@ func TestSettingsGetMasksSecrets(t *testing.T) {
 	}
 	if parsed.Data.Embedding.Model != "BAAI/bge-m3" {
 		t.Errorf("embedding.model = %q", parsed.Data.Embedding.Model)
-	}
-	if parsed.Data.Agent.RunTimeoutSecond != 300 {
-		t.Errorf("agent.run_timeout_seconds = %d, want 300", parsed.Data.Agent.RunTimeoutSecond)
 	}
 }
 

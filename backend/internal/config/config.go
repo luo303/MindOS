@@ -32,7 +32,7 @@ type Config struct {
 	Storage   StorageConfig
 	Crypto    CryptoConfig
 	Embedding EmbeddingConfig
-	// Rag 是问答的两项参数：检索条数上限、整体超时。
+	// Rag 是问答的检索参数。整轮 wall-clock 超时已移除，只保留单次外部调用超时。
 	Rag    RagConfig
 	Agent  AgentConfig
 	Job    JobConfig
@@ -206,17 +206,17 @@ type RagConfig struct {
 	// 它不再是"宿主预检索进上下文的条数"：检索已经移进 agent，
 	// 由模型在 ReAct 循环里决定查几次、每次几条。
 	TopK int
-	// Timeout 覆盖模型与工具调用的整段时间。
-	Timeout time.Duration
 }
 
-// AgentConfig 是 Agent 运行的三重预算（AGENTS.md 硬性约束 #10）。
+// AgentConfig 是 Agent 运行的步数与 token 预算（AGENTS.md 硬性约束 #10）。
 // 预算配在启动配置里而不是数据库：预算是"护栏"不是"业务数据"，
 // 改它需要重启服务，正好强制人停下来想清楚。
+//
+// 不设整轮 wall-clock 超时：长回答由单次模型/工具调用超时与 token 预算约束，
+// 正在流式输出时不应该被整轮计时器截断。
 type AgentConfig struct {
-	MaxSteps    int           // 单次运行最大工具调用步数
-	TokenBudget int64         // 单次运行最大 token 消耗（记账用整数）
-	RunTimeout  time.Duration // 单次运行整体超时
+	MaxSteps    int   // 单次运行最大工具调用步数
+	TokenBudget int64 // 单次运行最大 token 消耗（记账用整数）
 }
 
 // JobConfig 是后台任务链路的运行参数。
@@ -351,8 +351,7 @@ func Load() (*Config, error) {
 			MasterKey: reader.text("MINDOS_MASTER_KEY", ""),
 		},
 		Rag: RagConfig{
-			TopK:    reader.integer("RAG_TOP_K", 8),
-			Timeout: reader.duration("RAG_TIMEOUT", 60*time.Second),
+			TopK: reader.integer("RAG_TOP_K", 8),
 		},
 		Embedding: EmbeddingConfig{
 			APIBase: strings.TrimRight(reader.text("EMBEDDING_API_BASE", ""), "/"),
@@ -366,7 +365,6 @@ func Load() (*Config, error) {
 		Agent: AgentConfig{
 			MaxSteps:    reader.integer("AGENT_MAX_STEPS", 30),
 			TokenBudget: reader.integer64("AGENT_TOKEN_BUDGET", 200000),
-			RunTimeout:  reader.duration("AGENT_RUN_TIMEOUT", 5*time.Minute),
 		},
 	}
 	cfg.Job = JobConfig{
@@ -509,17 +507,11 @@ func (c *Config) validate() error {
 	if c.Rag.TopK < 1 || c.Rag.TopK > 20 {
 		errs = append(errs, fmt.Errorf("RAG_TOP_K must be between 1 and 20, got %d", c.Rag.TopK))
 	}
-	if c.Rag.Timeout <= 0 {
-		errs = append(errs, errors.New("RAG_TIMEOUT must be greater than 0"))
-	}
 	if c.Agent.MaxSteps < 1 {
 		errs = append(errs, fmt.Errorf("AGENT_MAX_STEPS must be at least 1, got %d", c.Agent.MaxSteps))
 	}
 	if c.Agent.TokenBudget < 1 {
 		errs = append(errs, fmt.Errorf("AGENT_TOKEN_BUDGET must be at least 1, got %d", c.Agent.TokenBudget))
-	}
-	if c.Agent.RunTimeout <= 0 {
-		errs = append(errs, errors.New("AGENT_RUN_TIMEOUT must be greater than 0"))
 	}
 	if c.Job.Workers < 1 || c.Job.Workers > 64 {
 		errs = append(errs, fmt.Errorf("JOB_WORKERS must be between 1 and 64, got %d", c.Job.Workers))

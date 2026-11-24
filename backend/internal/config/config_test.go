@@ -223,7 +223,7 @@ func TestLoadNewPhase2Defaults(t *testing.T) {
 	if cfg.Embedding.APIBase != "" || cfg.Embedding.APIKey != "" || cfg.Embedding.Model != "" {
 		t.Fatalf("Embedding should be empty by default, got %+v", cfg.Embedding)
 	}
-	if cfg.Agent.MaxSteps != 30 || cfg.Agent.TokenBudget != 200000 || cfg.Agent.RunTimeout != 5*time.Minute {
+	if cfg.Agent.MaxSteps != 30 || cfg.Agent.TokenBudget != 200000 {
 		t.Fatalf("Agent defaults wrong: %+v", cfg.Agent)
 	}
 }
@@ -241,7 +241,6 @@ func TestLoadReadsModelAndBudgetConfig(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "bge-m3")
 	t.Setenv("AGENT_MAX_STEPS", "15")
 	t.Setenv("AGENT_TOKEN_BUDGET", "50000")
-	t.Setenv("AGENT_RUN_TIMEOUT", "2m")
 
 	cfg, err := Load()
 	if err != nil {
@@ -257,7 +256,7 @@ func TestLoadReadsModelAndBudgetConfig(t *testing.T) {
 	if cfg.Storage.MinIO.Bucket != "mindos-test" {
 		t.Fatalf("Storage.MinIO.Bucket = %q", cfg.Storage.MinIO.Bucket)
 	}
-	if cfg.Agent.MaxSteps != 15 || cfg.Agent.TokenBudget != 50000 || cfg.Agent.RunTimeout != 2*time.Minute {
+	if cfg.Agent.MaxSteps != 15 || cfg.Agent.TokenBudget != 50000 {
 		t.Fatalf("Agent = %+v", cfg.Agent)
 	}
 }
@@ -370,7 +369,6 @@ func TestValidate(t *testing.T) {
 		}, want: "MINIO_BUCKET"},
 		{name: "agent max steps", mutate: func(c *Config) { c.Agent.MaxSteps = 0 }, want: "AGENT_MAX_STEPS"},
 		{name: "agent token budget", mutate: func(c *Config) { c.Agent.TokenBudget = 0 }, want: "AGENT_TOKEN_BUDGET"},
-		{name: "agent run timeout", mutate: func(c *Config) { c.Agent.RunTimeout = 0 }, want: "AGENT_RUN_TIMEOUT"},
 		{name: "embedding partial", mutate: func(c *Config) {
 			c.Embedding.APIBase = "https://x"
 			c.Embedding.APIKey = "k"

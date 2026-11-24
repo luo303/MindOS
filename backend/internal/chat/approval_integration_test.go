@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/luo303/mindos/backend/internal/agent"
 	"github.com/luo303/mindos/backend/internal/approval"
@@ -21,7 +20,7 @@ func TestApproveTodoCreatesTodoAndMessage(t *testing.T) {
 	}
 	approvalSvc := approval.NewService(approval.NewRepository(gdb))
 	todoSvc := todo.NewService(todo.NewRepository(gdb))
-	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, Settings{Timeout: time.Second}, nil)
+	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, nil)
 
 	req, err := approvalSvc.Propose(ctx, approval.ProposeInput{
 		OwnerID: owner, ConversationID: conv.ID, ChatModelID: 10,
@@ -75,7 +74,7 @@ func TestAskBlockedByPendingApproval(t *testing.T) {
 	}
 	approvalSvc := approval.NewService(approval.NewRepository(gdb))
 	todoSvc := todo.NewService(todo.NewRepository(gdb))
-	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, Settings{Timeout: time.Second}, nil)
+	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, nil)
 	if _, err := approvalSvc.Propose(ctx, approval.ProposeInput{
 		OwnerID: owner, ConversationID: conv.ID, ToolName: "create_todo",
 		Arguments: approval.JSON{"title": "x"}, Summary: "创建待办：x",
@@ -97,7 +96,7 @@ func TestApprovalPartialAnswerSurvivesDecision(t *testing.T) {
 	}
 	approvalSvc := approval.NewService(approval.NewRepository(gdb))
 	todoSvc := todo.NewService(todo.NewRepository(gdb))
-	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, Settings{Timeout: time.Second}, nil)
+	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, nil)
 
 	req, err := approvalSvc.Propose(ctx, approval.ProposeInput{
 		OwnerID: owner, ConversationID: conv.ID, ChatModelID: 10,
@@ -156,7 +155,6 @@ func TestAskPersistsPartialAnswerBeforeApproval(t *testing.T) {
 		nil,
 		approvalSvc,
 		nil,
-		Settings{Timeout: time.Second},
 		nil,
 	)
 	resolved := &chatmodel.Resolved{ID: 1, Model: "fake", BaseURL: "https://x/v1"}
