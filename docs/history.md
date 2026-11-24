@@ -522,6 +522,7 @@ ReAct 循环，为后续挂记忆、任务、统计等工具留出扩展点。�
 - 审批前正文写入 `agent_approvals.partial_answer`，恢复时与审批后正文合并；审批续跑接入会话级 live，失败/取消也落 assistant 错误消息。
 - 客户端取消请求记为 499/debug，不再误报 500；逐条 SQL 日志默认关闭。
 - 写笔记改为右侧 Drawer，上传导入改为 Modal；Markdown 统一由 `components/markdown.tsx` 渲染，知识库正文与对话共用。
+- 待办支持手动批量选择删除，新增 `POST /todos/batch-delete`；AI `delete_todo` 接受 `ids` 数组，仍只生成一条审批，批准后一次批量软删除。
 - 亮/暗主题落地，深色为中性黑灰。
 
 **未做**
