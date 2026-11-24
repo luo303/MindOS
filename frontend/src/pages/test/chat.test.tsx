@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -35,6 +35,41 @@ function sseResponse(events: AskEvent[]) {
   })
 }
 
+function openSseResponse() {
+  let streamController: ReadableStreamDefaultController<Uint8Array>
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller
+    },
+  })
+  return {
+    response: new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } }),
+    push: (event: AskEvent) => streamController.enqueue(encoder.encode(sseLine(event))),
+    close: () => streamController.close(),
+  }
+}
+
+function controlAnimationFrames() {
+  const callbacks = new Map<number, FrameRequestCallback>()
+  let frameId = 0
+  let time = 0
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frameId += 1
+    callbacks.set(frameId, callback)
+    return frameId
+  })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => callbacks.delete(id))
+  return () => {
+    act(() => {
+      time += 17
+      const frame = Array.from(callbacks.values())
+      callbacks.clear()
+      frame.forEach((callback) => callback(time))
+    })
+  }
+}
+
 const hit = {
   n: 1,
   document_id: 1,
@@ -66,6 +101,13 @@ const conversationFixture = {
 
 /** /chat-models、/conversations 固定返回；会话消息的 POST 响应由调用方按次排队给出。 */
 function stubChatFetch(...messageResponses: Response[]) {
+  stubChatFetchWithConversations([conversationFixture], ...messageResponses)
+}
+
+function stubChatFetchWithConversations(
+  conversations: (typeof conversationFixture)[],
+  ...messageResponses: Response[]
+) {
   let messageCalls = 0
   vi.stubGlobal(
     'fetch',
@@ -76,12 +118,12 @@ function stubChatFetch(...messageResponses: Response[]) {
         return jsonResponse(envelope({ items: [chatModelFixture()] }))
       }
       if (url.endsWith('/conversations') && method === 'GET') {
-        return jsonResponse(envelope({ items: [conversationFixture] }))
+        return jsonResponse(envelope({ items: conversations }))
       }
       if (url.endsWith('/conversations') && method === 'POST') {
         return jsonResponse(envelope(conversationFixture))
       }
-      if (url.includes('/conversations/1/messages') && method === 'GET') {
+      if (/\/conversations\/\d+\/messages\?/.test(url) && method === 'GET') {
         return jsonResponse(envelope({ items: [] }))
       }
       if (url.includes('/conversations/1/messages') && method === 'POST') {
@@ -122,6 +164,52 @@ describe('Markdown 回答', () => {
 })
 
 describe('问答页', () => {
+  it.each(['会话', '页面'])('切换%s后不重播已有正文，只逐字追加新内容', async (destination) => {
+    const sse = openSseResponse()
+    const advanceFrame = controlAnimationFrames()
+    const otherConversation = { ...conversationFixture, id: 2, title: '另一个会话' }
+    stubChatFetchWithConversations([conversationFixture, otherConversation], sse.response)
+    const user = userEvent.setup()
+    const { router } = renderApp('/chat')
+
+    try {
+      await ask(user, '继续回答')
+      await act(async () => sse.push({ type: 'delta', seq: 1, payload: { text: '已读' } }))
+      advanceFrame()
+      advanceFrame()
+      expect(screen.getByText('已读')).toBeVisible()
+
+      if (destination === '会话') {
+        await user.click(screen.getByRole('button', { name: otherConversation.title }))
+      } else {
+        await act(() => router.navigate('/memory'))
+      }
+      expect(screen.queryByText('已读')).not.toBeInTheDocument()
+      await act(async () => sse.push({ type: 'delta', seq: 2, payload: { text: '后台' } }))
+
+      if (destination === '会话') {
+        await user.click(screen.getByRole('button', { name: conversationFixture.title }))
+      } else {
+        await act(() => router.navigate('/chat'))
+      }
+      await screen.findByText('继续回答')
+      expect(screen.getByText('已读后台')).toBeVisible()
+      expect(screen.getByRole('button', { name: '停止' })).toBeVisible()
+
+      await act(async () => sse.push({ type: 'delta', seq: 3, payload: { text: '更新' } }))
+      expect(screen.getByText('已读后台')).toBeVisible()
+      advanceFrame()
+      expect(screen.getByText('已读后台更')).toBeVisible()
+      advanceFrame()
+      expect(screen.getByText('已读后台更新')).toBeVisible()
+    } finally {
+      await act(async () => {
+        sse.push(doneEvent(7))
+        sse.close()
+      })
+    }
+  })
+
   it('没有配置对话模型时给出引导，输入框不可用', async () => {
     vi.stubGlobal(
       'fetch',

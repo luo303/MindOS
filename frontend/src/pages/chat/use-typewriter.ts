@@ -17,7 +17,7 @@ const BACKLOG_FAST = 120
 const BACKLOG_CATCH_UP = 280
 
 export function useTypewriter(target: string, active: boolean): string {
-  const [shown, setShown] = useState(active ? '' : target)
+  const [shown, setShown] = useState(target)
   const shownRef = useRef(shown)
   const targetRef = useRef(target)
   const lastFrameRef = useRef(0)
