@@ -106,6 +106,35 @@ describe('待办操作', () => {
     }))
   })
 
+  it('批量选择待办后一次删除', async () => {
+    const second: Todo = { ...todo, id: 18, title: '整理会议纪要' }
+    let items = [todo, second]
+    const write = vi.fn((method: string, url: string) => {
+      if (method === 'POST' && url === '/api/v1/todos/batch-delete') {
+        items = []
+        return jsonResponse(envelope({ deleted: 2 }))
+      }
+      return jsonResponse({ code: 'NOT_FOUND', message: 'unexpected' }, 404)
+    })
+    stubTodoFetch(() => items, write)
+    const user = userEvent.setup()
+    renderApp('/tasks')
+
+    await user.click(await screen.findByRole('checkbox', { name: `选择待办：${todo.title}` }))
+    await user.click(screen.getByRole('checkbox', { name: `选择待办：${second.title}` }))
+    await user.click(screen.getByRole('button', { name: /批量删除/ }))
+
+    const dialog = screen.getByRole('dialog', { name: '批量删除待办' })
+    expect(dialog).toHaveTextContent('选中的 2 条待办')
+    await user.click(within(dialog).getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByText('没有符合条件的待办')).toBeVisible()
+    expect(write).toHaveBeenCalledExactlyOnceWith('POST', '/api/v1/todos/batch-delete', expect.objectContaining({
+      body: JSON.stringify({ ids: [todo.id, second.id] }),
+    }))
+  })
+
   it('在弹框确认删除，取消不发请求，失败可在弹框重试', async () => {
     let items = [todo]
     const write = vi.fn()

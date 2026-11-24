@@ -55,3 +55,12 @@ export function updateTodo(id: number, input: UpdateTodoInput): Promise<Todo> {
 export function deleteTodo(id: number): Promise<{ deleted: boolean }> {
   return apiRequest<{ deleted: boolean }>(`/todos/${id}`, { method: 'DELETE' })
 }
+
+
+/** 批量删除。返回实际删除条数；不存在的 ID 会被忽略。 */
+export function deleteTodos(ids: number[]): Promise<{ deleted: number }> {
+  return apiRequest<{ deleted: number }>('/todos/batch-delete', {
+    method: 'POST',
+    body: { ids },
+  })
+}

@@ -4,6 +4,7 @@ import { useState } from 'react'
 
 import {
   createTodo,
+  deleteTodos,
   deleteTodo,
   fetchTodos,
   todoKeys,
@@ -42,7 +43,11 @@ const statusLabels: Record<TodoStatus, string> = {
   cancelled: '已取消',
 }
 
-type TodoDialog = { kind: 'create' } | { kind: 'edit'; todo: Todo } | { kind: 'delete'; todo: Todo }
+type TodoDialog =
+  | { kind: 'create' }
+  | { kind: 'edit'; todo: Todo }
+  | { kind: 'delete'; todo: Todo }
+  | { kind: 'batch-delete'; ids: number[] }
 
 function formatDue(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN', {
@@ -56,10 +61,12 @@ function formatDue(iso: string): string {
 export function TasksPage() {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState('open')
+  const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [dialog, setDialog] = useState<TodoDialog | null>(null)
   const isEditorOpen = dialog?.kind === 'create' || dialog?.kind === 'edit'
   const editingTodo = dialog?.kind === 'edit' ? dialog.todo : null
   const deletingTodo = dialog?.kind === 'delete' ? dialog.todo : null
+  const deletingIDs = dialog?.kind === 'batch-delete' ? dialog.ids : []
 
   const listQuery = useQuery({
     queryKey: todoKeys.list(status),
@@ -84,8 +91,22 @@ export function TasksPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteTodo(id),
+    onSuccess: (_result, id) => {
+      setDialog(null)
+      setSelected((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+      void invalidate()
+    },
+  })
+
+  const batchDeleteMutation = useMutation({
+    mutationFn: (ids: number[]) => deleteTodos(ids),
     onSuccess: () => {
       setDialog(null)
+      setSelected(new Set())
       void invalidate()
     },
   })
@@ -106,13 +127,39 @@ export function TasksPage() {
     setDialog({ kind: 'delete', todo })
   }
 
+  function handleOpenBatchDelete() {
+    if (dialog || selectedIDs.length === 0) {
+      return
+    }
+    batchDeleteMutation.reset()
+    setDialog({ kind: 'batch-delete', ids: selectedIDs })
+  }
+
   function handleCloseDialog() {
-    if (!saveMutation.isPending && !deleteMutation.isPending) {
+    if (!saveMutation.isPending && !deleteMutation.isPending && !batchDeleteMutation.isPending) {
       setDialog(null)
     }
   }
 
   const items = listQuery.data ?? []
+  const selectedIDs = items.filter((todo) => selected.has(todo.id)).map((todo) => todo.id)
+  const allSelected = items.length > 0 && selectedIDs.length === items.length
+
+  function toggleSelected(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(items.map((todo) => todo.id)))
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
@@ -124,7 +171,10 @@ export function TasksPage() {
               ariaLabel="筛选状态"
               value={status}
               options={statusOptions}
-              onChange={setStatus}
+              onChange={(next) => {
+                setStatus(next)
+                setSelected(new Set())
+              }}
               className="h-9 px-3 text-sm"
             />
             <Button size="sm" onClick={() => handleOpenEditor()}>
@@ -152,11 +202,37 @@ export function TasksPage() {
           <EmptyState title={status ? '没有符合条件的待办' : '还没有待办'} />
         </div>
       ) : (
-        <ul className="space-y-2">
-          {items.map((todo) => (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="text-muted-foreground flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleAll}
+                aria-label="全选待办"
+                className="accent-primary size-4"
+              />
+              全选
+            </label>
+            {selectedIDs.length > 0 ? (
+              <Button variant="destructive" size="sm" onClick={handleOpenBatchDelete}>
+                <Trash2 aria-hidden="true" />
+                批量删除（{selectedIDs.length}）
+              </Button>
+            ) : null}
+          </div>
+          <ul className="space-y-2">
+            {items.map((todo) => (
             <li key={todo.id}>
               <Card className="py-0">
                 <CardContent className="flex flex-wrap items-start gap-3 px-4 py-3 sm:px-5">
+                  <input
+                    type="checkbox"
+                    aria-label={`选择待办：${todo.title}`}
+                    checked={selected.has(todo.id)}
+                    onChange={() => toggleSelected(todo.id)}
+                    className="accent-primary mt-0.5 size-4 shrink-0"
+                  />
                   <button
                     type="button"
                     aria-label={todo.status === 'done' ? '标记为未完成' : '标记为完成'}
@@ -218,8 +294,9 @@ export function TasksPage() {
                 </CardContent>
               </Card>
             </li>
-          ))}
-        </ul>
+            ))}
+          </ul>
+        </>
       )}
 
       <Drawer open={isEditorOpen} title={editingTodo ? '编辑待办' : '新建待办'} onClose={handleCloseDialog}>
@@ -241,6 +318,17 @@ export function TasksPage() {
           error={deleteMutation.error}
           onCancel={handleCloseDialog}
           onConfirm={() => deleteMutation.mutate(deletingTodo.id)}
+        />
+      ) : null}
+
+      {deletingIDs.length > 0 ? (
+        <DeleteConfirmDialog
+          title="批量删除待办"
+          targetName={`选中的 ${deletingIDs.length} 条待办`}
+          pending={batchDeleteMutation.isPending}
+          error={batchDeleteMutation.error}
+          onCancel={handleCloseDialog}
+          onConfirm={() => batchDeleteMutation.mutate(deletingIDs)}
         />
       ) : null}
     </div>
