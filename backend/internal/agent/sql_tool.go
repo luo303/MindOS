@@ -12,7 +12,7 @@ import (
 
 // sqlInput 是 query_knowledge 的参数。
 type sqlInput struct {
-	SQL string `json:"sql" jsonschema:"description=一条只读 SELECT；必须显式写列名，单条语句"`
+	SQL string `json:"sql" jsonschema:"description=一条只读 SELECT 或以 WITH 开头的只读查询。显式选择允许的列，不提交 SELECT *"`
 }
 
 // sqlOutput 是给模型的查询结果。单元格统一转成字符串，避免 JSON 里混入
@@ -47,17 +47,13 @@ func (l *auditLog) all() []SQLAudit {
 
 // sqlToolDescription 同时承担"说明"与"路由"：模型必须知道有哪些列、
 // 哪些事不能做，否则它会写 SELECT *，然后被权限拒绝、反复重试。
-const sqlToolDescription = `在只读数据库上执行一条 SELECT，用于统计、分组、筛选、时间范围查询。
+const sqlToolDescription = `只读统计或筛选当前用户的文档元数据，不读正文或待办。允许单条 SELECT/WITH，显式指定列，不用 SELECT *。
 
-只能查询当前用户的知识库数据，可用表与列：
+可用表与列：
 - documents: id, title, source_type, mime, collection, tags, status, chunk_count, size_bytes, embed_status, embed_model, embed_dimensions, embedded_chunks, embedded_at, created_at, updated_at, owner_id
 - document_chunks: id, document_id, seq, heading, start_offset, end_offset, token_count, embed_model, embedded_at, created_at
 
-限制：
-1. 只能是一条 SELECT 或 WITH 查询，不能修改数据。
-2. 必须显式写列名；SELECT * 会因为没有 content 等列的权限而被拒绝。
-3. 正文 content 不可读；问"内容讲了什么"要用 search_knowledge。
-4. 最多返回 200 行，超过 3 秒会超时。`
+collection 为分类；embed_status 为向量化状态（pending/running/done/failed/skipped）。文档总数用 COUNT(*)，不用 row_count。上限 200 行、3 秒；truncated=true 表示结果不完整。`
 
 // newSQLTool 构造 query_knowledge 工具。
 //

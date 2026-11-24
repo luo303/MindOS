@@ -58,8 +58,8 @@ func (b *toolBudget) take() error {
 // json 与 jsonschema 两个 tag 都要写：前者决定解码时的字段名，
 // 后者是给模型看的参数说明——没有说明的字段，模型经常会不填或乱填。
 type searchInput struct {
-	Query string `json:"query" jsonschema:"description=检索词，尽量用原文里的关键词，不要写整句问题"`
-	Limit int    `json:"limit" jsonschema:"description=返回条数 1-10，默认 5"`
+	Query string `json:"query" jsonschema:"description=用原文可能出现的实体名、主题词或标题，避免会话指代"`
+	Limit int    `json:"limit,omitempty" jsonschema:"description=可选片段数，默认 5，最多 10 且受当前检索配置上限约束"`
 }
 
 // searchOutput 是单个片段对模型的呈现。
@@ -126,7 +126,7 @@ func newSearchTool(retriever Retriever, ownerID int64, registry *Registry, maxRe
 		return out, nil
 	}
 
-	return utils.InferTool("search_knowledge", "在个人知识库中检索片段，返回带编号的原文", invoke)
+	return utils.InferTool("search_knowledge", "查当前用户的文档或笔记正文，用于回答内容或找出处。返回片段及引用编号 n；空数组仅表示本次未命中。", invoke)
 }
 
 // truncateRunes 按码点截断，不按字节。

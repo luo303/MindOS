@@ -85,7 +85,7 @@ npm run build        # tsc --noEmit && vite build，产物在 dist/
 - 磨砂面板共用 `workspace.css` 的 `.glass-surface`。仅对快捷入口等短卡片启用 `Card interactive`；表单和正文保持静止。触屏和开启「减少动态效果」时不跟随光标倾斜。
 - 知识页是第一个真实业务页：上传走 `FormData`（客户端只在 `apiRequest` 一处判断，不手写 `Content-Type`），分块偏移是**码点**而不是 UTF-16 下标；需要高亮原文时用 `Array.from(text).slice(start, end)`，不要用 `String.slice`。
 - 问答页（`/chat`）的 SSE **不用 EventSource**：它只支持 GET、带不了 JSON body，而 `POST /ask` 的提问在 body 里。所以 `src/api/ask.ts` 用 fetch + ReadableStream 手写解析——按空行切事件、先去掉 `\r`（有的代理会改写换行）、坏事件跳过、流结束时把缓冲里最后一条也分发。这是对"原生 EventSource"直觉的一处有意偏离，理由就写在这里与 `ask.ts` 头部注释。
-- 问答页正文里的 `[n]` 引用只在 citation 事件到达后才渲染成链接（`/knowledge?doc=&chunk=` 深链）：裁决之前没有任何引用是可信的，编号越界的回答会被整段撤回。
+- 对话助手 Lore 用正文检索回答知识库问题，按配置可查询文档元数据和待办。正文里的 `[n]` 只有收到匹配的 citation 映射才渲染成链接（`/knowledge?doc=&chunk=` 深链）；没有映射的编号保持纯文本，不触发整段撤回。Lore 提交的待办变更由界面审批，聊天里回复「批准」不会执行变更。
 
 ## 测试
 

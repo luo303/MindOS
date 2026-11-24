@@ -15,15 +15,9 @@ import (
 	"github.com/luo303/mindos/backend/internal/todo"
 )
 
-const todoInstruction = `
-你可以查询待办；创建/修改/删除待办必须分别调用 create_todo / update_todo / delete_todo。
-create_todo 只会生成“待审批”提案，不会立即落库。工具返回 pending_approval 时，
-如实告诉用户“已提交审批，需要确认”，不要声称已经创建成功。
-`
-
 type listTodosInput struct {
-	Status string `json:"status" jsonschema:"description=可选：open/in_progress/done/cancelled"`
-	Limit  int    `json:"limit" jsonschema:"description=返回条数 1-20，默认 10"`
+	Status string `json:"status,omitempty" jsonschema:"description=可选状态：open 待处理 / in_progress 进行中 / done 已完成 / cancelled 已取消。省略则不按状态筛选"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"description=可选返回条数，默认 10，最多 20"`
 }
 
 type todoOutput struct {
@@ -65,14 +59,14 @@ func newListTodosTool(svc *todo.Service, ownerID int64, budget *toolBudget) (too
 		}
 		return out, nil
 	}
-	return utils.InferTool("list_todos", "查询当前用户的待办列表", invoke)
+	return utils.InferTool("list_todos", "查看当前用户的待办，可按状态筛选，返回 ID 和进度。无标题搜索或分页；有限列表不代表全量。", invoke)
 }
 
 type createTodoInput struct {
 	Title       string `json:"title" jsonschema:"description=待办标题，必填，不超过 200 字"`
-	Description string `json:"description" jsonschema:"description=可选说明"`
-	Priority    int    `json:"priority" jsonschema:"description=优先级 1 高 / 2 中 / 3 低，默认 2"`
-	DueAt       string `json:"due_at" jsonschema:"description=可选的截止时间，RFC3339，例如 2026-11-25T18:00:00+08:00"`
+	Description string `json:"description,omitempty" jsonschema:"description=可选说明，按用户给出的要求补充背景或验收条件"`
+	Priority    int    `json:"priority,omitempty" jsonschema:"description=可选优先级 1 高 / 2 中 / 3 低，省略则默认 2"`
+	DueAt       string `json:"due_at,omitempty" jsonschema:"description=可选截止时间，用 RFC3339 且带时区，例如 2026-11-25T18:00:00+08:00。没有明确时间或时区时不要猜"`
 }
 
 type pendingApprovalOutput struct {
@@ -193,19 +187,19 @@ func newCreateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 		}
 		return "已创建待办：" + created.Title, nil
 	}
-	return utils.InferTool("create_todo", "创建待办；会暂停等待用户审批，批准后才落库", invoke)
+	return utils.InferTool("create_todo", "提交新增一条待办的审批；只要计划或草稿时不用此工具。", invoke)
 }
 
 type updateTodoInput struct {
-	ID          int64  `json:"id" jsonschema:"description=待办 ID"`
-	Title       string `json:"title,omitempty" jsonschema:"description=新标题，空字符串表示不改"`
-	Description string `json:"description,omitempty" jsonschema:"description=新描述，空字符串表示不改"`
-	Status      string `json:"status,omitempty" jsonschema:"description=新状态 open/in_progress/done/cancelled"`
-	Priority    int    `json:"priority,omitempty" jsonschema:"description=新优先级 1-3，0 表示不改"`
+	ID          int64  `json:"id" jsonschema:"description=已确认的待办 ID。不确定时先用 list_todos 定位"`
+	Title       string `json:"title,omitempty" jsonschema:"description=新标题，省略则不变"`
+	Description string `json:"description,omitempty" jsonschema:"description=新说明，省略或传空字符串都不变，不支持清空"`
+	Status      string `json:"status,omitempty" jsonschema:"description=新状态 open 待处理 / in_progress 进行中 / done 已完成 / cancelled 已取消"`
+	Priority    int    `json:"priority,omitempty" jsonschema:"description=新优先级 1 高 / 2 中 / 3 低，省略则不变"`
 }
 
 type deleteTodoInput struct {
-	ID int64 `json:"id" jsonschema:"description=待办 ID"`
+	ID int64 `json:"id" jsonschema:"description=已确认要删除的待办 ID。不确定时先用 list_todos 定位"`
 }
 
 func newUpdateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
@@ -286,7 +280,7 @@ func newUpdateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 		}
 		return "已修改待办：" + updated.Title, nil
 	}
-	return utils.InferTool("update_todo", "修改待办；会暂停等待用户审批，批准后才落库", invoke)
+	return utils.InferTool("update_todo", "提交一条待办的修改审批。仅传要改的字段；标记完成用 status=done，不支持改截止时间。", invoke)
 }
 
 func newDeleteTodoTool(svc *todo.Service, approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
@@ -339,5 +333,5 @@ func newDeleteTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 		}
 		return "已删除待办。", nil
 	}
-	return utils.InferTool("delete_todo", "删除待办；会暂停等待用户审批，批准后才落库", invoke)
+	return utils.InferTool("delete_todo", "提交删除一条待办的审批。完成或取消应改状态，不删除。", invoke)
 }

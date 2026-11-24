@@ -2,8 +2,7 @@
 //
 // 分工：编号与 registry 由宿主维护（见 hit.go），工具只负责检索与登记；
 // 这里只管"跑起来、把 token 拼成答案、守住预算"。
-// 裁决（answered / refused / ungrounded）不在这里——那是 chat 层的职责，
-// 因为它还要落库、要发 SSE，而 agent 不认识 HTTP。
+// chat 层负责落库与 SSE，并把引用编号映射到用户可点回的原文。
 package agent
 
 import (
@@ -23,44 +22,6 @@ import (
 	"github.com/luo303/mindos/backend/internal/approval"
 	"github.com/luo303/mindos/backend/internal/todo"
 )
-
-// RefusalSentence 是模型被要求输出的固定拒答句。
-//
-// 现在没有 judge 了，这句话不再被用来判定 verdict；它只是给用户一个
-// 一致、可预期的"没有依据"回复。是否拒答完全由模型按提示词决定。
-const RefusalSentence = "根据现有知识库无法回答该问题"
-
-// instruction 是系统提示词。
-//
-// 这是本轮架构里**唯一的约束**：宿主不再预检索、不再校验引用。
-// 所以它必须把"先检索、只引用返回过的编号、没依据就拒答"写清楚，
-// 但也要知道：模型不照做时系统不会拦。
-const instruction = `你是 MindOS 的知识库问答助手。回答涉及用户资料、文档内容、知识库事实的问题前，
-必须先调用 search_knowledge 检索；可以换关键词多次检索，但不要无意义地重复。
-
-必须遵守：
-1. 只依据 search_knowledge 返回的片段，以及 system 消息中给出的会话摘要/相关历史回答；
-   不得引入外部知识、常识补全或推测。
-2. 来自检索片段的结论末尾必须标注返回的编号，例如 [1]；一句话有多个来源写 [1][3]。
-   来自会话摘要/相关历史的事实不需要编号。
-3. 只引用本次工具真正返回过的编号；不要编造编号。
-4. 检索片段和会话摘要/历史都不足以回答时，只输出这一句：` + RefusalSentence + `。
-   不要解释、不要给建议、不要猜。
-5. 不要照抄原文超过 30 字，用自己的话归纳。
-6. 不要提"资料""上下文""片段""根据提供的内容"这类词，直接回答问题。`
-
-// sqlInstruction 只在 SQL 工具真的注册时才拼进系统提示词。
-// 否则模型会去调一个不存在的 query_knowledge，把一次普通问答变成工具错误。
-const sqlInstruction = `当问题需要数量、分布、时间范围或按字段筛选（"有多少篇""按分类统计""哪些还没向量化"）时，
-调用 query_knowledge 执行一条只读 SELECT。可用表与列：
-- documents: id, title, source_type, mime, collection, tags, status, chunk_count, size_bytes, embed_status, embed_model, embed_dimensions, embedded_chunks, embedded_at, created_at, updated_at, owner_id
-- document_chunks: id, document_id, seq, heading, start_offset, end_offset, token_count, embed_model, embedded_at, created_at
-
-SQL 规则：只写一条 SELECT/WITH；必须显式写列名（SELECT * 会被权限拒绝）；
-content 不可读，问"内容讲了什么"仍然用 search_knowledge；统计结果不需要引用编号。`
-
-// instructionWithSQL 是注册了 SQL 工具时的完整提示词。
-const instructionWithSQL = instruction + "\n\n" + sqlInstruction
 
 // Retriever 是 agent 需要的全部检索能力。
 //
@@ -177,28 +138,28 @@ func New(chatModel model.BaseModel[*schema.Message], retriever Retriever, sqlRun
 	}
 }
 
-// Ask 跑一次问答。
-//
-// onDelta 每收到一段正文调用一次；返回错误会中止本次问答（上层据此停止推送，
-// 例如客户端已经断开）。它是唯一把正文送出去的口子——工具结果、思考过程
-// 都不经过这里，避免把不该给用户看的内容混进答案。
-func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(string) error) (*Result, error) {
-	// 一次 run 一个预算：检索与 SQL 共享 3 次，而不是各 3 次。
+// newChatModelAgent 让新问答和审批恢复使用相同的提示词与工具配置。
+func (a *Agent) newChatModelAgent(ctx context.Context) (*adk.ChatModelAgent, error) {
 	budget := newToolBudget(a.limits.MaxToolCalls)
+	meta := RunMetaFrom(ctx)
+	canListTodos := a.todos != nil
+	// 单轮问答也有 checkpoint ID，但没有会话供审批恢复，不能暴露写工具。
+	canWriteTodos := canListTodos && a.approvals != nil && a.checkpoints != nil && meta.CheckpointID != "" && meta.ConversationID > 0
+	hasSQL := a.sqlRunner != nil
 
 	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.maxResults, budget, a.onHits)
 	if err != nil {
 		return nil, fmt.Errorf("build search tool: %w", err)
 	}
 	tools := []tool.BaseTool{searchTool}
-	if a.todos != nil {
+	if canListTodos {
 		listTool, err := newListTodosTool(a.todos, a.ownerID, budget)
 		if err != nil {
 			return nil, fmt.Errorf("build list_todos tool: %w", err)
 		}
 		tools = append(tools, listTool)
 	}
-	if a.todos != nil && a.approvals != nil {
+	if canWriteTodos {
 		createTool, err := newCreateTodoTool(a.todos, a.approvals, a.ownerID, budget)
 		if err != nil {
 			return nil, fmt.Errorf("build create_todo tool: %w", err)
@@ -215,7 +176,7 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 		}
 		tools = append(tools, deleteTool)
 	}
-	if a.sqlRunner != nil {
+	if hasSQL {
 		sqlTool, err := newSQLTool(a.sqlRunner, a.ownerID, budget, a.audits)
 		if err != nil {
 			return nil, fmt.Errorf("build sql tool: %w", err)
@@ -223,25 +184,14 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 		tools = append(tools, sqlTool)
 	}
 
-	// 工具列表决定提示词：没注册 query_knowledge 就不该在提示词里提它。
-	instr := instruction
-	if a.sqlRunner != nil {
-		instr = instructionWithSQL
-	}
-	if a.todos != nil && a.approvals != nil {
-		instr += todoInstruction
-	}
-
-	tools = guardTools(tools)
-
-	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:        "mindos-rag",
-		Description: "基于个人知识库回答问题，按需检索或统计",
-		Instruction: instr,
+	return adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        runtimeAgentName,
+		Description: loreDescription,
+		Instruction: lorePrompt(hasSQL, canListTodos, canWriteTodos),
 		Model:       a.chatModel,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: tools,
+				Tools: guardTools(tools),
 				// 顺序执行：并行时两个检索同时跑，编号分配顺序随调度变化，
 				// 同一个问题两次运行会给出不同的 [n] 对应关系，排查时非常费劲。
 				ExecuteSequentially: true,
@@ -249,6 +199,14 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 		},
 		MaxIterations: a.limits.MaxIterations,
 	})
+}
+
+// Ask 跑一次问答。
+//
+// onDelta 每收到一段正文调用一次；返回错误会中止本次问答（上层据此停止推送，
+// 例如客户端已经断开）。工具结果和思考过程不会从这里发送。
+func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(string) error) (*Result, error) {
+	chatAgent, err := a.newChatModelAgent(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("new chat model agent: %w", err)
 	}
@@ -369,58 +327,7 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 //
 // 工具会再次进入 InvokableRun，通过 tool.GetResumeContext 读到审批决定。
 func (a *Agent) Resume(ctx context.Context, checkpointID, interruptID string, decision map[string]any, onDelta func(string) error) (*Result, error) {
-	budget := newToolBudget(a.limits.MaxToolCalls)
-	searchTool, err := newSearchTool(a.retriever, a.ownerID, a.registry, a.maxResults, budget, a.onHits)
-	if err != nil {
-		return nil, fmt.Errorf("build search tool: %w", err)
-	}
-	tools := []tool.BaseTool{searchTool}
-	if a.todos != nil {
-		listTool, err := newListTodosTool(a.todos, a.ownerID, budget)
-		if err != nil {
-			return nil, fmt.Errorf("build list_todos tool: %w", err)
-		}
-		tools = append(tools, listTool)
-	}
-	if a.todos != nil && a.approvals != nil {
-		createTool, err := newCreateTodoTool(a.todos, a.approvals, a.ownerID, budget)
-		if err != nil {
-			return nil, fmt.Errorf("build create_todo tool: %w", err)
-		}
-		tools = append(tools, createTool)
-		updateTool, err := newUpdateTodoTool(a.todos, a.approvals, a.ownerID, budget)
-		if err != nil {
-			return nil, fmt.Errorf("build update_todo tool: %w", err)
-		}
-		tools = append(tools, updateTool)
-		deleteTool, err := newDeleteTodoTool(a.todos, a.approvals, a.ownerID, budget)
-		if err != nil {
-			return nil, fmt.Errorf("build delete_todo tool: %w", err)
-		}
-		tools = append(tools, deleteTool)
-	}
-	if a.sqlRunner != nil {
-		sqlTool, err := newSQLTool(a.sqlRunner, a.ownerID, budget, a.audits)
-		if err != nil {
-			return nil, fmt.Errorf("build sql tool: %w", err)
-		}
-		tools = append(tools, sqlTool)
-	}
-	instr := instruction
-	if a.sqlRunner != nil {
-		instr = instructionWithSQL
-	}
-	if a.todos != nil && a.approvals != nil {
-		instr += todoInstruction
-	}
-	tools = guardTools(tools)
-
-	chatAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name: "mindos-rag", Description: "基于个人知识库回答问题，按需检索或统计",
-		Instruction: instr, Model: a.chatModel,
-		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools, ExecuteSequentially: true}},
-		MaxIterations: a.limits.MaxIterations,
-	})
+	chatAgent, err := a.newChatModelAgent(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("new chat model agent: %w", err)
 	}
