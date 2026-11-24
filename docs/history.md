@@ -389,7 +389,7 @@ npm run build
 
 **验证**：假模型端到端（正常/两类 ungrounded/model_refused/阈值拒答/qa_runs 落库）+ 真实模型冒烟（讯飞 spark-x2.6：库内问题 46 个 delta 带真实引用 34.5s 完成；库外问题 0 token 125ms 拒答）。后端 `build/vet/test -race`（含真库集成）与前端 `tsc/eslint/56 用例/build` 全绿。
 
-**踩过的坑**：`http.Server.WriteTimeout`（20s）对 SSE 是硬伤——它是整条响应的硬上限，真实模型回答在 24.5s 时被砍断，客户端只收到 retrieval 事件。假模型冒烟没暴露是因为假模型秒回。**教训：流式接口的故障演练必须用接近真实的时延跑一遍**。修复是 `/ask` 用 `http.NewResponseController().SetWriteDeadline(零值)` 清掉本请求的写截止（Go 1.20+ 官方写法），流的存活交给 `RAG_TIMEOUT` 与客户端断开。
+**踩过的坑**：`http.Server.WriteTimeout`（20s）对 SSE 是硬伤——它是整条响应的硬上限，真实模型回答在 24.5s 时被砍断，客户端只收到 retrieval 事件。假模型冒烟没暴露是因为假模型秒回。**教训：流式接口的故障演练必须用接近真实的时延跑一遍**。修复是 `/ask` 用 `http.NewResponseController().SetWriteDeadline(零值)` 清掉本请求的写截止（Go 1.20+ 官方写法），流当时交给 `RAG_TIMEOUT` 与客户端断开；后续整轮超时已移除，改为单次调用超时。
 
 **已知限制**：见 `docs/design/rag.md` §13（中文全文弱、引用粒度是分块、无 rerank、单轮、无评测基线、思维链丢弃等 11 条）。
 

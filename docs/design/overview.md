@@ -436,7 +436,7 @@ recency = exp(-days_since_last_recall / 30)
 
 1. `max_steps`（默认 12）：ReAct 循环轮数。
 2. `budget_tokens`（默认按会话配置）：**检查点挂在每次模型调用的回调上**，不是每轮检查——一次思考可能连调 5 次模型，等一轮结束早就超支了。
-3. 整体超时（默认 120s）：`context.WithTimeout`，同时覆盖模型与工具调用。
+3. 单次外部调用超时：模型调用与工具各自的 HTTP/DB 超时；不设整轮 `context.WithTimeout`，避免正在流式输出时被总时长截断。
 
 终止时写 `agent_runs.error_code = BUDGET_EXCEEDED | STEP_LIMIT | TIMEOUT`，并把已产生的部分结果保留在 `output` 里，避免"跑到一半什么都没留下"。
 

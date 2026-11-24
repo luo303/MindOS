@@ -31,7 +31,7 @@
 |---|---|---|
 | 多格式文档要能被语义召回 | 解析 → 切分 → embedding → 向量与全文混合检索 | 幂等入库、分块策略、RRF 融合、引用定位 |
 | 记忆会重复、冲突、过期 | 显式提炼 + 版本链 + 合并 | 相似度阈值、supersede 链、来源追溯 |
-| Agent 不能失控、不能烧钱、要能中断恢复 | 步数 / token / 超时三重预算 + checkpoint | Eino ADK Runner、审批门、事件全量落库 |
+| Agent 不能失控、不能烧钱、要能中断恢复 | 步数 / token / 单次调用超时 + checkpoint | Eino ADK Runner、审批门、事件全量落库 |
 | 长任务不能与 HTTP 生命周期绑死 | outbox + RabbitMQ 派发 + tasks 对账 | 死信重投、积压观测、断连取消 |
 
 **多租户是硬边界**：一个账号就是一个隔离域。业务表必须有 `owner_id`（指向 `users.id`），
@@ -114,7 +114,7 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 7. **每个外部调用必须带超时**：DB、MQ、LLM、Embedding、文件解析、HTTP client。
 8. **错误必须可追溯**：`fmt.Errorf("...: %w", err)` 或 `httpx.Error.Wrap`；不把底层错误原文返回客户端。
 9. **资源必须关闭、goroutine 必须有退出路径**：连接池、`resp.Body`、`sql.Rows`、上传文件打开即 `defer Close()`；后台 goroutine 靠 `ctx.Done()` 退出并自带 `defer recover()`。
-10. **Agent 三重上限**：`max_steps`、token 预算、整体超时，缺一不允许合并。
+10. **Agent 上限**：`max_steps`、token 预算、单次外部调用超时必须同时存在；不设整轮 wall-clock 超时，避免长回答流到一半被截断。
 11. **工具调用必须留痕**：每次调用写 `tool_audits`；写类工具必须过审批门。
 12. **改动收尾门槛**：后端 `go build ./...` + `go vet ./...` + `go test -race ./...` 全绿；前端 `npm run lint` + `test` + `build` 全绿；端到端验证跑通。
 13. **隔离条件不可选**：仓储里的 `owner_id` 只能用 `Where("owner_id = ? AND ...", ownerID, ...)` 写死。
@@ -240,7 +240,7 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 
 | 位置 | 影响 | 处理时机 |
 |---|---|---|
-| `AGENT_MAX_STEPS` / `AGENT_TOKEN_BUDGET` / `AGENT_RUN_TIMEOUT` | 配置会被解析并显示在设置页，但 Agent Builder 仍使用 `agent.DefaultLimits()`，chat 超时仍使用 `RAG_TIMEOUT`；改 .env 不会改变实际预算 | 接线或移除配置前，必须在本节保留说明；排查预算时以代码常量为准 |
+| `AGENT_MAX_STEPS` / `AGENT_TOKEN_BUDGET` | 配置会被解析并显示在设置页，但 Agent Builder 仍使用 `agent.DefaultLimits()` 的工具/迭代/token 常量；改 .env 不会改变实际预算 | 接线或移除配置前，必须在本节保留说明；排查预算时以代码常量为准 |
 
 早期已关闭：panic 请求访问日志丢失、配置类型错误静默回退、客户端取消被记成 500、工具预算耗尽被归为 upstream_error。新问题按“位置 / 影响 / 处理时机”追加到本节。
 

@@ -209,15 +209,15 @@ type Retriever interface {
 
 **编号与校验的归属**（本方案最关键的一条）：**编号由宿主分配，模型只能引用已存在的编号**。工具返回的片段必须先登记进 registry 才给模型看；模型输出里出现未登记的编号一律判 `ungrounded`。这样"编造引用"在结构上不可能通过校验，而不是靠 prompt 求它别编。
 
-**预算三道闸**（AGENTS 硬约束 #10）：
+**预算闸门**（AGENTS 硬约束 #10）：
 
 | 闸门 | 值 | 落点 |
 |---|---|---|
-| 整体超时 | `RAG_TIMEOUT`（默认 60s） | `context.WithTimeout`，覆盖模型与工具 |
-| 步数 | 常量 3 次工具调用 | 工具闭包内计数，超限直接返回错误（模型收到工具失败会收手） |
-| token | 常量 60000 | 按 `event.Output` 里的 usage 累计（部分厂商不回 usage 时退化为按字符估算），超限 `adk.WithCancel()` |
+| 单次模型调用 | 60s | `agent.NewChatModel` 的 HTTP Timeout |
+| 工具调用 | 12 次 | 工具闭包内计数，超限返回普通工具结果让模型收尾 |
+| token | 120000 | 按 `event.Output` 里的 usage 累计，超限 `adk.WithCancel()` |
 
-不把 steps/token 做成配置：它们不是部署差异而是产品约束，配置化只会让人以为可以放开。超时是部署差异（模型快慢不同），所以配置。
+不设整轮 wall-clock 超时：长回答只要单次调用和工具没有超时，就应该允许继续流式输出，不能因为整轮累计时长把正在生成的内容截断。steps/token 仍是产品约束，不配置化。
 
 **取消**：`cancelOpt, cancelFn := adk.WithCancel()` 与 `Query` 一起传入；HTTP 连接断开（`c.Request.Context().Done()`）时调 `cancelFn(adk.WithAgentCancelMode(adk.CancelAfterToolCalls))`，等 `handle.Wait()` 收尾。断连就停，是不烧钱的唯一保证。
 
@@ -440,7 +440,6 @@ CREATE INDEX qa_runs_created_at_idx ON qa_runs (created_at DESC);
 |---|---|---|
 | `RAG_TOP_K` | 8 | 进上下文的片段数（1–20） |
 | `RAG_MIN_SIMILARITY` | 0.46 | 低于它直接拒答；0.35 是经验起点，0.46 是真实语料校准后的值（见下） |
-| `RAG_TIMEOUT` | 60s | 单次问答整体超时 |
 | `MINDOS_MASTER_KEY` | 自动生成 | base64 的 32 字节，加密模型 Key 用。留空则启动时生成到 `backend/.data/master.key` |
 
 **删除** `LLM_API_BASE / LLM_API_KEY / LLM_MODEL`：对话模型改由数据库配置（§7.1）。若这三个变量仍有值，启动时打一条 warn 说明它们已不生效、请到 Settings 添加配置——**不做自动导入**，因为你要的就是"服务端不替用户决定用哪个模型"，静默替用户建一条默认记录与这个原则相悖。
@@ -515,6 +514,6 @@ CREATE INDEX qa_runs_created_at_idx ON qa_runs (created_at DESC);
 | 库内有答案（RabbitMQ 延迟队列） | retrieval → 46 个 delta → verdict `answered` → citation `[9][11]` 均映射到真实分块 → done；34.5s，4300/552 tokens；回答内容与文档一致 |
 | 库外问题（Shor 算法） | 阈值闸门拦下：verdict `refused`/`no_evidence`，**0 token、125ms**，没有调模型 |
 
-**验收中抓到并修复的缺陷**：`http.Server.WriteTimeout`（20s）是整条响应的硬上限，流式问答 24.5s 时写内核缓冲报 i/o timeout，客户端只收到 retrieval 事件连接即被砍。修复：`/ask` 在发响应头前用 `http.NewResponseController().SetWriteDeadline(零值)` 清掉本请求的写截止，流的存活改由 `RAG_TIMEOUT` 与客户端断开负责；普通接口仍受全局 WriteTimeout 保护。同时把本地 `RAG_TIMEOUT` 调到 180s 以适配推理模型的冷启动。
+**验收中抓到并修复的缺陷**：`http.Server.WriteTimeout`（20s）是整条响应的硬上限，流式问答 24.5s 时写内核缓冲报 i/o timeout，客户端只收到 retrieval 事件连接即被砍。修复：`/ask` 在发响应头前用 `http.NewResponseController().SetWriteDeadline(零值)` 清掉本请求的写截止，流的存活改由单次模型调用超时与客户端断开负责；普通接口仍受全局 WriteTimeout 保护。后续已移除整轮 wall-clock 超时。
 
 **门禁**：后端 `build` / `vet` / `test -race`（含真实 PostgreSQL/pgvector 集成）全绿；前端 `tsc` / `eslint` / 56 用例 / `build` 全绿。
