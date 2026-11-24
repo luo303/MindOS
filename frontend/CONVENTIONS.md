@@ -29,6 +29,7 @@
 
 - **Tailwind 优先**，且本项目只有 Tailwind：不引入 `*.module.less`、CSS-in-JS、`styled-components`。主题写在 `src/index.css` 的 `@theme`，不在组件里堆内联样式。
 - 基础控件用 `@/components/ui/` 里的 shadcn 组件，不自己拼一套按钮/输入框。
+- 日期、时间输入用共享 `Input` 的原生日期类型，整框可点击打开选择器，保留原生键盘编辑和图标。
 - **不直接写原生 `<button>`**：Tailwind 的 preflight 清掉了默认背景，裸 `<button>` 会出现"看起来不能点"的无底色按钮。确有需要（例如整张卡片作为点击区）必须显式声明 `bg-*`，含 `hover:` 与 `disabled:` 状态，并在浏览器里核对过实际观感，不能只看 JSX。
 - 颜色与间距用设计令牌（`bg-background` / `text-muted-foreground` / `border-border`），不写死 `#hex`。
 

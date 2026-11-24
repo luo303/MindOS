@@ -59,6 +59,7 @@ npm run build        # tsc --noEmit && vite build，产物在 dist/
 
 - 基础控件只用 `src/components/ui/`：Button、Input、Textarea、Select、Toast、Drawer、Modal 等，不另写一套。
 - 右侧抽屉 `Drawer` 用于持续编辑（写笔记）；`Modal` 用于短流程（上传文件、筛选、确认）。
+- 日期和时间输入使用共享 `Input`，支持点击整框打开浏览器选择器，并保留原生键盘与图标操作。
 - 对话区离底部超过 160 像素时在输入框上方居中显示「回到底部」，与输入区保留 16 像素间距。上翻阅读时不跟随流式回复，回到底部后恢复跟随。
 - 会话/文档列表的当前项统一用 `SlidingPill` 玻璃胶囊。
 - 正文统一用 `components/markdown.tsx`；对话和知识库共用，HTML 默认转义。
