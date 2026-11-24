@@ -121,8 +121,10 @@ func assertLoreToolSchema(t *testing.T, info *schema.ToolInfo) {
 		required = []string{"sql"}
 	case "create_todo":
 		required = []string{"title"}
-	case "update_todo", "delete_todo":
+	case "update_todo":
 		required = []string{"id"}
+	case "delete_todo":
+		required = []string{"ids"}
 	}
 	params, err := info.ToJSONSchema()
 	if err != nil {

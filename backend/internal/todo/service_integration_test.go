@@ -61,3 +61,39 @@ func TestTodoServiceIntegration(t *testing.T) {
 		t.Fatalf("get after delete = %v, want ErrNotFound", err)
 	}
 }
+
+func TestDeleteManyIntegration(t *testing.T) {
+	db := testsupport.NewDatabase(t, "todo_batch")
+	if err := migrate.New(db, migrations.FS).Up(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	gdb := testsupport.NewGorm(t, db)
+	owner := testsupport.NewUser(t, gdb, "todo-batch@example.com")
+	other := testsupport.NewUser(t, gdb, "todo-batch-other@example.com")
+	svc := NewService(NewRepository(gdb))
+	ctx := context.Background()
+
+	first, err := svc.Create(ctx, owner, CreateInput{Title: "一"})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, err := svc.Create(ctx, owner, CreateInput{Title: "二"})
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	third, err := svc.Create(ctx, owner, CreateInput{Title: "三"})
+	if err != nil {
+		t.Fatalf("create third: %v", err)
+	}
+	deleted, err := svc.DeleteMany(ctx, owner, []int64{first.ID, third.ID, third.ID})
+	if err != nil || deleted != 2 {
+		t.Fatalf("delete many = %d, %v", deleted, err)
+	}
+	items, err := svc.List(ctx, owner, Filter{})
+	if err != nil || len(items) != 1 || items[0].ID != second.ID {
+		t.Fatalf("remaining = %v, %v", items, err)
+	}
+	if n, err := svc.DeleteMany(ctx, other, []int64{second.ID}); err != nil || n != 0 {
+		t.Fatalf("cross-tenant delete = %d, %v", n, err)
+	}
+}

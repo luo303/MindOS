@@ -88,6 +88,22 @@ func (r *Repository) Update(ctx context.Context, ownerID, id int64, updates map[
 	return r.Get(ctx, ownerID, id)
 }
 
+// SoftDeleteMany 批量软删除；返回实际删除条数。只删当前 owner 且未删除的行，
+// 不存在的 ID 不会越权，也不会让整批失败。
+func (r *Repository) SoftDeleteMany(ctx context.Context, ownerID int64, ids []int64) (int64, error) {
+	now := time.Now().UTC()
+	res := r.db.WithContext(ctx).Model(&Todo{}).
+		Where("owner_id = ? AND id IN ? AND deleted_at IS NULL", ownerID, ids).
+		Updates(map[string]any{
+			"deleted_at": now,
+			"updated_at": now,
+		})
+	if res.Error != nil {
+		return 0, fmt.Errorf("batch delete todos: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 // SoftDelete 软删除，保留审批/审计关联。
 func (r *Repository) SoftDelete(ctx context.Context, ownerID, id int64) error {
 	res := r.db.WithContext(ctx).Model(&Todo{}).

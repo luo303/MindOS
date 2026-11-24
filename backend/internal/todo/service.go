@@ -13,7 +13,11 @@ const (
 	maxDescriptionRunes = 5000
 )
 
+const maxBatchDelete = 100
+
 var (
+	ErrNoIDs              = errors.New("at least one todo id is required")
+	ErrTooManyIDs         = errors.New("too many todo ids")
 	ErrInvalidTitle       = errors.New("todo title is required")
 	ErrTitleTooLong       = errors.New("todo title is too long")
 	ErrDescriptionTooLong = errors.New("todo description is too long")
@@ -155,4 +159,28 @@ func (s *Service) List(ctx context.Context, ownerID int64, f Filter) ([]Todo, er
 
 func (s *Service) Delete(ctx context.Context, ownerID, id int64) error {
 	return s.repo.SoftDelete(ctx, ownerID, id)
+}
+
+// DeleteMany 批量删除；去重、校验上限后一次 UPDATE。
+// 返回实际删除条数，允许部分 ID 已不存在。
+func (s *Service) DeleteMany(ctx context.Context, ownerID int64, ids []int64) (int64, error) {
+	seen := make(map[int64]struct{}, len(ids))
+	clean := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return 0, ErrNotFound
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		clean = append(clean, id)
+	}
+	if len(clean) == 0 {
+		return 0, ErrNoIDs
+	}
+	if len(clean) > maxBatchDelete {
+		return 0, ErrTooManyIDs
+	}
+	return s.repo.SoftDeleteMany(ctx, ownerID, clean)
 }

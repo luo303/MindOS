@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/luo303/mindos/backend/internal/agent"
@@ -167,5 +168,45 @@ func TestAskPersistsPartialAnswerBeforeApproval(t *testing.T) {
 	}
 	if got.PartialAnswer != "我先查一下。" {
 		t.Fatalf("partial = %q, want 我先查一下。", got.PartialAnswer)
+	}
+}
+
+func TestApproveDeleteBatch(t *testing.T) {
+	repo, gdb, owner := newConversationDB(t)
+	ctx := context.Background()
+	conv := &Conversation{OwnerID: owner, Title: "批量删除"}
+	if err := repo.Create(ctx, conv); err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	todoSvc := todo.NewService(todo.NewRepository(gdb))
+	first, err := todoSvc.Create(ctx, owner, todo.CreateInput{Title: "一"})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, err := todoSvc.Create(ctx, owner, todo.CreateInput{Title: "二"})
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	approvalSvc := approval.NewService(approval.NewRepository(gdb))
+	req, err := approvalSvc.Propose(ctx, approval.ProposeInput{
+		OwnerID: owner, ConversationID: conv.ID, ChatModelID: 10,
+		ToolName:  "delete_todo",
+		Arguments: approval.JSON{"ids": []any{float64(first.ID), float64(second.ID)}},
+		Summary:   "删除待办 #1、#2",
+	})
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	svc := NewService(nil, nil, nil, repo, nil, approvalSvc, todoSvc, nil)
+	if _, err := svc.DecideApproval(ctx, owner, req.ID, true, &fakeEmitter{}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	items, err := todoSvc.List(ctx, owner, todo.Filter{})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("remaining = %v, %v", items, err)
+	}
+	messages, err := repo.ListMessages(ctx, owner, conv.ID, 10, 0)
+	if err != nil || len(messages) != 1 || !strings.Contains(messages[0].Content, "已删除 2 条待办") {
+		t.Fatalf("messages = %v, %v", messages, err)
 	}
 }

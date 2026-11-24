@@ -148,6 +148,7 @@ func Register(e *gin.Engine, deps Deps) {
 	// 用户待办：手动 CRUD；AI 写工具复用 service，但先过审批。
 	authed.GET("/todos", deps.Todos.List)
 	authed.POST("/todos", deps.Todos.Create)
+	authed.POST("/todos/batch-delete", deps.Todos.BatchDelete)
 	authed.PATCH("/todos/:id", deps.Todos.Update)
 	authed.DELETE("/todos/:id", deps.Todos.Delete)
 }

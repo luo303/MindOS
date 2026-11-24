@@ -204,7 +204,9 @@ type updateTodoInput struct {
 }
 
 type deleteTodoInput struct {
-	ID int64 `json:"id" jsonschema:"description=已确认要删除的待办 ID。不确定时先用 list_todos 定位"`
+	IDs []int64 `json:"ids" jsonschema:"description=要删除的待办 ID 列表，支持一次删除多条；不确定时先用 list_todos 定位"`
+	// ID 保留给模型/历史调用只传单条的情况。
+	ID int64 `json:"id,omitempty" jsonschema:"description=兼容单条删除；新调用优先使用 ids"`
 }
 
 func newUpdateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID int64, budget *toolBudget) (tool.InvokableTool, error) {
@@ -305,16 +307,18 @@ func newDeleteTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 		if meta.CheckpointID == "" || meta.ConversationID <= 0 {
 			return "", errors.New("todo write requires an active conversation checkpoint")
 		}
+		ids := normalizeTodoIDs(in.IDs, in.ID)
+		if len(ids) == 0 {
+			return "", errors.New("ids are required")
+		}
 		wasInterrupted, _, state := tool.GetInterruptState[todoApprovalState](ctx)
 		if !wasInterrupted {
-			if in.ID <= 0 {
-				return "", errors.New("id is required")
-			}
+			args := approval.JSON{"ids": ids}
 			req, err := approvals.Propose(ctx, approval.ProposeInput{
 				OwnerID: ownerID, CheckpointID: meta.CheckpointID,
 				ConversationID: meta.ConversationID, UserMessageID: meta.UserMessageID,
 				ChatModelID: meta.ChatModelID, ToolName: "delete_todo",
-				Arguments: approval.JSON{"id": in.ID}, Summary: "删除待办 #" + fmt.Sprint(in.ID),
+				Arguments: args, Summary: deleteSummary(ids),
 			})
 			if errors.Is(err, approval.ErrPending) {
 				// 同一个 assistant message 里可能有重复工具调用；第一次已经创建
@@ -342,11 +346,70 @@ func newDeleteTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 		if req.Status != approval.StatusApproved {
 			return "", fmt.Errorf("approval %d is not approved", req.ID)
 		}
-		id, _ := req.Arguments["id"].(float64)
-		if err := svc.Delete(ctx, ownerID, int64(id)); err != nil {
+		approvedIDs := approvalTodoIDs(req.Arguments)
+		if len(approvedIDs) == 0 {
+			return "", errors.New("approval has no todo ids")
+		}
+		deleted, err := svc.DeleteMany(ctx, ownerID, approvedIDs)
+		if err != nil {
 			return "", err
 		}
-		return "已删除待办。", nil
+		if deleted == 0 {
+			return "没有可删除的待办。", nil
+		}
+		return fmt.Sprintf("已删除 %d 条待办。", deleted), nil
 	}
-	return utils.InferTool("delete_todo", "提交删除一条待办的审批。完成或取消应改状态，不删除。", invoke)
+	return utils.InferTool("delete_todo", "提交删除一条或多条待办的审批。参数用 ids 数组；完成或取消应改状态，不删除。", invoke)
+}
+
+func normalizeTodoIDs(ids []int64, legacy int64) []int64 {
+	seen := map[int64]struct{}{}
+	out := make([]int64, 0, len(ids)+1)
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	if len(out) == 0 && legacy > 0 {
+		out = append(out, legacy)
+	}
+	return out
+}
+
+// approvalTodoIDs 兼容旧的 {"id": 1} 和新的 {"ids": [1,2]}。
+func approvalTodoIDs(args approval.JSON) []int64 {
+	out := make([]int64, 0, 4)
+	if raw, ok := args["ids"].([]any); ok {
+		for _, item := range raw {
+			if v, ok := item.(float64); ok && v > 0 {
+				out = append(out, int64(v))
+			}
+		}
+	}
+	if len(out) == 0 {
+		if v, ok := args["id"].(float64); ok && v > 0 {
+			out = append(out, int64(v))
+		}
+	}
+	return out
+}
+
+func deleteSummary(ids []int64) string {
+	if len(ids) == 1 {
+		return "删除待办 #" + fmt.Sprint(ids[0])
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, "#"+fmt.Sprint(id))
+	}
+	summary := "删除待办 " + strings.Join(parts, "、")
+	if len([]rune(summary)) > 160 {
+		return "删除 " + fmt.Sprint(len(ids)) + " 条待办"
+	}
+	return summary
 }

@@ -113,6 +113,29 @@ func (h *Handler) Update(c *gin.Context) {
 	httpx.OK(c, t)
 }
 
+type batchDeleteRequest struct {
+	IDs []int64 `json:"ids" binding:"required"`
+}
+
+func (h *Handler) BatchDelete(c *gin.Context) {
+	p, ok := auth.PrincipalFrom(c)
+	if !ok {
+		httpx.Fail(c, httpx.ErrAuthRequired)
+		return
+	}
+	var req batchDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.IDs) == 0 {
+		httpx.Fail(c, httpx.ErrInvalidArgument.WithMessage("ids are required"))
+		return
+	}
+	deleted, err := h.svc.DeleteMany(c.Request.Context(), p.UserID, req.IDs)
+	if err != nil {
+		httpx.Fail(c, mapError(err))
+		return
+	}
+	httpx.OK(c, gin.H{"deleted": deleted})
+}
+
 func (h *Handler) Delete(c *gin.Context) {
 	p, ok := auth.PrincipalFrom(c)
 	if !ok {
@@ -143,6 +166,8 @@ func mapError(err error) *httpx.Error {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return httpx.ErrNotFound.WithMessage("todo not found")
+	case errors.Is(err, ErrNoIDs), errors.Is(err, ErrTooManyIDs):
+		return httpx.ErrInvalidArgument.WithMessage("%s", err.Error())
 	case errors.Is(err, ErrInvalidTitle), errors.Is(err, ErrTitleTooLong),
 		errors.Is(err, ErrDescriptionTooLong), errors.Is(err, ErrInvalidPriority),
 		errors.Is(err, ErrInvalidStatus):

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -75,12 +76,13 @@ func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve
 		result["todo_id"] = todoItem.ID
 		text = "已修改待办：" + todoItem.Title
 	case "delete_todo":
-		if err := s.deleteTodoFromApproval(ctx, ownerID, decided); err != nil {
-			_ = s.approvals.Fail(ctx, ownerID, id, approval.JSON{"error": err.Error()})
-			return nil, err
+		deleted, deleteErr := s.deleteTodoFromApproval(ctx, ownerID, decided)
+		if deleteErr != nil {
+			_ = s.approvals.Fail(ctx, ownerID, id, approval.JSON{"error": deleteErr.Error()})
+			return nil, deleteErr
 		}
-		result["deleted"] = true
-		text = "已删除待办。"
+		result["deleted"] = deleted
+		text = fmt.Sprintf("已删除 %d 条待办。", deleted)
 	default:
 		_ = s.approvals.Fail(ctx, ownerID, id, approval.JSON{"error": "unsupported tool"})
 		return nil, errors.New("unsupported approval tool")
@@ -167,15 +169,38 @@ func (s *Service) updateTodoFromApproval(ctx context.Context, ownerID int64, req
 	return s.todos.Update(ctx, ownerID, int64(id), in)
 }
 
-func (s *Service) deleteTodoFromApproval(ctx context.Context, ownerID int64, req *approval.Request) error {
+func (s *Service) deleteTodoFromApproval(ctx context.Context, ownerID int64, req *approval.Request) (int64, error) {
 	if s.todos == nil {
-		return errors.New("todo service is not configured")
+		return 0, errors.New("todo service is not configured")
 	}
-	id, _ := req.Arguments["id"].(float64)
-	if id <= 0 {
-		return errors.New("todo id is required")
+	ids := approvalTodoIDs(req.Arguments)
+	if len(ids) == 0 {
+		return 0, errors.New("todo id is required")
 	}
-	return s.todos.Delete(ctx, ownerID, int64(id))
+	return s.todos.DeleteMany(ctx, ownerID, ids)
+}
+
+// approvalTodoIDs 兼容旧的 {"id": 1} 和新的 {"ids": [1,2]}。
+func approvalTodoIDs(args approval.JSON) []int64 {
+	seen := map[int64]struct{}{}
+	out := make([]int64, 0, 4)
+	if raw, ok := args["ids"].([]any); ok {
+		for _, item := range raw {
+			if v, ok := item.(float64); ok && v > 0 {
+				if _, exists := seen[int64(v)]; exists {
+					continue
+				}
+				seen[int64(v)] = struct{}{}
+				out = append(out, int64(v))
+			}
+		}
+	}
+	if len(out) == 0 {
+		if v, ok := args["id"].(float64); ok && v > 0 {
+			out = append(out, int64(v))
+		}
+	}
+	return out
 }
 
 func (s *Service) completeApprovalMessage(ctx context.Context, ownerID int64, req *approval.Request, text string) int64 {
