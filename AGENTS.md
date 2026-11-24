@@ -197,6 +197,7 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 - SPA 内切换页面不应 abort 正在进行的 SSE；路由卸载只解除 UI 订阅，后台流继续。只有整页刷新/关闭浏览器才会断开 HTTP 连接。不要在没有产品决策时添加“卸载即 abort”。
 - 历史与 live 流要合并：有 live turn 时保留它；流结束后把 messages 查询标脏（`refetchType: 'none'`），下次进入再从数据库取最终消息。
 - 多个会话可以各自生成，controller 必须按会话保存；停止按钮只停止当前会话。
+- 写工具审批中断时，审批前已流出的正文必须落 `agent_approvals.partial_answer`；pending 时不要把 live turn 清掉，审批恢复流也必须按会话接入 live，最终 assistant 消息要合并 partial + resumed。
 - 长文本统一使用 `components/markdown.tsx`，不要在页面里重新写一套 Markdown 解析；HTML 默认转义。
 - 更完整的状态分层与两次流式 bug 复盘见 `docs/design/frontend-state.md`。
 

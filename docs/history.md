@@ -519,6 +519,7 @@ ReAct 循环，为后续挂记忆、任务、统计等工具留出扩展点。�
 - 会话流式状态从页面组件移到模块级 live store（`frontend/src/pages/chat/live.ts`），用 `useSyncExternalStore` 订阅；SPA 切页后回来能接上已生成内容。
 - 生成状态按 `conversationId` 判断，删除全局 `pending` 对历史加载的阻塞；切换会话不再空白，多个会话可各自生成。
 - SSE `error` 事件增加 `request_id` 与 `detail`；服务端 `agent run failed` 记录同一 request id；失败卡片可展开诊断。
+- 审批前正文写入 `agent_approvals.partial_answer`，恢复时与审批后正文合并；审批续跑接入会话级 live，失败/取消也落 assistant 错误消息。
 - 客户端取消请求记为 499/debug，不再误报 500；逐条 SQL 日志默认关闭。
 - 写笔记改为右侧 Drawer，上传导入改为 Modal；Markdown 统一由 `components/markdown.tsx` 渲染，知识库正文与对话共用。
 - 亮/暗主题落地，深色为中性黑灰。

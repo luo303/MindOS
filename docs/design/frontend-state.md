@@ -131,3 +131,31 @@ SSE `error` 事件：
 - `47aac61`：流式状态移到模块级 store，切页可恢复。
 - `c61dec4`：生成状态按会话判断，切换会话不再空白。
 - `67e6e46`：SSE 错误带 `detail` / `request_id`，失败卡片可诊断。
+
+
+## 10. 审批中断的正文
+
+写工具触发审批时，普通回答流并没有“结束”，但 HTTP 请求已经返回 `awaiting_approval`。这段正文的归属：
+
+```text
+审批前已流出的正文
+  → 后端写 agent_approvals.partial_answer
+  → 前端 live store 保留该 turn（不要 clearLive）
+  → 审批 API 返回 partial_answer，刷新后也能恢复
+```
+
+审批通过后的 `Resume` 只产生审批后的新 delta，因此：
+
+```text
+最终 assistant 消息 = partial_answer + "\n\n" + resumed_answer
+```
+
+审批续跑也使用同一套 live store：
+
+- 按 conversationId 发布；
+- 捕获发起时的 conversationId，不读异步回调里的当前 activeId；
+- 把 signal 传给 `streamApprovalDecision`；
+- 切换会话/页面不 abort；
+- 完成后清 live，并标脏 messages；失败/取消也保存 assistant 错误消息。
+
+否则会出现“审批前正文只在当前页面内存里，数据库永远没有”的问题。
