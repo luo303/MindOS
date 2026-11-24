@@ -1,6 +1,6 @@
 import type { UseQueryResult } from '@tanstack/react-query'
 import { Menu, MessageSquare, Plus, Trash2, X } from 'lucide-react'
-import { useRef, type RefObject } from 'react'
+import { useRef } from 'react'
 import { Link } from 'react-router'
 
 import type { Approval } from '@/api/approvals'
@@ -15,6 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ApprovalPanel } from './approval-panel'
 import { ChatComposer } from './chat-composer'
 import type { Turn } from './format'
+import { MessageViewport } from './message-viewport'
 import { ModelSelect } from './model-select'
 import { TurnCard } from './turn-card'
 
@@ -33,7 +34,6 @@ type Props = {
   selectedId: number | null
   chooseModel: (id: number) => void
   turns: Turn[]
-  endRef: RefObject<HTMLDivElement | null>
   messagesQuery: RetryableQueryStatus
   generating: boolean
   showEmpty: boolean
@@ -58,7 +58,7 @@ type Props = {
 
 export function ChatWorkspace({
   activeId, activeConversation, conversations, conversationsQuery, models, modelsQuery,
-  selectedId, chooseModel, turns, endRef, messagesQuery, generating, showEmpty, noModel,
+  selectedId, chooseModel, turns, messagesQuery, generating, showEmpty, noModel,
   createError, pendingApproval, decidingId, decisionError, decide, submit, stop,
   startNewConversation, onSelectConversation, sidebarOpen, setSidebarOpen,
   contextMenu, setContextMenu, deleteTarget, setDeleteTarget, deleteMutation,
@@ -191,7 +191,7 @@ export function ChatWorkspace({
               ) : null}
             </div>
           ) : (
-            <div className="chat-scroll min-h-0 flex-1 overflow-y-auto" aria-label="会话消息">
+            <MessageViewport key={activeId ?? 'draft'} streaming={generating || turns.at(-1)?.phase === 'streaming'}>
               <div className="mx-auto w-full max-w-3xl px-4 py-6">
                 {createError ? <ErrorState title="新建会话失败" description={createError} /> : null}
                 {deleteMutation.error ? (
@@ -239,9 +239,8 @@ export function ChatWorkspace({
                     <TurnCard key={turn.id} turn={turn} onStop={stop} />
                   ))}
                 </div>
-                <div ref={endRef} />
               </div>
-            </div>
+            </MessageViewport>
           )}
 
           <div className={showEmpty ? 'w-full max-w-2xl' : 'shrink-0 px-3 pb-3'}>

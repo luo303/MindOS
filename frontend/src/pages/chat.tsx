@@ -69,7 +69,6 @@ export function ChatPage() {
   const creatingRef = useRef(false)
   // 用户主动点“新对话”后进入空白草稿，不要被自动选择逻辑选回旧会话。
   const draftRef = useRef(false)
-  const endRef = useRef<HTMLDivElement | null>(null)
   // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
   const syncedConversationRef = useRef<number | null>(null)
 
@@ -117,11 +116,6 @@ export function ChatPage() {
       window.removeEventListener('keydown', escape)
     }
   }, [contextMenu])
-
-  // 新消息/流式增量都贴到底部；历史长时不会停在半空。
-  useEffect(() => {
-    endRef.current?.scrollIntoView?.({ behavior: generating ? 'auto' : 'smooth', block: 'end' })
-  }, [turns, generating])
 
   const messagesQuery = useQuery({
     queryKey: conversationKeys.messages(activeId ?? 0),
@@ -445,7 +439,6 @@ export function ChatPage() {
       selectedId={selectedId}
       chooseModel={chooseModel}
       turns={turns}
-      endRef={endRef}
       messagesQuery={messagesQuery}
       generating={generating}
       showEmpty={showEmpty}
