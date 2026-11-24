@@ -139,6 +139,11 @@ func newCreateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 				ChatModelID: meta.ChatModelID, ToolName: "create_todo",
 				Arguments: args, Summary: summary,
 			})
+			if errors.Is(err, approval.ErrPending) {
+				// 同一个 assistant message 里可能有重复工具调用；第一次已经创建
+				// pending，第二次不能把整个 ToolsNode 抛成 NodeRunError。
+				return "当前会话已有待审批操作，请等待用户处理后继续。", nil
+			}
 			if err != nil {
 				return "", err
 			}
@@ -238,6 +243,11 @@ func newUpdateTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 				ChatModelID: meta.ChatModelID, ToolName: "update_todo",
 				Arguments: args, Summary: "修改待办 #" + fmt.Sprint(in.ID),
 			})
+			if errors.Is(err, approval.ErrPending) {
+				// 同一个 assistant message 里可能有重复工具调用；第一次已经创建
+				// pending，第二次不能把整个 ToolsNode 抛成 NodeRunError。
+				return "当前会话已有待审批操作，请等待用户处理后继续。", nil
+			}
 			if err != nil {
 				return "", err
 			}
@@ -306,6 +316,11 @@ func newDeleteTodoTool(svc *todo.Service, approvals *approval.Service, ownerID i
 				ChatModelID: meta.ChatModelID, ToolName: "delete_todo",
 				Arguments: approval.JSON{"id": in.ID}, Summary: "删除待办 #" + fmt.Sprint(in.ID),
 			})
+			if errors.Is(err, approval.ErrPending) {
+				// 同一个 assistant message 里可能有重复工具调用；第一次已经创建
+				// pending，第二次不能把整个 ToolsNode 抛成 NodeRunError。
+				return "当前会话已有待审批操作，请等待用户处理后继续。", nil
+			}
 			if err != nil {
 				return "", err
 			}
