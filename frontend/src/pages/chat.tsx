@@ -158,20 +158,20 @@ export function ChatPage() {
   const [selectedId, setSelectedId] = useState<number | null>(() => readStoredModelId())
   const [activeId, setActiveId] = useState<number | null>(() => readStoredConversationId())
   const [turns, setTurns] = useState<Turn[]>([])
-  const [pending, setPending] = useState(false)
+  const [creating, setCreating] = useState(false)
   const liveTurn = useSyncExternalStore(
     subscribeLive,
     () => liveTurnOf(activeId),
     () => null,
   )
-  const generating = pending || liveTurn !== null
+  // 只代表“当前会话正在生成”；别的会话在生成不应该阻塞这里。
+  const generating = creating || liveTurn !== null
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null)
   const [decidingId, setDecidingId] = useState<number | null>(null)
   const [decisionError, setDecisionError] = useState('')
   const [createError, setCreateError] = useState('')
-  const abortRef = useRef<AbortController | null>(null)
   const creatingRef = useRef(false)
   // 用户主动点“新对话”后进入空白草稿，不要被自动选择逻辑选回旧会话。
   const draftRef = useRef(false)
@@ -352,9 +352,9 @@ export function ChatPage() {
 
   // 历史加载完成后还原 turns；流式过程中不要用缓存覆盖正在生成的内容。
   useEffect(() => {
-    // 有 liveTurn 时必须合并历史；否则切换回来后 pending 为 true，
-    // 历史 effect 永远不执行，只剩当前一轮。
-    if ((pending && !liveTurn) || activeId === null || !messagesQuery.data) {
+    // 有 liveTurn 时也要合并历史；没有 liveTurn 的会话不能因为
+    // 另一个会话正在生成而被挡在门外。
+    if (activeId === null || !messagesQuery.data) {
       return
     }
     if (syncedConversationRef.current === activeId) {
@@ -363,7 +363,7 @@ export function ChatPage() {
     syncedConversationRef.current = activeId
     const restored = turnsFromMessages(messagesQuery.data)
     setTurns(liveTurn ? withLiveTurn(restored, liveTurn) : restored)
-  }, [activeId, messagesQuery.data, pending, liveTurn])
+  }, [activeId, messagesQuery.data, liveTurn])
 
   // 切页回来时，本地缓存的历史可能还没有正在生成的 assistant 消息；
   // liveTurn 是模块级的，重新挂载后把它合并回来，流式内容继续可见。
@@ -372,7 +372,6 @@ export function ChatPage() {
       return
     }
     setTurns((prev) => withLiveTurn(prev, liveTurn))
-    setPending(true)
   }, [activeId, liveTurn])
 
   const chooseModel = (id: number) => {
@@ -385,7 +384,7 @@ export function ChatPage() {
   }
 
   const startNewConversation = () => {
-    if (pending || activeId === null) {
+    if (generating || activeId === null) {
       return
     }
     draftRef.current = true
@@ -405,7 +404,7 @@ export function ChatPage() {
         return
       }
       creatingRef.current = true
-      setPending(true)
+      setCreating(true)
       try {
         const conv = await createConversation()
         conversationId = conv.id
@@ -418,21 +417,20 @@ export function ChatPage() {
         )
       } catch (error) {
         setCreateError(describeError(error))
-        setPending(false)
+        setCreating(false)
         creatingRef.current = false
         return
       }
       creatingRef.current = false
+      setCreating(false)
     }
 
     // 本地已经有一个正在生成的轮次；后续 messages 刷新不要用旧缓存覆盖它。
     syncedConversationRef.current = conversationId
     const id = newId()
     const controller = new AbortController()
-    abortRef.current = controller
     let current: Turn = { id, question, answer: '', phase: 'streaming', hits: [], citations: [] }
     setTurns((prev) => [...prev, current])
-    setPending(true)
     publishLive(conversationId, current, controller)
 
     const patch = (next: (turn: Turn) => Turn) => {
@@ -508,8 +506,6 @@ export function ChatPage() {
       })
     } finally {
       clearLive(conversationId, controller)
-      setPending(false)
-      abortRef.current = null
     }
   }
 
@@ -522,7 +518,6 @@ export function ChatPage() {
   }
 
   const stop = () => {
-    abortRef.current?.abort()
     if (activeId !== null) {
       liveControllerOf(activeId)?.abort()
     }
