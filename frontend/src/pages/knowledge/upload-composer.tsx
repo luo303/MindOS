@@ -1,5 +1,5 @@
 import { FileText, Loader2 } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,22 +22,22 @@ export type UploadDraft = {
  * 笔记表单能填、详情页能改、唯独文件导入不行，同一个功能在不同入口能力不一致。
  * 所以这里把"选文件"和"确认导入"拆成两步，中间留给元信息。
  *
- * 面板本身不持有文件：文件在页面里（因为它来自隐藏的 file input），
- * 面板只负责收集分类与标签，提交时一并交回去。
+ * 由面板内的按钮打开原生选择器；选中的文件交给页面，确认时再连同元信息上传。
  */
 export function UploadComposer({
   file,
   saving,
-  onChooseFile,
+  onSelectFile,
   onSubmit,
   onCancel,
 }: {
   file: File | null
   saving: boolean
-  onChooseFile: () => void
+  onSelectFile: (file: File) => void
   onSubmit: (draft: UploadDraft) => void
   onCancel: () => void
 }) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [collection, setCollection] = useState('')
   const [tags, setTags] = useState('')
 
@@ -61,6 +61,18 @@ export function UploadComposer({
 
   return (
     <form className="space-y-3" onSubmit={submit}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".md,.markdown,.txt,.text"
+            className="hidden"
+            aria-label="选择要导入的文件"
+            onChange={(event) => {
+              const selected = event.currentTarget.files?.[0]
+              event.currentTarget.value = ''
+              if (selected) onSelectFile(selected)
+            }}
+          />
           <div className="border-border flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
             {file ? (
               <div className="flex min-w-0 items-center gap-2">
@@ -73,7 +85,7 @@ export function UploadComposer({
             ) : (
               <p className="text-muted-foreground text-sm">Markdown / 纯文本</p>
             )}
-            <Button type="button" variant="outline" size="sm" onClick={onChooseFile} disabled={saving}>
+            <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={saving}>
               {file ? '重新选择' : '选择文件'}
             </Button>
           </div>

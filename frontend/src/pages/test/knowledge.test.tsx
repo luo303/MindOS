@@ -39,6 +39,12 @@ function chunkList(chunks: ReturnType<typeof chunkFixture>[]) {
   return { items: chunks, total: chunks.length, limit: 100, offset: 0 }
 }
 
+async function selectUploadFile(user: ReturnType<typeof userEvent.setup>, file: File) {
+  await user.click(screen.getByRole('button', { name: '上传文件' }))
+  const dialog = screen.getByRole('dialog', { name: '导入文件' })
+  await user.upload(within(dialog).getByLabelText('选择要导入的文件'), file)
+}
+
 /** 一个文档 + 一个分块的常规成功路径。 */
 function mockHappyPath(doc: DocumentView, content: string) {
   fetchMock.mockImplementation((input: RequestInfo | URL) => {
@@ -227,6 +233,23 @@ describe('知识库页面', () => {
     expect(await within(list).findByText('临时会议记录')).toBeInTheDocument()
   })
 
+  it('打开导入弹框时不触发系统选择器，只有点击选择文件才触发', async () => {
+    const user = userEvent.setup()
+    mockHappyPath(documentFixture(), '正文')
+    const openPicker = vi.spyOn(HTMLInputElement.prototype, 'click')
+    renderApp('/knowledge')
+
+    await user.click(await screen.findByRole('button', { name: '上传文件' }))
+    const dialog = within(screen.getByRole('dialog', { name: '导入文件' }))
+    expect(dialog.getByRole('button', { name: '开始导入' })).toBeDisabled()
+    expect(openPicker).not.toHaveBeenCalled()
+
+    await user.click(dialog.getByRole('button', { name: '选择文件' }))
+    expect(openPicker).toHaveBeenCalledOnce()
+    expect(openPicker.mock.contexts[0]).toBe(dialog.getByLabelText('选择要导入的文件'))
+    openPicker.mockRestore()
+  })
+
   it('上传文件走 multipart，大小写扩展名交给后端判断', async () => {
     const user = userEvent.setup()
     mockHappyPath(documentFixture(), '正文')
@@ -235,7 +258,7 @@ describe('知识库页面', () => {
     await screen.findByText('集成测试笔记')
 
     const file = new File(['# 笔记\n\n内容'], 'note.md', { type: 'text/markdown' })
-    await user.upload(screen.getByLabelText('选择要导入的文件'), file)
+    await selectUploadFile(user, file)
     // 选完文件先落到确认面板，不立刻上传。
     expect(await screen.findByText('note.md')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '开始导入' }))
@@ -261,7 +284,7 @@ describe('知识库页面', () => {
     await screen.findByText('集成测试笔记')
 
     const file = new File(['# 笔记\n\n内容'], 'note.md', { type: 'text/markdown' })
-    await user.upload(screen.getByLabelText('选择要导入的文件'), file)
+    await selectUploadFile(user, file)
     await user.type(await screen.findByLabelText('文件分类'), '工作')
     await user.type(screen.getByLabelText('文件标签'), 'go, 检索')
     // 标签按逗号切分并去空白，与服务端规则一致。
@@ -307,7 +330,7 @@ describe('知识库页面', () => {
     await screen.findByText('大文件')
 
     const file = new File(['# 大文件'], 'big.md', { type: 'text/markdown' })
-    await user.upload(screen.getByLabelText('选择要导入的文件'), file)
+    await selectUploadFile(user, file)
     await user.click(await screen.findByRole('button', { name: '开始导入' }))
 
     // 文案不能再说"已导入"：分块还没生成，说导入完成是在骗用户。
@@ -396,7 +419,7 @@ describe('知识库页面', () => {
     await screen.findByText('集成测试笔记')
 
     const file = new File(['# 笔记'], 'drop.md', { type: 'text/markdown' })
-    await user.upload(screen.getByLabelText('选择要导入的文件'), file)
+    await selectUploadFile(user, file)
     await user.click(await screen.findByRole('button', { name: '取消' }))
 
     expect(screen.queryByText('drop.md')).not.toBeInTheDocument()
@@ -414,7 +437,7 @@ describe('知识库页面', () => {
     await screen.findByText('集成测试笔记')
 
     const file = new File(['# 笔记\n\n内容'], 'note.md', { type: 'text/markdown' })
-    await user.upload(screen.getByLabelText('选择要导入的文件'), file)
+    await selectUploadFile(user, file)
     // 21 个标签：后端会拒，前端先挡住，不用等一次往返。
     const many = Array.from({ length: 21 }, (_, i) => `t${i}`).join(',')
     await user.type(await screen.findByLabelText('文件标签'), many)
@@ -658,7 +681,7 @@ describe('知识库页面的文档管理', () => {
     await screen.findByText('已有内容')
 
     const file = new File(['# 标题'], 'copy.md', { type: 'text/markdown' })
-    await user.upload(screen.getByLabelText('选择要导入的文件'), file)
+    await selectUploadFile(user, file)
     await user.click(await screen.findByRole('button', { name: '开始导入' }))
 
     expect(await screen.findByText(/已复用《已有内容》，没有重复入库/)).toBeInTheDocument()

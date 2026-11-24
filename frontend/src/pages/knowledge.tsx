@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, NotebookPen, SlidersHorizontal, Sparkles, Upload, X } from 'lucide-react'
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import {
@@ -41,7 +41,6 @@ const emptyFilters: DocumentFilters = { collection: '', tag: '', status: '' }
  */
 export function KnowledgePage() {
   const queryClient = useQueryClient()
-  const fileInputRef = useRef<HTMLInputElement>(null)
   // 问答页的引用 chip 会带 ?doc=&chunk= 跳进来。
   // chunk 是 0 基的分块序号，只用于滚动与高亮；doc 决定打开哪篇文档。
   const [searchParams] = useSearchParams()
@@ -211,23 +210,9 @@ export function KnowledgePage() {
     },
   })
 
-  const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    // 清空 value：否则再选同一个文件不会触发 change，用户会以为点击没生效。
-    event.target.value = ''
-    if (file) {
-      // 选中文件不等于要导入：先摆进确认面板，让人有机会填分类与标签。
-      setPendingFile(file)
-      setUploadOpen(true)
-      setComposerOpen(false)
-    }
-  }
-
-  /** 打开上传面板并立刻弹文件框：两次点击合成一次，选完文件才轮到填元信息。 */
   const startUpload = () => {
     setUploadOpen(true)
     setComposerOpen(false)
-    fileInputRef.current?.click()
   }
 
   const changeFilters = (next: DocumentFilters) => {
@@ -259,15 +244,6 @@ export function KnowledgePage() {
             <h1 className="text-lg font-semibold tracking-tight">知识库</h1>
             <span className="text-muted-foreground text-xs tabular-nums">{total}</span>
           </div>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".md,.markdown,.txt,.text"
-            className="hidden"
-            onChange={onFileChange}
-            aria-label="选择要导入的文件"
-          />
 
           <div className="flex flex-col gap-2">
             <Button
@@ -426,7 +402,7 @@ export function KnowledgePage() {
         <UploadComposer
           file={pendingFile}
           saving={uploadMutation.isPending}
-          onChooseFile={() => fileInputRef.current?.click()}
+          onSelectFile={setPendingFile}
           onCancel={() => {
             setUploadOpen(false)
             setPendingFile(null)
