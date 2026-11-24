@@ -438,4 +438,7 @@ func TestCombineAnswerKeepsPartial(t *testing.T) {
 	if got := combineAnswer("", "已创建。"); got != "已创建。" {
 		t.Fatalf("empty partial = %q", got)
 	}
+	if got := combineAnswer("先看。", "先看。\n\n已创建。"); got != "先看。\n\n已创建。" {
+		t.Fatalf("already-prefixed = %q", got)
+	}
 }

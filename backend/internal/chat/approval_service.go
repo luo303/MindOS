@@ -309,6 +309,9 @@ func combineAnswer(partial, resumed string) string {
 		return r
 	case r == "":
 		return p
+	case strings.HasPrefix(r, p):
+		// 某些模型/适配器在 Resume 时会带回完整上下文；避免重复前缀。
+		return r
 	default:
 		return p + "\n\n" + r
 	}
