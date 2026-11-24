@@ -67,6 +67,7 @@ export function ChatPage() {
   const [decisionError, setDecisionError] = useState('')
   const [createError, setCreateError] = useState('')
   const creatingRef = useRef(false)
+  const activeIdRef = useRef(activeId)
   // 用户主动点“新对话”后进入空白草稿，不要被自动选择逻辑选回旧会话。
   const draftRef = useRef(false)
   // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
@@ -138,55 +139,116 @@ export function ChatPage() {
     if (!pendingApproval) {
       return
     }
-    const id = pendingApproval.id
-    const messageId = pendingApproval.user_message_id ?? undefined
-    setDecidingId(id)
-    setDecisionError('')
-    const patchApprovalTurn = (next: (turn: Turn) => Turn) => {
-      setTurns((prev) => {
-        const index = prev.findIndex((turn) => turn.messageId === messageId)
-        if (index >= 0) {
-          return prev.map((turn, i) => (i === index ? next({ ...turn, phase: 'streaming' }) : turn))
-        }
-        const question =
-          messagesQuery.data?.find((message) => message.id === messageId)?.content ?? '审批操作'
-        return [
-          ...prev,
-          next({
-            id: 'approval-' + id,
-            messageId,
-            question,
-            answer: '',
-            phase: 'streaming',
-            hits: [],
-            citations: [],
-          }),
-        ]
-      })
+    const conversationId = pendingApproval.conversation_id ?? activeId
+    if (conversationId === null) {
+      return
     }
-    // 先建立/切换到流式轮次，首个 delta 之前显示骨架，而不是把正文塞进审批框。
-    patchApprovalTurn((turn) => turn)
+    const approvalId = pendingApproval.id
+    const messageId = pendingApproval.user_message_id ?? undefined
+    const partial = pendingApproval.partial_answer ?? ''
+    const live = liveTurnOf(conversationId)
+    const local = turns.find((turn) => turn.messageId === messageId)
+    const question =
+      live?.question ??
+      local?.question ??
+      messagesQuery.data?.find((message) => message.id === messageId)?.content ??
+      '审批操作'
+    const base = live ?? local
+    let current: Turn = {
+      ...(base ?? {
+        id: 'approval-' + approvalId,
+        messageId,
+        question,
+        hits: [],
+        citations: [],
+      }),
+      messageId,
+      question,
+      answer: (base?.answer ?? '') || partial,
+      phase: 'streaming',
+      done: undefined,
+      error: undefined,
+    }
+    const controller = new AbortController()
+    setDecidingId(approvalId)
+    setDecisionError('')
+    // 后端在开始 resume 前已把 approval 从 pending 改成 approved；
+    // 尽快刷新，避免续跑时底部仍显示可再次点击的审批面板。
+    void queryClient.invalidateQueries({
+      queryKey: approvalKeys.conversation(conversationId),
+    })
+    const publish = (turn: Turn) => {
+      publishLive(conversationId, turn, controller)
+      // 只更新当前正在看的会话，不能把 A 的审批输出追加到 B。
+      if (activeIdRef.current === conversationId) {
+        setTurns((prev) => withLiveTurn(prev, turn))
+      }
+    }
+    publish(current)
+
+    const patch = (next: (turn: Turn) => Turn) => {
+      current = next(current)
+      publish(current)
+    }
+
     try {
-      await streamApprovalDecision(id, decision, {
-        onDelta: (text) => patchApprovalTurn((turn) => ({ ...turn, answer: turn.answer + text })),
-        onDone: (payload) => {
-          patchApprovalTurn((turn) => ({ ...turn, done: payload, phase: 'settled' }))
-          void queryClient.invalidateQueries({
-            queryKey: approvalKeys.conversation(activeId ?? 0),
-          })
-          syncedConversationRef.current = null
-          void messagesQuery.refetch()
+      await streamApprovalDecision(
+        approvalId,
+        decision,
+        {
+          onDelta: (text) => patch((turn) => ({ ...turn, answer: turn.answer + text })),
+          onDone: (payload) => {
+            patch((turn) => ({ ...turn, done: payload, phase: 'settled' }))
+            void queryClient.invalidateQueries({
+              queryKey: approvalKeys.conversation(conversationId),
+            })
+            void queryClient.invalidateQueries({
+              queryKey: conversationKeys.messages(conversationId),
+              refetchType: 'none',
+            })
+            void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+          },
+          onError: (code, message, _retryable, detail, requestId) => {
+            patch((turn) => ({
+              ...turn,
+              phase: 'failed',
+              error: { code, message, detail, requestId },
+            }))
+            if (activeIdRef.current === conversationId) {
+              setDecisionError(message)
+            }
+            void queryClient.invalidateQueries({
+              queryKey: conversationKeys.messages(conversationId),
+              refetchType: 'none',
+            })
+          },
         },
-        onError: (_code, message) => setDecisionError(message),
-      })
+        controller.signal,
+      )
     } catch (error) {
-      patchApprovalTurn((turn) => ({
-        ...turn,
-        phase: 'failed',
-        error: { code: 'approval', message: describeError(error) },
-      }))
-      setDecisionError(describeError(error))
+      const aborted = error instanceof ApiError && error.kind === 'aborted'
+      patch((turn) =>
+        aborted
+          ? {
+              ...turn,
+              phase: 'settled',
+              answer: turn.answer === '' ? STOPPED_TEXT : turn.answer,
+            }
+          : {
+              ...turn,
+              phase: 'failed',
+              error: { code: 'approval', message: describeError(error) },
+            },
+      )
+      if (!aborted && activeIdRef.current === conversationId) {
+        setDecisionError(describeError(error))
+      }
+      void queryClient.invalidateQueries({
+        queryKey: conversationKeys.messages(conversationId),
+        refetchType: 'none',
+      })
     } finally {
+      clearLive(conversationId, controller)
       setDecidingId(null)
     }
   }
@@ -204,6 +266,7 @@ export function ChatPage() {
   }, [models, selectedId])
 
   useEffect(() => {
+    activeIdRef.current = activeId
     rememberConversationId(activeId)
   }, [activeId])
 
@@ -260,6 +323,46 @@ export function ChatPage() {
     }
     setTurns((prev) => withLiveTurn(prev, liveTurn))
   }, [activeId, liveTurn])
+
+  // 刷新或首次进入 pending 审批时，live store 是空的；
+  // 从 approval.partial_answer 把审批前正文补回对应轮次。
+  useEffect(() => {
+    const partial = pendingApproval?.partial_answer?.trim()
+    if (!partial || liveTurn || activeId === null) {
+      return
+    }
+    const messageId = pendingApproval?.user_message_id
+    setTurns((prev) =>
+      prev.map((turn) =>
+        turn.messageId === messageId && turn.answer === ''
+          ? { ...turn, answer: partial, phase: 'settled' }
+          : turn,
+      ),
+    )
+  }, [activeId, liveTurn, pendingApproval, messagesQuery.data])
+
+  // 审批也可能在任务页/另一个标签页被处理；当 approval 已不再 pending 时，
+  // 清掉聊天页里停留的审批前 live turn，避免回来看到过期的“待审批”正文。
+  useEffect(() => {
+    const approvalId = liveTurn?.done?.approval_id
+    if (!approvalId || activeId === null || !liveTurn?.done?.awaiting_approval) {
+      return
+    }
+    const approval = approvals.find((item) => item.id === approvalId)
+    if (!approval || approval.status === 'pending' || approval.status === 'approved') {
+      return
+    }
+    const controller = liveControllerOf(activeId)
+    if (!controller) {
+      return
+    }
+    clearLive(activeId, controller)
+    // 当前页面还在看这个会话，直接取回审批后的最终消息；
+    // 若这里只标脏，live 被清掉后会短暂只剩审批前正文。
+    void queryClient.invalidateQueries({
+      queryKey: conversationKeys.messages(activeId),
+    })
+  }, [activeId, approvals, liveTurn, queryClient])
 
   const chooseModel = (id: number) => {
     setSelectedId(id)
@@ -327,6 +430,7 @@ export function ChatPage() {
       publishLive(conversationId, updated, controller)
     }
 
+    let awaitingApproval = false
     try {
       await sendConversationMessage(
         conversationId,
@@ -360,6 +464,7 @@ export function ChatPage() {
               phase: turn.phase === 'streaming' ? 'settled' : turn.phase,
             }))
             if (payload.awaiting_approval) {
+              awaitingApproval = true
               void queryClient.invalidateQueries({
                 queryKey: approvalKeys.conversation(conversationId),
               })
@@ -392,7 +497,11 @@ export function ChatPage() {
         }
       })
     } finally {
-      clearLive(conversationId, controller)
+      // 审批暂停不是流结束：保留 live turn，切页/刷新到审批阶段时
+      // 还要靠它（以及 approval.partial_answer）恢复审批前正文。
+      if (!awaitingApproval) {
+        clearLive(conversationId, controller)
+      }
     }
   }
 

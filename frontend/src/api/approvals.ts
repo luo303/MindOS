@@ -15,6 +15,8 @@ export type Approval = {
   expires_at: string
   decided_at?: string | null
   result: Record<string, unknown>
+  /** 审批前已经流出的正文；审批 pending 时用于恢复页面。 */
+  partial_answer?: string
   created_at: string
   updated_at: string
 }

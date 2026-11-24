@@ -240,6 +240,79 @@ describe('问答页', () => {
     }
   })
 
+  it('pending 审批能恢复审批前正文，并把批准后的 delta 接在同一轮', async () => {
+    const userMessage = {
+      id: 1,
+      conversation_id: 1,
+      role: 'user' as const,
+      content: '帮我建一个待办',
+      citations: [],
+      seq: 1,
+      created_at: '2026-11-24T00:00:00Z',
+    }
+    const approval = {
+      id: 1,
+      conversation_id: 1,
+      user_message_id: 1,
+      chat_model_id: 1,
+      tool_name: 'create_todo',
+      arguments: { title: '学习计划' },
+      summary: '创建待办：学习计划',
+      status: 'pending' as const,
+      expires_at: '2026-12-01T00:00:00Z',
+      result: {},
+      partial_answer: '我先查一下知识库。',
+      created_at: '2026-11-24T00:00:00Z',
+      updated_at: '2026-11-24T00:00:00Z',
+    }
+    const decision = openSseResponse()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        if (url.endsWith('/chat-models')) {
+          return jsonResponse(envelope({ items: [chatModelFixture()] }))
+        }
+        if (url.endsWith('/conversations') && method === 'GET') {
+          return jsonResponse(envelope({ items: [conversationFixture] }))
+        }
+        if (url.includes('/conversations/1/messages?') && method === 'GET') {
+          return jsonResponse(envelope({ items: [userMessage] }))
+        }
+        if (url.includes('/approvals?') && method === 'GET') {
+          return jsonResponse(envelope({ items: [approval] }))
+        }
+        if (url.endsWith('/approvals/1/decision') && method === 'POST') {
+          return decision.response
+        }
+        throw new Error('unexpected url: ' + url)
+      }),
+    )
+    const user = userEvent.setup()
+    const { router } = renderApp('/chat')
+
+    expect(await screen.findByText('我先查一下知识库。')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '批准' }))
+    await act(async () => {
+      decision.push({ type: 'delta', seq: 1, payload: { text: '现在创建。' } })
+    })
+    expect(await screen.findByText('我先查一下知识库。现在创建。')).toBeVisible()
+
+    // 审批续跑中离开页面，流继续；回来应接上同一轮，而不是重新变空。
+    await act(() => router.navigate('/memory'))
+    await act(async () => {
+      decision.push({ type: 'delta', seq: 2, payload: { text: '后台继续。' } })
+    })
+    await act(() => router.navigate('/chat'))
+    expect(await screen.findByText('我先查一下知识库。现在创建。后台继续。')).toBeVisible()
+
+    await act(async () => {
+      decision.push(doneEvent(12))
+      decision.close()
+    })
+  })
+
   it('没有配置对话模型时给出引导，输入框不可用', async () => {
     vi.stubGlobal(
       'fetch',
