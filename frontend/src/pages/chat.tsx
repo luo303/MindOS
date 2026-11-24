@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowUp, Loader2, Menu, MessageSquare, Plus, Trash2, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Link } from 'react-router'
 
 import { approvalKeys, fetchConversationApprovals, streamApprovalDecision } from '@/api/approvals'
@@ -26,6 +26,13 @@ import { SlidingPill } from '@/components/sliding-pill'
 import { ApprovalPanel } from './chat/approval-panel'
 import { TurnCard } from './chat/turn-card'
 import { ModelSelect } from './chat/model-select'
+import {
+  clearLive,
+  liveControllerOf,
+  liveTurnOf,
+  publishLive,
+  subscribeLive,
+} from './chat/live'
 import { REFUSAL_TEXT, STOPPED_TEXT, WITHDRAWN_TEXT, type Turn } from './chat/format'
 
 /** 选中的模型存本地：这是"本机偏好"，不该占一个后端字段。 */
@@ -114,6 +121,25 @@ function turnsFromMessages(messages: ChatMessage[]): Turn[] {
   return turns
 }
 
+/** 把正在生成的本地轮次合并进历史，避免切页回来后看到旧的用户消息。 */
+function withLiveTurn(turns: Turn[], live: Turn): Turn[] {
+  let index = -1
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i].question === live.question) {
+      index = i
+      break
+    }
+  }
+  if (index < 0) {
+    return [...turns, live]
+  }
+  const merged = {
+    ...live,
+    messageId: live.messageId ?? turns[index].messageId,
+  }
+  return turns.map((turn, i) => (i === index ? merged : turn))
+}
+
 /**
  * 对话页：多轮会话 + 流式回答。
  *
@@ -133,6 +159,12 @@ export function ChatPage() {
   const [activeId, setActiveId] = useState<number | null>(() => readStoredConversationId())
   const [turns, setTurns] = useState<Turn[]>([])
   const [pending, setPending] = useState(false)
+  const liveTurn = useSyncExternalStore(
+    subscribeLive,
+    () => liveTurnOf(activeId),
+    () => null,
+  )
+  const generating = pending || liveTurn !== null
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null)
@@ -195,8 +227,8 @@ export function ChatPage() {
 
   // 新消息/流式增量都贴到底部；历史长时不会停在半空。
   useEffect(() => {
-    endRef.current?.scrollIntoView?.({ behavior: pending ? 'auto' : 'smooth', block: 'end' })
-  }, [turns, pending])
+    endRef.current?.scrollIntoView?.({ behavior: generating ? 'auto' : 'smooth', block: 'end' })
+  }, [turns, generating])
 
   const messagesQuery = useQuery({
     queryKey: conversationKeys.messages(activeId ?? 0),
@@ -320,15 +352,28 @@ export function ChatPage() {
 
   // 历史加载完成后还原 turns；流式过程中不要用缓存覆盖正在生成的内容。
   useEffect(() => {
-    if (pending || activeId === null || !messagesQuery.data) {
+    // 有 liveTurn 时必须合并历史；否则切换回来后 pending 为 true，
+    // 历史 effect 永远不执行，只剩当前一轮。
+    if ((pending && !liveTurn) || activeId === null || !messagesQuery.data) {
       return
     }
     if (syncedConversationRef.current === activeId) {
       return
     }
     syncedConversationRef.current = activeId
-    setTurns(turnsFromMessages(messagesQuery.data))
-  }, [activeId, messagesQuery.data, pending])
+    const restored = turnsFromMessages(messagesQuery.data)
+    setTurns(liveTurn ? withLiveTurn(restored, liveTurn) : restored)
+  }, [activeId, messagesQuery.data, pending, liveTurn])
+
+  // 切页回来时，本地缓存的历史可能还没有正在生成的 assistant 消息；
+  // liveTurn 是模块级的，重新挂载后把它合并回来，流式内容继续可见。
+  useEffect(() => {
+    if (!liveTurn || activeId === null) {
+      return
+    }
+    setTurns((prev) => withLiveTurn(prev, liveTurn))
+    setPending(true)
+  }, [activeId, liveTurn])
 
   const chooseModel = (id: number) => {
     setSelectedId(id)
@@ -383,16 +428,18 @@ export function ChatPage() {
     // 本地已经有一个正在生成的轮次；后续 messages 刷新不要用旧缓存覆盖它。
     syncedConversationRef.current = conversationId
     const id = newId()
-    setTurns((prev) => [
-      ...prev,
-      { id, question, answer: '', phase: 'streaming', hits: [], citations: [] },
-    ])
-    setPending(true)
-
     const controller = new AbortController()
     abortRef.current = controller
+    let current: Turn = { id, question, answer: '', phase: 'streaming', hits: [], citations: [] }
+    setTurns((prev) => [...prev, current])
+    setPending(true)
+    publishLive(conversationId, current, controller)
+
     const patch = (next: (turn: Turn) => Turn) => {
-      setTurns((prev) => prev.map((turn) => (turn.id === id ? next(turn) : turn)))
+      current = next(current)
+      const updated = current
+      setTurns((prev) => prev.map((turn) => (turn.id === id ? updated : turn)))
+      publishLive(conversationId, updated, controller)
     }
 
     try {
@@ -432,9 +479,13 @@ export function ChatPage() {
                 queryKey: approvalKeys.conversation(conversationId),
               })
             }
-            // 只刷新会话列表（标题/更新时间）；不重拉 messages，
-            // 否则刚流式生成的内容会被一次空缓存覆盖。
+            // 会话列表立即更新；messages 只标脏、不立刻重拉，
+            // 避免覆盖正在显示的流式内容，但下次回来时会重新取最终消息。
             void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+            void queryClient.invalidateQueries({
+              queryKey: conversationKeys.messages(conversationId),
+              refetchType: 'none',
+            })
           },
         },
         controller.signal,
@@ -456,6 +507,7 @@ export function ChatPage() {
         }
       })
     } finally {
+      clearLive(conversationId, controller)
       setPending(false)
       abortRef.current = null
     }
@@ -463,20 +515,25 @@ export function ChatPage() {
 
   const submit = (raw: string) => {
     const question = raw.trim()
-    if (question === '' || pending) {
+    if (question === '' || generating) {
       return
     }
     void run(question)
   }
 
-  const stop = () => abortRef.current?.abort()
+  const stop = () => {
+    abortRef.current?.abort()
+    if (activeId !== null) {
+      liveControllerOf(activeId)?.abort()
+    }
+  }
 
   const noModel = modelsQuery.isSuccess && models.length === 0
   const conversations = conversationsQuery.data ?? []
   const activeConversation = conversations.find((conv) => conv.id === activeId) ?? null
   const showEmpty =
     turns.length === 0 &&
-    !pending &&
+    !generating &&
     !createError &&
     !pendingApproval &&
     (activeId === null || (messagesQuery.isSuccess && !messagesQuery.isError))
@@ -504,7 +561,7 @@ export function ChatPage() {
             className="w-full justify-start"
             size="sm"
             onClick={startNewConversation}
-            disabled={pending || models.length === 0 || activeId === null}
+            disabled={generating || models.length === 0 || activeId === null}
           >
             <Plus aria-hidden="true" />
             新对话
@@ -585,11 +642,11 @@ export function ChatPage() {
             </p>
             {pendingApproval ? (
               <p className="text-muted-foreground truncate text-[11px]">等待审批，完成后才能继续</p>
-            ) : pending ? (
+            ) : generating ? (
               <p className="text-muted-foreground truncate text-[11px]">生成中…</p>
             ) : null}
           </div>
-          <ModelSelect models={models} value={selectedId} onChange={chooseModel} disabled={pending} />
+          <ModelSelect models={models} value={selectedId} onChange={chooseModel} disabled={generating} />
         </header>
 
         <div
@@ -678,9 +735,9 @@ export function ChatPage() {
               ) : (
                 <ChatComposer
                   onSubmit={submit}
-                  pending={pending}
+                  pending={generating}
                   disabled={
-                    pending ||
+                    generating ||
                     models.length === 0 ||
                     (activeId !== null && messagesQuery.isPending)
                   }
