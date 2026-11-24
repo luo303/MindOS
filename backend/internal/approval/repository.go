@@ -90,6 +90,21 @@ func (r *Repository) ListPending(ctx context.Context, ownerID int64, conversatio
 	return out, nil
 }
 
+// SetPartialAnswer 保存中断前已经流出的正文。只允许写 pending，
+// 避免审批已经完成/失败后又被迟到的流覆盖。
+func (r *Repository) SetPartialAnswer(ctx context.Context, ownerID, id int64, partial string) error {
+	res := r.db.WithContext(ctx).Model(&Request{}).
+		Where("owner_id = ? AND id = ? AND status = ?", ownerID, id, StatusPending).
+		Updates(map[string]any{
+			"partial_answer": partial,
+			"updated_at":     time.Now().UTC(),
+		})
+	if res.Error != nil {
+		return fmt.Errorf("save approval partial answer %d: %w", id, res.Error)
+	}
+	return nil
+}
+
 // SetInterrupt 记录 Eino 的 interrupt ID；审批后恢复需要它。
 func (r *Repository) SetInterrupt(ctx context.Context, checkpointID, interruptID string) error {
 	return r.db.WithContext(ctx).Model(&Request{}).

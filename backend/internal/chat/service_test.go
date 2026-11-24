@@ -107,6 +107,8 @@ func (f *fakeRunStore) Create(_ context.Context, run *Run) error {
 // 再流式输出正文。检索 0 次或 1 次都覆盖得到。
 type fakeRunner struct {
 	answer   string
+	partial  string
+	pending  *agent.PendingApproval
 	err      error
 	hit      *agent.Hit
 	registry *agent.Registry
@@ -117,6 +119,14 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Ask(_ context.Context, history []agent.HistoryMessage, onDelta func(string) error) (*agent.Result, error) {
 	f.gotHistory = history
+	if f.partial != "" {
+		if err := onDelta(f.partial); err != nil {
+			return nil, err
+		}
+	}
+	if f.pending != nil {
+		return &agent.Result{Pending: f.pending}, nil
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -418,5 +428,14 @@ func TestClassifyRunErrorVendorAuthWithoutMessage(t *testing.T) {
 	code, message, retryable := classifyRunError(err)
 	if code != "model_auth_failed" || message == "" || retryable {
 		t.Fatalf("classify = (%q, %q, %v)", code, message, retryable)
+	}
+}
+
+func TestCombineAnswerKeepsPartial(t *testing.T) {
+	if got := combineAnswer(" 先看文档。 ", " 已创建。 "); got != "先看文档。\n\n已创建。" {
+		t.Fatalf("combine = %q", got)
+	}
+	if got := combineAnswer("", "已创建。"); got != "已创建。" {
+		t.Fatalf("empty partial = %q", got)
 	}
 }

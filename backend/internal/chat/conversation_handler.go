@@ -135,7 +135,8 @@ func (h *Handler) DecideApproval(c *gin.Context) {
 		return
 	}
 	if writer.started {
-		_ = writer.Error("internal", "审批恢复过程中出错", true)
+		code, message, retryable := classifyRunError(err)
+		_ = writer.ErrorDetail(code, message, errorDetail(err), retryable)
 		return
 	}
 	httpx.Fail(c, mapAskError(err))

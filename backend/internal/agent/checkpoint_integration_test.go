@@ -28,7 +28,8 @@ func (m *toolCallingModel) next() *schema.Message {
 	if m.calls == 1 {
 		idx := 0
 		return &schema.Message{
-			Role: schema.Assistant,
+			Role:    schema.Assistant,
+			Content: "先看一下。",
 			ToolCalls: []schema.ToolCall{{
 				Index: &idx, ID: "call-1", Type: "function",
 				Function: schema.FunctionCall{Name: "create_todo", Arguments: `{"title":"测试断点待办"}`},
@@ -83,6 +84,9 @@ func TestCreateTodoInterruptsAndResumes(t *testing.T) {
 	}
 	if result.Pending == nil {
 		t.Fatal("expected pending approval")
+	}
+	if result.Pending.PartialAnswer != "先看一下。" {
+		t.Fatalf("partial = %q, want 先看一下。", result.Pending.PartialAnswer)
 	}
 	if _, ok, err := store.Get(ctx, cpID); err != nil || !ok {
 		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)

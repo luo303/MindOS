@@ -77,6 +77,11 @@ func (s *Service) Propose(ctx context.Context, in ProposeInput) (*Request, error
 	return req, nil
 }
 
+// SetPartialAnswer 保存审批前已经生成的正文。
+func (s *Service) SetPartialAnswer(ctx context.Context, ownerID, id int64, partial string) error {
+	return s.repo.SetPartialAnswer(ctx, ownerID, id, partial)
+}
+
 func (s *Service) SetInterrupt(ctx context.Context, checkpointID, interruptID string) error {
 	return s.repo.SetInterrupt(ctx, checkpointID, interruptID)
 }

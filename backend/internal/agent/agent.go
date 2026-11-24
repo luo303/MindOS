@@ -80,6 +80,9 @@ type PendingApproval struct {
 	InterruptID string
 	Tool        string
 	Summary     string
+	// PartialAnswer 是中断前已经流给用户的正文。审批期间它必须随审批一起保存，
+	// 否则切页/刷新后这段内容只剩前端内存，恢复时也拼不回最终消息。
+	PartialAnswer string
 }
 
 // Agent 绑定一次问答。
@@ -255,7 +258,7 @@ func (a *Agent) Ask(ctx context.Context, history []HistoryMessage, onDelta func(
 			return nil, event.Err
 		}
 		if event.Action != nil && event.Action.Interrupted != nil {
-			return a.handleInterrupt(ctx, event, meta.CheckpointID)
+			return a.handleInterrupt(ctx, event, meta.CheckpointID, answer.String())
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			// 工具调用事件、内部状态事件：不是正文，跳过。
@@ -354,7 +357,7 @@ func (a *Agent) Resume(ctx context.Context, checkpointID, interruptID string, de
 			return nil, event.Err
 		}
 		if event.Action != nil && event.Action.Interrupted != nil {
-			return a.handleInterrupt(ctx, event, checkpointID)
+			return a.handleInterrupt(ctx, event, checkpointID, answer.String())
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			continue
@@ -406,7 +409,7 @@ func (a *Agent) Resume(ctx context.Context, checkpointID, interruptID string, de
 //
 // checkpoint 已经由 Runner 写入 PG；这里只补 interrupt_id 并读回审批，
 // 不执行任何写操作。
-func (a *Agent) handleInterrupt(ctx context.Context, event *adk.AgentEvent, checkpointID string) (*Result, error) {
+func (a *Agent) handleInterrupt(ctx context.Context, event *adk.AgentEvent, checkpointID, partialAnswer string) (*Result, error) {
 	if checkpointID == "" {
 		return nil, errors.New("agent interrupted without checkpoint id")
 	}
@@ -435,10 +438,11 @@ func (a *Agent) handleInterrupt(ctx context.Context, event *adk.AgentEvent, chec
 		return nil, fmt.Errorf("load interrupt approval: %w", err)
 	}
 	return &Result{Pending: &PendingApproval{
-		ApprovalID:  req.ID,
-		InterruptID: root.ID,
-		Tool:        req.ToolName,
-		Summary:     req.Summary,
+		ApprovalID:    req.ID,
+		InterruptID:   root.ID,
+		Tool:          req.ToolName,
+		Summary:       req.Summary,
+		PartialAnswer: partialAnswer,
 	}}, nil
 }
 

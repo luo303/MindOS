@@ -45,7 +45,7 @@ func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve
 	}
 	if !approve {
 		text := "已拒绝创建待办。"
-		assistantID := s.completeApprovalMessage(ctx, ownerID, decided, text)
+		assistantID := s.completeApprovalMessage(ctx, ownerID, decided, combineAnswer(decided.PartialAnswer, text))
 		if emit != nil {
 			_ = emit.Delta(text)
 			_ = emit.Done(approvalDone(decided, assistantID))
@@ -85,7 +85,7 @@ func (s *Service) DecideApproval(ctx context.Context, ownerID, id int64, approve
 		_ = s.approvals.Fail(ctx, ownerID, id, approval.JSON{"error": "unsupported tool"})
 		return nil, errors.New("unsupported approval tool")
 	}
-	assistantID := s.completeApprovalMessage(ctx, ownerID, decided, text)
+	assistantID := s.completeApprovalMessage(ctx, ownerID, decided, combineAnswer(decided.PartialAnswer, text))
 	if err := s.approvals.Complete(ctx, ownerID, id, result); err != nil {
 		return nil, err
 	}
@@ -210,52 +210,59 @@ func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approv
 	runCtx = agent.WithRunMeta(runCtx, meta)
 	resolved, err := s.models.Resolve(runCtx, ownerID, req.ChatModelID)
 	if err != nil {
-		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": err.Error()})
+		s.failResume(ctx, ownerID, req, "", err)
 		return nil, err
 	}
 	registry := agent.NewRegistry()
 	answerer, err := s.builder.Build(runCtx, ownerID, resolved, registry, nil)
 	if err != nil {
-		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": err.Error()})
+		s.failResume(ctx, ownerID, req, "", err)
 		return nil, err
 	}
 	resumer, ok := answerer.(interface {
 		Resume(context.Context, string, string, map[string]any, func(string) error) (*agent.Result, error)
 	})
 	if !ok {
-		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": "runner does not support resume"})
-		return nil, errors.New("runner does not support resume")
+		err := errors.New("runner does not support resume")
+		s.failResume(ctx, ownerID, req, "", err)
+		return nil, err
 	}
 
+	var resumed strings.Builder
 	result, err := resumer.Resume(runCtx, *req.CheckpointID, *req.InterruptID,
 		map[string]any{"approved": approve}, func(delta string) error {
+			resumed.WriteString(delta)
 			if emit != nil {
 				return emit.Delta(delta)
 			}
 			return nil
 		})
 	if err != nil {
-		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": err.Error()})
+		s.failResume(ctx, ownerID, req, resumed.String(), err)
 		return nil, err
 	}
 	if result.Pending != nil {
-		_ = s.approvals.Fail(ctx, ownerID, req.ID, approval.JSON{"error": "another approval required"})
-		return nil, errors.New("another approval is required")
+		err := errors.New("another approval is required")
+		s.failResume(ctx, ownerID, req, resumed.String(), err)
+		return nil, err
 	}
-	final := strings.TrimSpace(result.Answer)
-	if final == "" {
+
+	final := combineAnswer(req.PartialAnswer, result.Answer)
+	if strings.TrimSpace(final) == "" {
 		final = "审批已处理。"
 	}
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer persistCancel()
 	var assistantID int64
 	if req.ConversationID != nil {
-		saved, err := s.convs.AppendMessage(ctx, ownerID, *req.ConversationID, RoleAssistant, final, marshalJSON(nil))
+		saved, err := s.convs.AppendMessage(persistCtx, ownerID, *req.ConversationID, RoleAssistant, final, marshalJSON(nil))
 		if err != nil {
 			s.log.Warn("save resumed message failed", zap.Int64("approval_id", req.ID), zap.Error(err))
 		} else {
 			assistantID = saved.ID
 		}
 	}
-	if err := s.approvals.Complete(ctx, ownerID, req.ID, approval.JSON{
+	if err := s.approvals.Complete(persistCtx, ownerID, req.ID, approval.JSON{
 		"approved": approve,
 		"answer":   final,
 	}); err != nil {
@@ -264,5 +271,45 @@ func (s *Service) resumeDecision(ctx context.Context, ownerID int64, req *approv
 	if emit != nil {
 		_ = emit.Done(approvalDone(req, assistantID))
 	}
-	return s.approvals.Get(ctx, ownerID, req.ID)
+	return s.approvals.Get(persistCtx, ownerID, req.ID)
+}
+
+// failResume 把审批恢复的失败也落成一条 assistant 错误消息。
+// 仅打日志不落库的话，刷新后只剩 approval failed，用户看不到已经生成的 partial，
+// 也看不到失败原因。
+func (s *Service) failResume(ctx context.Context, ownerID int64, req *approval.Request, resumed string, runErr error) {
+	code, message, _ := classifyRunError(runErr)
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	content := combineAnswer(req.PartialAnswer, resumed)
+	if req.ConversationID != nil && s.convs != nil {
+		if _, err := s.convs.AppendErrorMessage(
+			persistCtx, ownerID, *req.ConversationID, content, marshalJSON(nil), code, message,
+		); err != nil {
+			s.log.Warn("save failed approval message failed",
+				zap.Int64("approval_id", req.ID), zap.Error(err))
+		}
+	}
+	if err := s.approvals.Fail(persistCtx, ownerID, req.ID, approval.JSON{
+		"error": runErr.Error(),
+		"code":  code,
+	}); err != nil {
+		s.log.Warn("mark approval failed failed",
+			zap.Int64("approval_id", req.ID), zap.Error(err))
+	}
+}
+
+// combineAnswer 保留审批前已经展示给用户的正文，再接上审批后的续写。
+func combineAnswer(partial, resumed string) string {
+	p := strings.TrimSpace(partial)
+	r := strings.TrimSpace(resumed)
+	switch {
+	case p == "":
+		return r
+	case r == "":
+		return p
+	default:
+		return p + "\n\n" + r
+	}
 }

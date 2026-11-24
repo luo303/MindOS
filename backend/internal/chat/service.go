@@ -358,9 +358,19 @@ func (s *Service) execute(
 	}
 	if result != nil && result.Pending != nil {
 		// 工具已创建 pending 审批，checkpoint 已由 Runner 写入 PG。
+		// partial answer 是中断前已经推给用户的正文；它必须落库，否则切页/刷新后
+		// 这段内容只剩前端内存，Resume 也无法拼回最终 assistant 消息。
+		partial := answer.String()
+		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer persistCancel()
 		if s.approvals != nil {
-			_ = s.approvals.SetInterrupt(runCtx, checkpointID, result.Pending.InterruptID)
+			_ = s.approvals.SetInterrupt(persistCtx, checkpointID, result.Pending.InterruptID)
+			if err := s.approvals.SetPartialAnswer(persistCtx, ownerID, result.Pending.ApprovalID, partial); err != nil {
+				s.log.Warn("save approval partial answer failed",
+					zap.Int64("approval_id", result.Pending.ApprovalID), zap.Error(err))
+			}
 		}
+		result.Pending.PartialAnswer = partial
 		payload := DonePayload{
 			ChatModelID:      resolved.ID,
 			AwaitingApproval: true,
