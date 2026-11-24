@@ -20,7 +20,7 @@
 
 - **只用命名导出，禁止 `default export`**。`react-refresh` 规则也不允许组件文件混着导出非组件，所以变体表（如 `buttonVariants`）保持文件内私有。
 - 不建 barrel 文件；确实需要 `index.ts` 时只做转出，不写实现。
-- **页面入口保持薄**：`src/pages/*.tsx` 负责取数与编排，成块的视图拆到同目录子文件或子组件。单个组件文件超过 500 行必须拆。现状参考 `knowledge.tsx`（319 行）+ `pages/knowledge/`（列表、详情、筛选栏、笔记表单、格式化函数各一份），Phase 5 加功能时先按职责拆再写。
+- **页面入口保持薄**：`src/pages/*.tsx` 负责取数与编排，成块的视图拆到同目录子文件或子组件。单个组件文件超过 500 行必须拆；`chat.tsx`（约 900 行）与 `knowledge.tsx`（约 510 行）是已登记的技术债，新增功能前必须先拆职责，不得继续膨胀。
 - 只在本页使用的常量与映射表可以留在同文件顶部（如 `statusMeta`），一旦被两处引用或超过约 20 行，就挪到 `lib/` 或同目录的独立文件。
 - 不在组件函数内部定义子组件。纯展示、无状态、不进列表的片段可以用 `renderXxx()`；**有状态或被复用两次以上，抽成独立组件**。
 - 大块 JSX 拆开，不写嵌套三层以上的条件渲染。
@@ -35,10 +35,12 @@
 ## 3. React 渲染纪律
 
 - **render 阶段必须纯净**：不读写 `ref.current`，不修改 props、外部变量、全局变量，不发起请求。
-- render 阶段禁止无条件 `setState`。确实需要"条件复位"时（props 变了要把内部状态归零），只在值真的变化时设一次；**不要改用 `useEffect` 同步 `setState`**，那会触发 cascading render，也是本仓库目前零 `useEffect` 的原因之一。
+- render 阶段禁止无条件 `setState`。确实需要"条件复位"时（props 变了要把内部状态归零），只在值真的变化时设一次；**不要用 `useEffect` 同步可派生的 state**，那会触发 cascading render。`useEffect` 只用于订阅外部系统（如 `chat/live.ts`）、DOM 测量或第三方实例，并返回清理函数。
 - **能直接算的值不要用 `useEffect + setState`**：`const activeId = selectedId ?? items[0]?.id ?? null` 就够了，别用状态镜像它。
 - `useEffect` 只用于同步外部系统（订阅、DOM 测量、第三方实例）。事件行为写在事件回调里，不绕到 effect 里。
-- 本项目服务端状态一律走 TanStack Query，**不复制进本地 `useState`**；请求的取消由 Query 传下来的 `signal` 负责，不手写竞态判断。
+- 本项目服务端状态一律走 TanStack Query，**不复制进本地 `useState`**；请求取消由 Query 传下来的 `signal` 负责，不手写竞态判断。
+- **正在生成的流式回答是例外**：它属于某个会话的临时状态，放模块级 store（`pages/chat/live.ts`），按 `conversationId` 建条目；页面只订阅当前会话。禁止用一个全局 `pending` 代表所有会话。
+- SPA 路由切换不 abort 业务流；只有整页刷新/关闭才断连接。流结束后把 messages 查询标脏，不要用旧缓存覆盖 live。
 - Hooks 只在组件顶层调用，禁止条件调用；**禁止 `eslint-disable` 绕过 hooks 规则**。
 - `useMemo` 只做纯计算，不许在里面 `setState`；不要为"优化"随手加 `useMemo` / `useCallback`，`useCallback` 的返回值不能当组件用。
 - 列表 `key` 必须稳定且唯一，**不要用数组下标**。同一父节点下不同操作不能用同一个业务 ID 作 key：改名用 `rename-${id}`、导出用 `export-${id}`，否则切换目标时会累积 DOM。改完必须实测多次切换。
@@ -73,6 +75,9 @@
 - 复杂筛选逻辑封成语义函数，不把三四个条件堆在 JSX 里。
 
 ## 7. 异步与副作用
+
+- 交互组件先复用 `src/components/ui/`：Button、Input、Textarea、Select、Toast、Drawer、Modal；列表当前项用 `SlidingPill`；正文用 `components/markdown.tsx`。新增基础组件前先确认已有实现无法满足。
+- `Drawer` 用于需要持续编辑的侧栏表单；`Modal` 用于上传、筛选、确认等短流程。不要用页面顶部内联表单替代。
 
 - 异步结果通过返回值传递，不顺手改外部作用域变量。
 - 请求、上传、定时器、订阅都要考虑清理与竞态；状态更新前确认当前请求仍有效（Query 的 `signal` 已经处理大半，别再叠一层手写逻辑）。

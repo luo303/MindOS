@@ -510,6 +510,26 @@ ReAct 循环，为后续挂记忆、任务、统计等工具留出扩展点。�
 **验证**：后端 `build` / `vet` / `test -race` 全绿；前端 `lint` / 65 用例 / `build` 全绿；
 真实 HTTP 冒烟：建会话 → 发消息（模型不可达时 SSE `error`+`done`，user 消息落库）→ 读消息列表。
 
+### 会话流式恢复、主题与失败诊断（2026-11-24）
+
+**目标**：让多轮会话在切页、并发会话和失败场景下不丢状态，并让前端错误可定位。
+
+**改动**
+
+- 会话流式状态从页面组件移到模块级 live store（`frontend/src/pages/chat/live.ts`），用 `useSyncExternalStore` 订阅；SPA 切页后回来能接上已生成内容。
+- 生成状态按 `conversationId` 判断，删除全局 `pending` 对历史加载的阻塞；切换会话不再空白，多个会话可各自生成。
+- SSE `error` 事件增加 `request_id` 与 `detail`；服务端 `agent run failed` 记录同一 request id；失败卡片可展开诊断。
+- 客户端取消请求记为 499/debug，不再误报 500；逐条 SQL 日志默认关闭。
+- 写笔记改为右侧 Drawer，上传导入改为 Modal；Markdown 统一由 `components/markdown.tsx` 渲染，知识库正文与对话共用。
+- 亮/暗主题落地，深色为中性黑灰。
+
+**未做**
+
+- 整页刷新/关闭浏览器仍会断开 SSE，后端 run 取消；后台异步 run + 重连是后续架构。
+- `chat.tsx` / `knowledge.tsx` 已超过 500 行阈值，列入待拆技术债。
+
+**验证**：前端 lint、73 个测试、build 全绿；相关后端 chat/agent/middleware 测试与 `go build` 通过。
+
 ---
 
 ## 4. 未做的事与结论

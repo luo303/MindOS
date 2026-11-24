@@ -3,6 +3,22 @@
 本文件是本仓库的**开发准入约定**，每次会话开始前必读。
 它不是愿景文档：**与代码冲突时，要么改代码，要么改本文件，不允许长期不一致。**
 
+## 0. 不同 AI 会话的统一工作流
+
+目标是让换一个会话、换一个模型，仍然按同一套流程工作，而不是靠用户重复交代。
+
+每次开始任务前：
+
+1. 读本文件、`frontend/CONVENTIONS.md`、`frontend/README.md`，以及与任务相关的 `docs/design/` 和 `docs/history.md`。
+2. 执行 `git status --short`。不要覆盖未提交改动；先读目标文件和测试，不凭记忆改代码。
+3. 先定位再修改：看请求日志、SSE 的 `error.detail` / `request_id`、测试或最小复现。不要先把执行错误猜成“模型厂商错误”。
+4. 先搜索现有实现（`grep` / `glob`）再新建。禁止重复造 Button、Modal、Drawer、Markdown、流式状态 store。
+5. 一次只做一个主题，最小改动；跨层行为变更必须同时补测试和文档。
+6. 收尾门禁：后端 `go build ./...` + `go vet ./...` + `go test -race -count=1 ./...`；前端 `npm run lint` + `test` + `build`。未跑必须说明原因。
+7. 提交遵循第 9 节：一次提交一个主题，说明改了什么、为什么、验证结果。
+8. 行为、配置、命令、组件约定变化时，同步更新本文件、`frontend/README.md`、`CONVENTIONS.md` 或 `docs/design/`。文档与代码冲突时，当次改动内解决。
+9. 危险操作（`git push`、改 remote、`reset --hard`、删除数据）先问，不擅自执行。
+
 ## 1. 项目是什么
 
 **MindOS：AI 个人知识与行动管理系统。** 文档、网页、笔记进来变成可检索的知识；对话与活动里提炼出可修订的长期记忆；Agent 拿着知识与记忆回答问题、拆解目标、调用工具执行任务。多用户、本地优先。
@@ -24,7 +40,7 @@
 
 技术主线：Go + Gin + GORM + PostgreSQL 16（pgvector）+ Elasticsearch（检索读模型）+ RabbitMQ + Redis（按需）+ Eino ADK；前端 React + TypeScript + Vite + Tailwind + shadcn/ui。
 
-**当前状态（2026-11-19）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答、多轮会话（阶段 1/2/3：热层 + 滚动摘要 + ES 冷层召回），以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；PG 是事实库，Elasticsearch 是检索读模型（`mindos-chunks` / `mindos-messages`，BM25 + kNN + 应用侧 RRF）；文档切分/向量化/删除经 outbox → RabbitMQ → indexer 写 ES，消息落库后排 upsert + 异步 embedding，冷层按 `seq < hotStart` 召回原文并补相邻消息；摘要每 12 条积压触发，认领/提交/释放防并发。`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ SSE 流式回答；引用只做展示映射，对话模型配置存库（AES-256-GCM 加密），问答落 `qa_runs`。**2026-11-20 追加：** 用户待办（todos）与 AI 写工具已完成；create/update/delete_todo 通过 Eino StatefulInterrupt + PG agent_checkpoints 暂停，审批后 ResumeWithParams 恢复模型继续生成；待审批记录在 agent_approvals，任务页可跨刷新处理。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md`、`docs/design/rag.md`、`docs/design/search-architecture.md` 与 `docs/design/conversation-memory.md`。
+**当前状态（2026-11-24）：文档入库、异步任务链路、分块向量化、ReAct 自主检索问答、多轮会话（阶段 1/2/3：热层 + 滚动摘要 + ES 冷层召回），以及注册登录与按用户隔离已完成并验证。** 原文只存 MinIO；PG 是事实库，Elasticsearch 是检索读模型（`mindos-chunks` / `mindos-messages`，BM25 + kNN + 应用侧 RRF）；文档切分/向量化/删除经 outbox → RabbitMQ → indexer 写 ES，消息落库后排 upsert + 异步 embedding，冷层按 `seq < hotStart` 召回原文并补相邻消息；摘要每 12 条积压触发，认领/提交/释放防并发。`POST /ask` 走 Eino ADK Agent（ReAct 循环，模型自主调用 `search_knowledge`，可选 `query_knowledge` 走独立只读角色 + RLS）+ SSE 流式回答；引用只做展示映射，对话模型配置存库（AES-256-GCM 加密），问答落 `qa_runs`。**2026-11-20 追加：** 用户待办（todos）与 AI 写工具已完成；create/update/delete_todo 通过 Eino StatefulInterrupt + PG agent_checkpoints 暂停，审批后 ResumeWithParams 恢复模型继续生成；待审批记录在 agent_approvals，任务页可跨刷新处理。前端已支持亮/暗主题、Markdown 回答与知识库正文、会话级流式状态和失败诊断（SSE 带 `request_id` / `detail`）。**不预设路线**：接下来做什么由使用者决定，已做过的事、设计取舍与已知限制见 `docs/history.md`，设计见 `docs/design/overview.md`、`docs/design/embedding.md`、`docs/design/rag.md`、`docs/design/search-architecture.md` 与 `docs/design/conversation-memory.md`。
 
 ## 2. 仓库结构与命令
 
@@ -165,6 +181,26 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 - SSE 接口不走信封：事件体统一 `{"type":"...","seq":n,"payload":{}}`；`seq` 只用于客户端排序校验，断线即结束、暂不续传。
 - SSE 接口的存活不受 `http.Server.WriteTimeout` 限制：流开始后用 `http.NewResponseController().SetWriteDeadline(零值)` 清掉本请求的写截止，超时由业务自己的超时配置兜底（普通接口仍受全局 WriteTimeout 保护）。
 
+### 7.1 日志与可观测性
+
+- **每个 HTTP 请求都必须有访问日志**：method、path、query、status、latency、request_id、client_ip；4xx 用 Warn，5xx 用 Error。
+- 客户端主动取消连接不是服务端错误：`context.Canceled` 以 499 结束并记为 `http request canceled`（debug），不得记成 500。
+- 后台轮询（reaper / outbox relay / 任务扫描）只在**实际处理了数据或出错**时记录；空转不打印。逐条 SQL 日志默认关闭，`DB_LOG_SQL=true` 只用于临时排查。
+- SSE 的 `error` 事件必须包含 `code`、`message`、`retryable`、`request_id`，并在有诊断信息时包含 `detail`；detail 必须截断并遮盖疑似密钥。服务端 `agent run failed` 日志使用同一个 `request_id`，便于前后端对照。
+- 不记录请求体、响应体、API Key、密码、完整 Cookie。
+- 写类工具必须留痕；审批、checkpoint、工具名和失败原因要能通过 request_id 关联到一次 run。
+
+### 7.2 前端流式与状态
+
+- 服务端状态走 TanStack Query；正在生成的回答属于“会话的临时状态”，放模块级 store（当前是 `frontend/src/pages/chat/live.ts`），不能只放在页面组件的 `useState`。
+- **按实体建模**：生成状态按 `conversationId` 判断，禁止用一个全局 `pending` 代表所有会话。A 会话生成中不能让 B 会话历史加载被阻塞。
+- SPA 内切换页面不应 abort 正在进行的 SSE；路由卸载只解除 UI 订阅，后台流继续。只有整页刷新/关闭浏览器才会断开 HTTP 连接。不要在没有产品决策时添加“卸载即 abort”。
+- 历史与 live 流要合并：有 live turn 时保留它；流结束后把 messages 查询标脏（`refetchType: 'none'`），下次进入再从数据库取最终消息。
+- 多个会话可以各自生成，controller 必须按会话保存；停止按钮只停止当前会话。
+- 长文本统一使用 `components/markdown.tsx`，不要在页面里重新写一套 Markdown 解析；HTML 默认转义。
+- 更完整的状态分层与两次流式 bug 复盘见 `docs/design/frontend-state.md`。
+
+
 ## 8. 新增一个接口 / 一个工具的固定流程
 
 **接口**
@@ -201,7 +237,12 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 
 ## 10. 当前已知问题（待修，勿遗忘）
 
-当前无登记未修问题。早期已关闭：panic 请求访问日志丢失、配置类型错误静默回退。新问题按“位置 / 影响 / 处理时机”追加到本节。
+| 位置 | 影响 | 处理时机 |
+|---|---|---|
+| `AGENT_MAX_STEPS` / `AGENT_TOKEN_BUDGET` / `AGENT_RUN_TIMEOUT` | 配置会被解析并显示在设置页，但 Agent Builder 仍使用 `agent.DefaultLimits()`，chat 超时仍使用 `RAG_TIMEOUT`；改 .env 不会改变实际预算 | 接线或移除配置前，必须在本节保留说明；排查预算时以代码常量为准 |
+| `frontend/src/pages/chat.tsx` 约 900 行、`knowledge.tsx` 约 510 行 | 已超过单文件 500 行阈值，继续加功能会让流式/详情逻辑更难维护 | 下一次触碰对应页面时先拆出职责子组件，不得继续膨胀 |
+
+早期已关闭：panic 请求访问日志丢失、配置类型错误静默回退、客户端取消被记成 500、工具预算耗尽被归为 upstream_error。新问题按“位置 / 影响 / 处理时机”追加到本节。
 
 ## 11. 迭代方式
 

@@ -9,7 +9,7 @@ React 单页应用，开发期跑在 5173，`/api` 请求代理到本地 Go 服�
 | 构建 | Vite 8 | 无 SSR，纯静态产物 |
 | 框架 | React 19 + TypeScript | `strict` 开启，`verbatimModuleSyntax` 强制 `import type` |
 | 样式 | Tailwind CSS v4 | 无 `tailwind.config.js`，主题写在 `src/index.css` 的 `@theme` |
-| 组件 | shadcn/ui（复制式） | 只引入用到的 Button / Card / Badge / Skeleton，代码在 `src/components/ui/` |
+| 组件 | shadcn/ui（复制式） | Button / Card / Badge / Skeleton / Select / Toast / Drawer / Modal 等在 `src/components/ui/`；通用 Markdown 在 `src/components/markdown.tsx` |
 | 路由 | React Router 8 | `createBrowserRouter`，路由表在 `src/app/router.tsx` |
 | 数据 | TanStack Query 5 | 服务端状态一律走 Query，不复制进本地 state |
 | 测试 | Vitest 5 + Testing Library | jsdom 环境，`src/test/` 放 setup 与工具 |
@@ -55,6 +55,14 @@ npm run build        # tsc --noEmit && vite build，产物在 dist/
 
 **编码规范（导出、渲染纪律、类型、命名、提交前自查）见 [CONVENTIONS.md](CONVENTIONS.md)。** 下面只写本项目特有的约定：数据怎么取、错误怎么表达、页面怎么加。
 
+**交互与组件**
+
+- 基础控件只用 `src/components/ui/`：Button、Input、Textarea、Select、Toast、Drawer、Modal 等，不另写一套。
+- 右侧抽屉 `Drawer` 用于持续编辑（写笔记）；`Modal` 用于短流程（上传文件、筛选、确认）。
+- 会话/文档列表的当前项统一用 `SlidingPill` 玻璃胶囊。
+- 正文统一用 `components/markdown.tsx`；对话和知识库共用，HTML 默认转义。
+- 流式状态、按会话判断生成中、路由切换的边界见 [docs/design/frontend-state.md](../docs/design/frontend-state.md)。
+
 **数据**
 
 - 服务端状态只走 TanStack Query；查询键集中在 `src/api/system.ts` 的 `queryKeys`，不散写。
@@ -96,7 +104,7 @@ npx vitest run src/pages/test/settings.test.tsx   # 单个文件
 ## 当前限制
 
 - 设置页的运行配置块只读（改 `backend/.env` 并重启）；**对话模型卡片除外**——它读写数据库里的 `chat_models`，改完立即生效。
-- 问答是单轮：刷新页面即清空对话记录，后端不保存会话上下文（每次问答落 `qa_runs` 供追溯）。
-- 知识页支持导入、筛选、删除与重建向量；分块一次最多显示 100 条。
-- 未做主题切换；`.dark` 变量已备好，等有真实需求再接。
+- 问答是多轮会话：历史落数据库，待审批操作跨刷新保留；SPA 内切换页面时正在生成的轮次由 live store 接续。**整页刷新、关闭浏览器或直接改地址栏仍会断开 SSE**，后端 run 会取消。
+- 知识页支持导入、筛选、删除与重建向量；分块一次最多显示 100 条。Markdown/笔记按正文渲染，纯文本保留原始换行。
+- 亮/暗主题已实现，存在 `localStorage.mindos.theme`；深色为中性黑灰。
 - 生产构建产物尚未由后端托管。

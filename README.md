@@ -199,15 +199,19 @@ docker compose --env-file backend/.env -f deployments/docker-compose.yml down -v
 
 | 文档 | 内容 |
 |---|---|
-| [AGENTS.md](AGENTS.md) | 开发准入约定：模块边界、硬约束、禁止事项、Git 规范 |
+| [AGENTS.md](AGENTS.md) | 开发准入约定：AI 会话工作流、模块边界、硬约束、日志与流式状态、Git 规范 |
 | [docs/design/overview.md](docs/design/overview.md) | 领域模型、检索与记忆机制、Agent 运行时、API 清单 |
 | [docs/design/embedding.md](docs/design/embedding.md) | 向量化链路：两段任务、事务边界、错误分类、接口与已知限制 |
 | [docs/history.md](docs/history.md) | 开发记录：已完成的能力、设计取舍、故障演练结果、已知限制 |
 | [frontend/README.md](frontend/README.md) | 前端开发约定、目录结构、测试写法 |
+| [frontend/CONVENTIONS.md](frontend/CONVENTIONS.md) | 前端编码规范：导出、渲染、类型、命名、组件复用 |
+| [docs/design/frontend-state.md](docs/design/frontend-state.md) | 前端状态分层、SSE 生命周期、按会话流式与失败诊断 |
 
 ## 当前状态
 
 已完成：工程基线（配置、日志、中间件、探针、优雅关闭）、数据库迁移与系统状态、前端骨架、文本文档入库（Markdown / TXT / 笔记）、文档管理（幂等导入、删除、重索引、分类与标签筛选）、异步任务链路（事务写 outbox → RabbitMQ → 消费端更新 tasks，含退避重试、取消、崩溃恢复与兜底对账）、分块向量化（切分后排 `document.embed` 任务，`vector(1024)` + HNSW，支持重建与批量回填）。
+
+多轮会话与待办审批、亮/暗主题、Markdown 正文、会话级流式恢复和失败诊断也已完成。
 
 向量模型是可选的：`EMBEDDING_*` 三项全空时导入照常，向量状态显示 `skipped`；配置后点「补齐向量」即可为已有文档补算。设计与取舍见 [docs/design/embedding.md](docs/design/embedding.md)。
 
