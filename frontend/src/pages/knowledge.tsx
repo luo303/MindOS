@@ -271,24 +271,22 @@ export function KnowledgePage() {
 
           <div className="flex flex-col gap-2">
             <Button
-              variant="outline"
+              variant="spotlight"
               size="sm"
               onClick={() => {
                 setComposerOpen(true)
                 setUploadOpen(false)
               }}
               aria-expanded={composerOpen}
-              className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
             >
               <NotebookPen aria-hidden="true" />
               写笔记
             </Button>
             <Button
-              variant="outline"
+              variant="spotlight"
               size="sm"
               onClick={startUpload}
               disabled={uploadMutation.isPending}
-              className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
             >
               {uploadMutation.isPending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
@@ -299,11 +297,10 @@ export function KnowledgePage() {
             </Button>
             {embeddingConfigured ? (
               <Button
-                variant="outline"
+                variant="spotlight"
                 size="sm"
                 onClick={() => backfillMutation.mutate()}
                 disabled={backfillMutation.isPending}
-                className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
               >
                 {backfillMutation.isPending ? (
                   <Loader2 className="animate-spin" aria-hidden="true" />
@@ -314,10 +311,9 @@ export function KnowledgePage() {
               </Button>
             ) : null}
             <Button
-              variant="outline"
+              variant="spotlight"
               size="sm"
               onClick={() => setFilterOpen(true)}
-              className="justify-start border-border bg-white text-foreground hover:bg-muted dark:bg-card"
             >
               <SlidersHorizontal aria-hidden="true" />
               筛选

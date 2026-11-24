@@ -78,6 +78,7 @@
 ## 7. 异步与副作用
 
 - 交互组件先复用 `src/components/ui/`：Button、Input、Textarea、Select、Toast、Drawer、Modal；列表当前项用 `SlidingPill`；正文用 `components/markdown.tsx`。新增基础组件前先确认已有实现无法满足。
+- 侧栏顶部操作用 `Button variant="spotlight"`，复用 `Card interactive` 的光斑和边框高光，不做倾斜。
 - `Drawer` 用于需要持续编辑的侧栏表单；`Modal` 用于上传、筛选、确认等短流程。不要用页面顶部内联表单替代。
 - 删除统一使用 `components/delete-confirm-dialog.tsx`，调用方只提供目标、后果、请求状态和回调。默认聚焦取消，提交期间锁定确认和关闭入口，失败留在弹框内重试。
 

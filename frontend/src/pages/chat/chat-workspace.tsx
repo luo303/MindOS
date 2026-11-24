@@ -86,7 +86,8 @@ export function ChatWorkspace({
       >
         <div className="border-b p-3">
           <Button
-            className="w-full justify-start"
+            className="w-full"
+            variant="spotlight"
             size="sm"
             onClick={startNewConversation}
             disabled={generating || models.length === 0 || activeId === null}

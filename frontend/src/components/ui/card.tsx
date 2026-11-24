@@ -1,26 +1,13 @@
-import type { HTMLAttributes, PointerEvent } from 'react'
+import type { HTMLAttributes } from 'react'
 
+import { clearGlassPointer, followGlassPointer } from '@/lib/glass-pointer'
 import { cn } from '@/lib/utils'
 
 type CardProps = HTMLAttributes<HTMLDivElement> & { interactive?: boolean }
 
-function followPointer(event: PointerEvent<HTMLDivElement>): void {
-  if (event.pointerType !== 'mouse' || !window.matchMedia('(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)').matches) return
-  const card = event.currentTarget
-  const rect = card.getBoundingClientRect()
-  if (!rect.width || !rect.height) return
-  const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
-  const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
-  card.style.setProperty('--glass-x', `${x * 100}%`)
-  card.style.setProperty('--glass-y', `${y * 100}%`)
-  card.style.setProperty('--glass-rx', `${(0.5 - y) * 5}deg`)
-  card.style.setProperty('--glass-ry', `${(x - 0.5) * 5}deg`)
-  card.dataset.lit = ''
-}
-
 export function Card({ className, interactive = false, children, ...props }: CardProps) {
   const surface = (
-    <div data-slot="card" className={cn('glass-surface text-card-foreground flex min-w-0 flex-col gap-4 py-5', className)} {...props}>
+    <div data-slot="card" className={cn('glass-surface text-card-foreground flex min-w-0 flex-col gap-4 py-5', interactive && 'glass-spotlight', className)} {...props}>
       {children}
     </div>
   )
@@ -29,9 +16,9 @@ export function Card({ className, interactive = false, children, ...props }: Car
   return (
     <div
       className="glass-card"
-      onPointerMove={followPointer}
-      onPointerLeave={(event) => { delete event.currentTarget.dataset.lit }}
-      onPointerCancel={(event) => { delete event.currentTarget.dataset.lit }}
+      onPointerMove={(event) => followGlassPointer(event, true)}
+      onPointerLeave={clearGlassPointer}
+      onPointerCancel={clearGlassPointer}
     >
       {surface}
     </div>

@@ -1,6 +1,7 @@
 import { cva, type VariantProps } from 'class-variance-authority'
 import type { ButtonHTMLAttributes } from 'react'
 
+import { clearGlassPointer, followGlassPointer } from '@/lib/glass-pointer'
 import { cn } from '@/lib/utils'
 
 /**
@@ -20,6 +21,7 @@ const buttonVariants = cva(
         default: 'bg-primary text-primary-foreground shadow-xs hover:bg-primary/90',
         destructive: 'bg-destructive text-white shadow-xs hover:bg-destructive/90',
         outline: 'border bg-card/65 shadow-xs hover:bg-accent hover:text-accent-foreground',
+        spotlight: 'glass-spotlight justify-start border border-border bg-white leading-none text-foreground shadow-xs dark:bg-card [&>svg]:-translate-y-[0.5px] [&>svg]:shrink-0',
         secondary: 'bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground',
         link: 'text-primary underline-offset-4 hover:underline',
@@ -40,14 +42,28 @@ const buttonVariants = cva(
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants>
 
-export function Button({ className, variant, size, type = 'button', ...props }: ButtonProps) {
+export function Button({ className, variant, size, type = 'button', disabled, onPointerMove, onPointerLeave, onPointerCancel, ...props }: ButtonProps) {
+  const spotlight = variant === 'spotlight'
   // type 默认 button：不写的话 <button> 落在 form 里默认 submit，
   // 这是个只有触发时才发现的坑，所以组件层统一兜底。
   return (
     <button
       data-slot="button"
       type={type}
+      disabled={disabled}
       className={cn(buttonVariants({ variant, size, className }))}
+      onPointerMove={spotlight && !disabled ? (event) => {
+        onPointerMove?.(event)
+        if (!event.defaultPrevented) followGlassPointer(event)
+      } : onPointerMove}
+      onPointerLeave={spotlight ? (event) => {
+        clearGlassPointer(event)
+        onPointerLeave?.(event)
+      } : onPointerLeave}
+      onPointerCancel={spotlight ? (event) => {
+        clearGlassPointer(event)
+        onPointerCancel?.(event)
+      } : onPointerCancel}
       {...props}
     />
   )

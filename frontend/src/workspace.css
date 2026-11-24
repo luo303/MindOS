@@ -174,7 +174,14 @@
   }
 
   .glass-card { display: grid; min-width: 0; }
-  .glass-card > .glass-surface { position: relative; isolation: isolate; }
+  .glass-spotlight { position: relative; isolation: isolate; }
+
+  .dark .glass-spotlight:enabled {
+    --glass-spot-center: #ffffff26;
+    --glass-spot-color: #8cd6e424;
+    --glass-edge-center: #ffffff8c;
+    --glass-edge-color: #8cd6e466;
+  }
 
   @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
     .glass-card > .glass-surface {
@@ -185,7 +192,7 @@
       box-shadow: inset 0 1px 0 #fff, 0 12px 29px #23434e1a;
       transition-duration: .16s;
     }
-    .glass-card > .glass-surface::before, .glass-card > .glass-surface::after {
+    .glass-spotlight::before, .glass-spotlight::after {
       position: absolute;
       inset: 0;
       border-radius: inherit;
@@ -194,15 +201,16 @@
       opacity: 0;
       transition: opacity .25s ease;
     }
-    .glass-card[data-lit] > .glass-surface::before, .glass-card[data-lit] > .glass-surface::after { opacity: 1; }
-    .glass-card > .glass-surface::before {
+    :is(.glass-card[data-lit] > .glass-spotlight, .glass-spotlight:enabled[data-lit])::before,
+    :is(.glass-card[data-lit] > .glass-spotlight, .glass-spotlight:enabled[data-lit])::after { opacity: 1; }
+    .glass-spotlight::before {
       z-index: -1;
-      background: radial-gradient(ellipse 11rem 8rem at var(--glass-x, 50%) var(--glass-y, 50%), #fff, #d5f5f795 45%, transparent 100%);
+      background: radial-gradient(ellipse 11rem 8rem at var(--glass-x, 50%) var(--glass-y, 50%), var(--glass-spot-center, #fff), var(--glass-spot-color, #d5f5f795) 45%, transparent 100%);
     }
-    .glass-card > .glass-surface::after {
+    .glass-spotlight::after {
       inset: -1px;
       padding: 1px;
-      background: radial-gradient(8rem at var(--glass-x, 50%) var(--glass-y, 50%), #fff, #8cd6e4ad 48%, transparent 95%);
+      background: radial-gradient(8rem at var(--glass-x, 50%) var(--glass-y, 50%), var(--glass-edge-center, #fff), var(--glass-edge-color, #8cd6e4ad) 48%, transparent 95%);
       mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
     }
   }
