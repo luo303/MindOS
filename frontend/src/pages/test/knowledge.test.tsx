@@ -64,8 +64,9 @@ describe('知识库页面', () => {
     renderApp('/knowledge')
 
     expect(await screen.findByText('集成测试笔记')).toBeInTheDocument()
-    // 分块内容原样渲染：保留 Markdown 标记与换行，不做美化。
-    expect(await screen.findByText(/# 标题[\s\S]*第一段正文。/)).toBeInTheDocument()
+    // Markdown 文档的分块按正文渲染，不再显示原始 # 标记。
+    expect(await screen.findByRole('heading', { name: '标题' })).toBeInTheDocument()
+    expect(screen.getByText('第一段正文。')).toBeInTheDocument()
     expect(screen.getByText('已向量化')).toBeInTheDocument()
     expect(screen.getByText(/\[0, 12\)/)).toBeInTheDocument()
   })

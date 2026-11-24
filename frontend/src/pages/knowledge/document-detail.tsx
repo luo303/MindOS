@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Markdown } from '@/components/markdown'
 import { StatusPill } from '@/components/status-pill'
 
 import {
@@ -14,6 +15,7 @@ import {
   formatDate,
   isEmbedInFlight,
   isInFlight,
+  isMarkdownDocument,
   sourceLabel,
   splitTags,
   statusMeta,
@@ -207,7 +209,12 @@ export function DocumentDetail({
           <Skeleton className="h-24 w-full" />
         </div>
       ) : (
-        <ChunkList chunks={chunks} total={chunkTotal} highlightSeq={highlightSeq} />
+        <ChunkList
+          chunks={chunks}
+          total={chunkTotal}
+          highlightSeq={highlightSeq}
+          markdown={isMarkdownDocument(doc)}
+        />
       )}
     </div>
   )
@@ -322,10 +329,12 @@ function ChunkList({
   chunks,
   total,
   highlightSeq,
+  markdown,
 }: {
   chunks: ChunkView[]
   total: number
   highlightSeq: number | null
+  markdown: boolean
 }) {
   return (
     <section className="space-y-3 border-t pt-4" aria-labelledby="chunks-heading">
@@ -348,10 +357,16 @@ function ChunkList({
               [{chunk.start_offset}, {chunk.end_offset}) · 约 {chunk.token_count} tokens
             </p>
           </header>
-          {/* 保留原始换行与 Markdown 标记：分块内容就是原文子串。 */}
-          <pre className="text-sm leading-7 wrap-anywhere whitespace-pre-wrap [font-family:inherit]">
-            {chunk.content}
-          </pre>
+          {markdown ? (
+            <Markdown
+              text={chunk.content}
+              className="text-sm leading-7 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+            />
+          ) : (
+            <pre className="text-sm leading-7 wrap-anywhere whitespace-pre-wrap [font-family:inherit]">
+              {chunk.content}
+            </pre>
+          )}
         </article>
       ))}
     </section>

@@ -107,3 +107,20 @@ export function splitTags(raw: string): string[] {
   }
   return tags
 }
+
+
+/** 文档正文是否应该按 Markdown 渲染。笔记本身就是 Markdown。 */
+export function isMarkdownDocument(doc: {
+  mime: string
+  title: string
+  source_type: string
+}): boolean {
+  const mime = doc.mime.toLowerCase()
+  if (mime === 'text/markdown' || mime === 'text/x-markdown') {
+    return true
+  }
+  if (doc.source_type === 'note') {
+    return true
+  }
+  return /\.(md|markdown)$/i.test(doc.title)
+}
