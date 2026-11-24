@@ -11,19 +11,20 @@ import {
   type CreateTodoInput,
   type Todo,
   type TodoStatus,
-  type UpdateTodoInput,
 } from '@/api/todos'
 import { describeError } from '@/api/errors'
+import { DeleteConfirmDialog } from '@/components/delete-confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { PageHeader } from '@/components/page-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { Drawer } from '@/components/ui/drawer'
 import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Textarea } from '@/components/ui/textarea'
+
+import { TodoEditor } from './tasks/todo-editor'
 
 const statusOptions: Array<{ value: string; label: string }> = [
   { value: '', label: '全部' },
@@ -41,45 +42,7 @@ const statusLabels: Record<TodoStatus, string> = {
   cancelled: '已取消',
 }
 
-type Draft = {
-  id: number | null
-  title: string
-  description: string
-  priority: number
-  due: string
-}
-
-const emptyDraft: Draft = { id: null, title: '', description: '', priority: 2, due: '' }
-
-function toDateTimeInput(iso?: string | null): string {
-  if (!iso) {
-    return ''
-  }
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return (
-    date.getFullYear() +
-    '-' +
-    pad(date.getMonth() + 1) +
-    '-' +
-    pad(date.getDate()) +
-    'T' +
-    pad(date.getHours()) +
-    ':' +
-    pad(date.getMinutes())
-  )
-}
-
-function toISO(local: string): string | null {
-  if (!local) {
-    return null
-  }
-  const date = new Date(local)
-  return Number.isNaN(date.getTime()) ? null : date.toISOString()
-}
+type TodoDialog = { kind: 'create' } | { kind: 'edit'; todo: Todo } | { kind: 'delete'; todo: Todo }
 
 function formatDue(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN', {
@@ -93,9 +56,10 @@ function formatDue(iso: string): string {
 export function TasksPage() {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState('open')
-  const [draft, setDraft] = useState<Draft>(emptyDraft)
-  const [formOpen, setFormOpen] = useState(false)
-  const [confirmId, setConfirmId] = useState<number | null>(null)
+  const [dialog, setDialog] = useState<TodoDialog | null>(null)
+  const isEditorOpen = dialog?.kind === 'create' || dialog?.kind === 'edit'
+  const editingTodo = dialog?.kind === 'edit' ? dialog.todo : null
+  const deletingTodo = dialog?.kind === 'delete' ? dialog.todo : null
 
   const listQuery = useQuery({
     queryKey: todoKeys.list(status),
@@ -105,22 +69,10 @@ export function TasksPage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: todoKeys.all })
 
   const saveMutation = useMutation({
-    mutationFn: async (d: Draft) => {
-      const payload: CreateTodoInput = {
-        title: d.title.trim(),
-        description: d.description.trim(),
-        priority: d.priority,
-        due_at: toISO(d.due),
-      }
-      if (d.id === null) {
-        return createTodo(payload)
-      }
-      const patch: UpdateTodoInput = { ...payload }
-      return updateTodo(d.id, patch)
-    },
+    mutationFn: ({ id, input }: { id: number | null; input: CreateTodoInput }) =>
+      id === null ? createTodo(input) : updateTodo(id, input),
     onSuccess: () => {
-      setDraft(emptyDraft)
-      setFormOpen(false)
+      setDialog(null)
       void invalidate()
     },
   })
@@ -133,25 +85,31 @@ export function TasksPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteTodo(id),
     onSuccess: () => {
-      setConfirmId(null)
+      setDialog(null)
       void invalidate()
     },
   })
 
-  const openCreate = () => {
-    setDraft(emptyDraft)
-    setFormOpen(true)
+  function handleOpenEditor(todo?: Todo) {
+    if (dialog) {
+      return
+    }
+    saveMutation.reset()
+    setDialog(todo ? { kind: 'edit', todo } : { kind: 'create' })
   }
 
-  const openEdit = (todo: Todo) => {
-    setDraft({
-      id: todo.id,
-      title: todo.title,
-      description: todo.description,
-      priority: todo.priority,
-      due: toDateTimeInput(todo.due_at),
-    })
-    setFormOpen(true)
+  function handleOpenDelete(todo: Todo) {
+    if (dialog) {
+      return
+    }
+    deleteMutation.reset()
+    setDialog({ kind: 'delete', todo })
+  }
+
+  function handleCloseDialog() {
+    if (!saveMutation.isPending && !deleteMutation.isPending) {
+      setDialog(null)
+    }
   }
 
   const items = listQuery.data ?? []
@@ -169,84 +127,13 @@ export function TasksPage() {
               onChange={setStatus}
               className="h-9 px-3 text-sm"
             />
-            <Button size="sm" onClick={openCreate}>
+            <Button size="sm" onClick={() => handleOpenEditor()}>
               <Plus aria-hidden="true" />
               新建待办
             </Button>
           </div>
         }
       />
-
-      {formOpen ? (
-        <Card>
-          <CardContent className="space-y-3">
-            <Input
-              aria-label="待办标题"
-              placeholder="要做什么？"
-              value={draft.title}
-              onChange={(event) => setDraft({ ...draft, title: event.target.value })}
-              maxLength={200}
-            />
-            <Textarea
-              aria-label="待办描述"
-              placeholder="补充说明（可选）"
-              value={draft.description}
-              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-              rows={3}
-            />
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 text-sm">
-                优先级
-                <Select
-                  ariaLabel="优先级"
-                  value={String(draft.priority)}
-                  options={[
-                    { value: '1', label: '高' },
-                    { value: '2', label: '中' },
-                    { value: '3', label: '低' },
-                  ]}
-                  onChange={(next) => setDraft({ ...draft, priority: Number(next) })}
-                  className="h-9 px-3 text-sm"
-                  menuClassName="w-32"
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                截止
-                <input
-                  aria-label="截止时间"
-                  type="datetime-local"
-                  className="border-input bg-background h-9 rounded-md border px-2 text-sm"
-                  value={draft.due}
-                  onChange={(event) => setDraft({ ...draft, due: event.target.value })}
-                />
-              </label>
-            </div>
-            {saveMutation.error ? (
-              <p className="text-destructive text-sm">{describeError(saveMutation.error)}</p>
-            ) : null}
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={() => saveMutation.mutate(draft)}
-                disabled={saveMutation.isPending || draft.title.trim() === ''}
-              >
-                {draft.id === null ? '创建' : '保存'}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setFormOpen(false)
-                  setDraft(emptyDraft)
-                }}
-                disabled={saveMutation.isPending}
-              >
-                取消
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
 
       {listQuery.isPending ? (
         <div className="space-y-2">
@@ -315,34 +202,18 @@ export function TasksPage() {
                       variant="ghost"
                       size="icon"
                       aria-label="编辑待办"
-                      onClick={() => openEdit(todo)}
+                      onClick={() => handleOpenEditor(todo)}
                     >
                       <Pencil aria-hidden="true" />
                     </Button>
-                    {confirmId === todo.id ? (
-                      <>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => deleteMutation.mutate(todo.id)}
-                          disabled={deleteMutation.isPending}
-                        >
-                          确认
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => setConfirmId(null)}>
-                          取消
-                        </Button>
-                      </>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="删除待办"
-                        onClick={() => setConfirmId(todo.id)}
-                      >
-                        <Trash2 aria-hidden="true" />
-                      </Button>
-                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="删除待办"
+                      onClick={() => handleOpenDelete(todo)}
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -351,6 +222,27 @@ export function TasksPage() {
         </ul>
       )}
 
+      <Drawer open={isEditorOpen} title={editingTodo ? '编辑待办' : '新建待办'} onClose={handleCloseDialog}>
+        <TodoEditor
+          key={editingTodo ? `edit-${editingTodo.id}` : 'create'}
+          todo={editingTodo}
+          saving={saveMutation.isPending}
+          error={saveMutation.error}
+          onCancel={handleCloseDialog}
+          onSubmit={(input) => saveMutation.mutate({ id: editingTodo?.id ?? null, input })}
+        />
+      </Drawer>
+
+      {deletingTodo ? (
+        <DeleteConfirmDialog
+          title="删除待办"
+          targetName={deletingTodo.title}
+          pending={deleteMutation.isPending}
+          error={deleteMutation.error}
+          onCancel={handleCloseDialog}
+          onConfirm={() => deleteMutation.mutate(deletingTodo.id)}
+        />
+      ) : null}
     </div>
   )
 }

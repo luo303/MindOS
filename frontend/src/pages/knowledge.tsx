@@ -7,20 +7,18 @@ import {
   backfillEmbeddings,
   cancelProcessing,
   createNote,
-  deleteDocument,
   documentKeys,
   embedDocument,
   fetchChunks,
   fetchDocument,
   fetchDocuments,
   reindexDocument,
-  updateDocument,
   uploadDocument,
 } from '@/api/documents'
 
 import { fetchSettings, queryKeys } from '@/api/system'
 import { describeError } from '@/api/errors'
-import type { DocumentFilters, DocumentPatch, DocumentQuery, ImportedDocumentView } from '@/api/types'
+import type { DocumentFilters, DocumentList as DocumentListData, DocumentQuery, ImportedDocumentView } from '@/api/types'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
@@ -55,7 +53,6 @@ export function KnowledgePage() {
   const [page, setPage] = useState(1)
   const [filters, setFilters] = useState<DocumentFilters>(emptyFilters)
   const [selectedId, setSelectedId] = useState<number | null>(hasDeepLink ? deepLinkDoc : null)
-  const [editingId, setEditingId] = useState<number | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
@@ -171,24 +168,17 @@ export function KnowledgePage() {
       createNote({ content: draft.content, title: draft.title, collection: draft.collection, tags: draft.tags }),
     onSuccess: afterImport,
   })
-  const updateMutation = useMutation({
-    mutationFn: (patch: DocumentPatch) => updateDocument(activeId as number, patch),
-    onSuccess: () => {
-      setEditingId(null)
-      invalidateDocuments()
-    },
-  })
-  const deleteMutation = useMutation({
-    mutationFn: () => deleteDocument(activeId as number),
-    onSuccess: () => {
-      // 删掉的是当前选中的那一条，选中态必须清掉：
-      // 留着它会立刻触发一次注定 404 的详情请求。
-      setSelectedId(null)
-      setEditingId(null)
-      setImportNotice(null)
-      invalidateDocuments()
-    },
-  })
+  const afterDelete = (id: number) => {
+    queryClient.setQueryData<DocumentListData>(documentKeys.list(query), (current) => {
+      if (!current?.items.some((doc) => doc.id === id)) {
+        return current
+      }
+      return { ...current, items: current.items.filter((doc) => doc.id !== id), total: current.total - 1 }
+    })
+    setSelectedId((current) => (current === id ? null : current))
+    setImportNotice(null)
+    invalidateDocuments()
+  }
   const reindexMutation = useMutation({
     mutationFn: () => reindexDocument(activeId as number),
     onSuccess: invalidateDocuments,
@@ -252,8 +242,6 @@ export function KnowledgePage() {
   }
 
   const actionError =
-    updateMutation.error ??
-    deleteMutation.error ??
     reindexMutation.error ??
     cancelMutation.error ??
     embedMutation.error ??
@@ -416,19 +404,13 @@ export function KnowledgePage() {
                   chunkTotal={chunksQuery.data?.total ?? 0}
                   chunksLoading={chunksQuery.isPending}
                   highlightSeq={activeId === deepLinkDoc ? deepLinkChunk : null}
-                  savingMeta={updateMutation.isPending}
                   reindexing={reindexMutation.isPending}
                   embedding={embedMutation.isPending}
                   cancelling={cancelMutation.isPending}
-                  deleting={deleteMutation.isPending}
-                  editing={editingId === detailQuery.data.id}
-                  onStartEdit={() => setEditingId(detailQuery.data.id)}
-                  onCancelEdit={() => setEditingId(null)}
-                  onSaveMeta={(patch) => updateMutation.mutate(patch)}
                   onReindex={() => reindexMutation.mutate()}
                   onEmbed={() => embedMutation.mutate()}
                   onCancelProcessing={() => cancelMutation.mutate()}
-                  onDelete={() => deleteMutation.mutate()}
+                  onDeleted={afterDelete}
                 />
               )}
             </section>

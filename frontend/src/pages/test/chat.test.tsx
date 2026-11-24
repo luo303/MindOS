@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -164,6 +164,36 @@ describe('Markdown 回答', () => {
 })
 
 describe('问答页', () => {
+  it('右键删除时只删除弹框中确认的会话', async () => {
+    const user = userEvent.setup()
+    const target = { ...conversationFixture, id: 2, title: '待删除会话' }
+    let conversations = [conversationFixture, target]
+    const deleteRequest = vi.fn((url: string) => {
+      conversations = conversations.filter((conversation) => !url.endsWith(`/conversations/${conversation.id}`))
+      return jsonResponse(envelope({ deleted: true }))
+    })
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/chat-models')) return jsonResponse(envelope({ items: [chatModelFixture()] }))
+      if (url.endsWith('/conversations')) return jsonResponse(envelope({ items: conversations }))
+      if (url.includes('/messages?')) return jsonResponse(envelope({ items: [] }))
+      if (init?.method === 'DELETE') return deleteRequest(url)
+      throw new Error(`unexpected url: ${url}`)
+    }))
+    renderApp('/chat')
+    const history = within(screen.getByRole('complementary', { name: '历史会话' }))
+    const row = await history.findByRole('button', { name: target.title })
+    fireEvent.contextMenu(row)
+    await user.click(screen.getByRole('button', { name: '删除会话' }))
+    const dialog = screen.getByRole('dialog', { name: '删除会话' })
+    expect(dialog).toHaveTextContent(target.title)
+    expect(deleteRequest).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(row).not.toBeInTheDocument())
+    expect(deleteRequest).toHaveBeenCalledExactlyOnceWith(`/api/v1/conversations/${target.id}`)
+    expect(history.getByRole('button', { name: conversationFixture.title })).toBeVisible()
+  })
+
   it.each(['会话', '页面'])('切换%s后不重播已有正文，只逐字追加新内容', async (destination) => {
     const sse = openSseResponse()
     const advanceFrame = controlAnimationFrames()

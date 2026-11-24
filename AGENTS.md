@@ -240,7 +240,6 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 | 位置 | 影响 | 处理时机 |
 |---|---|---|
 | `AGENT_MAX_STEPS` / `AGENT_TOKEN_BUDGET` / `AGENT_RUN_TIMEOUT` | 配置会被解析并显示在设置页，但 Agent Builder 仍使用 `agent.DefaultLimits()`，chat 超时仍使用 `RAG_TIMEOUT`；改 .env 不会改变实际预算 | 接线或移除配置前，必须在本节保留说明；排查预算时以代码常量为准 |
-| `frontend/src/pages/knowledge.tsx` 约 510 行 | 已超过单文件 500 行阈值，继续加功能会让详情逻辑更难维护 | 下一次触碰页面时先拆出职责子组件，不得继续膨胀 |
 
 早期已关闭：panic 请求访问日志丢失、配置类型错误静默回退、客户端取消被记成 500、工具预算耗尽被归为 upstream_error。新问题按“位置 / 影响 / 处理时机”追加到本节。
 

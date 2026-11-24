@@ -13,6 +13,7 @@ import {
 } from '@/api/chat-models'
 import { describeError } from '@/api/errors'
 import type { ChatModel, ChatModelInput } from '@/api/types'
+import { DeleteConfirmDialog } from '@/components/delete-confirm-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/empty-state'
@@ -55,7 +56,7 @@ export function ChatModelsCard() {
   const [editing, setEditing] = useState<ChatModel | 'new' | null>(null)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
   const [clearKey, setClearKey] = useState(false)
-  const [confirmingDelete, setConfirmingDelete] = useState<number | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<ChatModel | null>(null)
   const [probe, setProbe] = useState<{ id: number; ok: boolean; text: string } | null>(null)
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: chatModelKeys.all })
@@ -64,7 +65,14 @@ export function ChatModelsCard() {
   const updateMutation = useMutation({
     mutationFn: (vars: { id: number; input: ChatModelInput }) => updateChatModel(vars.id, vars.input),
   })
-  const deleteMutation = useMutation({ mutationFn: deleteChatModel })
+  const deleteMutation = useMutation({
+    mutationFn: deleteChatModel,
+    onSuccess: () => {
+      setDeleteTarget(null)
+      setProbe(null)
+      void invalidate()
+    },
+  })
   const defaultMutation = useMutation({ mutationFn: setDefaultChatModel })
   const testMutation = useMutation({ mutationFn: (id: number) => testChatModel(id) })
 
@@ -221,44 +229,33 @@ export function ChatModelsCard() {
                   <Button variant="ghost" size="sm" onClick={() => openEdit(model)}>
                     编辑
                   </Button>
-                  {confirmingDelete === model.id ? (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive"
-                        onClick={() =>
-                          deleteMutation.mutate(model.id, {
-                            onSuccess: () => {
-                              setConfirmingDelete(null)
-                              setProbe(null)
-                              void invalidate()
-                            },
-                          })
-                        }
-                        disabled={deleteMutation.isPending}
-                      >
-                        确认删除
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(null)}>
-                        取消
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setConfirmingDelete(model.id)}
-                      aria-label={`删除 ${model.name}`}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </Button>
-                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      deleteMutation.reset()
+                      setDeleteTarget(model)
+                    }}
+                    aria-label={`删除 ${model.name}`}
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </Button>
                 </div>
               </li>
             ))}
           </ul>
         )}
+
+        {deleteTarget ? (
+          <DeleteConfirmDialog
+            title="删除对话模型"
+            targetName={deleteTarget.name}
+            pending={deleteMutation.isPending}
+            error={deleteMutation.error}
+            onCancel={() => setDeleteTarget(null)}
+            onConfirm={() => deleteMutation.mutate(deleteTarget.id)}
+          />
+        ) : null}
 
         {editing ? (
           <form onSubmit={submit} className="bg-muted/30 space-y-3 rounded-lg border p-3">

@@ -489,21 +489,27 @@ describe('知识库页面的文档管理', () => {
     })
   })
 
-  it('编辑标签只提交改动过的字段', async () => {
+  it('在弹框编辑分类和标签，取消丢弃草稿，保存只提交改动字段', async () => {
     const user = userEvent.setup()
-    const doc = documentFixture({ tags: ['go'] })
-    const updated = { ...doc, tags: ['go', '检索'] }
+    const doc = documentFixture({ collection: '开发', tags: ['go'] })
+    let current = doc
+    const patch = vi.fn()
+      .mockImplementationOnce(() => jsonOk({ code: 'INTERNAL_ERROR', message: '暂时无法保存' }, 500))
+      .mockImplementationOnce(() => {
+        current = { ...doc, tags: ['go', '检索'] }
+        return jsonOk(envelope(current))
+      })
 
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (init?.method === 'PATCH') {
-        return jsonOk(envelope(updated))
+      if (url === `/api/v1/documents/${doc.id}` && init?.method === 'PATCH') {
+        return patch(JSON.parse(String(init.body)))
       }
       if (url === '/api/v1/documents?limit=20&offset=0') {
-        return jsonOk(envelope(documentListFixture([doc])))
+        return jsonOk(envelope(documentListFixture([current])))
       }
       if (url === `/api/v1/documents/${doc.id}`) {
-        return jsonOk(envelope(doc))
+        return jsonOk(envelope(current))
       }
       if (url === `/api/v1/documents/${doc.id}/chunks?limit=100&offset=0`) {
         return jsonOk(envelope(chunkList([chunkFixture()])))
@@ -514,18 +520,35 @@ describe('知识库页面的文档管理', () => {
     renderApp('/knowledge')
     await screen.findByText('集成测试笔记')
 
-    await user.click(await screen.findByRole('button', { name: '编辑分类与标签' }))
-    const tagInput = await screen.findByLabelText('文档标签')
+    const editButton = await screen.findByRole('button', { name: '编辑分类与标签' })
+    expect(screen.queryByLabelText('文档分类')).not.toBeInTheDocument()
+    await user.click(editButton)
+    const firstDialog = within(screen.getByRole('dialog', { name: '编辑分类与标签' }))
+    expect(firstDialog.getByLabelText('文档标题')).toHaveValue(doc.title)
+    expect(firstDialog.getByLabelText('文档标签')).toHaveValue('go')
+    const collection = firstDialog.getByLabelText('文档分类')
+    expect(collection).toHaveValue('开发')
+    await user.type(collection, '草稿')
+    await user.click(firstDialog.getByRole('button', { name: '取消' }))
+    expect(patch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    await user.click(editButton)
+    const dialog = within(screen.getByRole('dialog', { name: '编辑分类与标签' }))
+    expect(dialog.getByLabelText('文档分类')).toHaveValue('开发')
+    const tagInput = dialog.getByLabelText('文档标签')
     await user.clear(tagInput)
     await user.type(tagInput, 'go, 检索')
-    await user.click(screen.getByRole('button', { name: '保存' }))
+    const save = dialog.getByRole('button', { name: '保存' })
+    await user.click(save)
+    expect(await dialog.findByRole('alert')).toHaveTextContent('暂时无法保存')
+    expect(tagInput).toHaveValue('go, 检索')
+    await user.click(save)
 
-    await vi.waitFor(() => {
-      const call = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')
-      expect(call).toBeDefined()
-      // 标题与分类没动，就不该出现在请求体里。
-      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ tags: ['go', '检索'] })
-    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(patch.mock.calls).toEqual([[{ tags: ['go', '检索'] }], [{ tags: ['go', '检索'] }]])
+    const detail = screen.getByRole('region', { name: '文档详情' })
+    expect(within(detail).getByText('检索')).toBeVisible()
   })
 
   it('重新切分调用 reindex 接口', async () => {
@@ -588,12 +611,19 @@ describe('知识库页面的文档管理', () => {
     renderApp('/knowledge')
     await screen.findByText('集成测试笔记')
 
-    await user.click(await screen.findByRole('button', { name: '删除' }))
-    // 第一次点击只是展开确认区，还不该发请求。
-    expect(screen.getByRole('alertdialog', { name: '确认删除文档' })).toBeInTheDocument()
+    const deleteButton = await screen.findByRole('button', { name: '删除' })
+    await user.click(deleteButton)
+    const dialog = screen.getByRole('dialog', { name: '删除文档' })
+    expect(dialog).toHaveTextContent(doc.title)
+    expect(dialog).toHaveTextContent('原始文件会一并移除')
+    expect(within(dialog).getByRole('button', { name: '取消' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(deleteButton).toHaveFocus()
     expect(deleted).toBe(false)
 
-    await user.click(screen.getByRole('button', { name: '确认删除' }))
+    await user.click(deleteButton)
+    await user.click(within(screen.getByRole('dialog', { name: '删除文档' })).getByRole('button', { name: '确认删除' }))
 
     await vi.waitFor(() => {
       expect(deleted).toBe(true)

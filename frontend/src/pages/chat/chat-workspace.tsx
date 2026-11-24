@@ -1,5 +1,5 @@
 import type { UseQueryResult } from '@tanstack/react-query'
-import { Menu, MessageSquare, Plus, Trash2, X } from 'lucide-react'
+import { Menu, MessageSquare, Plus, Trash2 } from 'lucide-react'
 import { useRef } from 'react'
 import { Link } from 'react-router'
 
@@ -7,6 +7,7 @@ import type { Approval } from '@/api/approvals'
 import type { Conversation } from '@/api/conversations'
 import { describeError } from '@/api/errors'
 import type { ChatModel } from '@/api/types'
+import { DeleteConfirmDialog } from '@/components/delete-confirm-dialog'
 import { ErrorState } from '@/components/error-state'
 import { SlidingPill } from '@/components/sliding-pill'
 import { Button } from '@/components/ui/button'
@@ -53,7 +54,7 @@ type Props = {
   setContextMenu: (menu: ConversationMenu | null) => void
   deleteTarget: number | null
   setDeleteTarget: (id: number | null) => void
-  deleteMutation: { mutate: (id: number) => void; isPending: boolean; error: Error | null }
+  deleteMutation: { mutate: (id: number) => void; reset: () => void; isPending: boolean; error: Error | null }
 }
 
 export function ChatWorkspace({
@@ -194,9 +195,6 @@ export function ChatWorkspace({
             <MessageViewport key={activeId ?? 'draft'} streaming={generating || turns.at(-1)?.phase === 'streaming'}>
               <div className="mx-auto w-full max-w-3xl px-4 py-6">
                 {createError ? <ErrorState title="新建会话失败" description={createError} /> : null}
-                {deleteMutation.error ? (
-                  <ErrorState title="删除会话失败" description={describeError(deleteMutation.error)} />
-                ) : null}
                 {modelsQuery.isPending ? (
                   <div role="status" className="py-8">
                     <span className="sr-only">正在加载对话模型</span>
@@ -278,6 +276,7 @@ export function ChatWorkspace({
             type="button"
             className="text-destructive hover:bg-muted flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm"
             onClick={() => {
+              deleteMutation.reset()
               setDeleteTarget(contextMenu.id)
               setContextMenu(null)
             }}
@@ -289,40 +288,15 @@ export function ChatWorkspace({
       ) : null}
 
       {deleteTarget !== null ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setDeleteTarget(null)
-            }
-          }}
-        >
-          <div role="dialog" aria-modal="true" aria-label="删除会话" className="bg-background w-full max-w-sm rounded-lg border p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold">删除会话？</h2>
-                <p className="text-muted-foreground mt-1 text-xs">消息和审批记录会一起删除，无法恢复。</p>
-              </div>
-              <Button variant="ghost" size="icon" aria-label="取消删除" onClick={() => setDeleteTarget(null)}>
-                <X aria-hidden="true" />
-              </Button>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(null)}>
-                取消
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => deleteMutation.mutate(deleteTarget)}
-                disabled={deleteMutation.isPending}
-              >
-                {deleteMutation.isPending ? '删除中…' : '删除'}
-              </Button>
-            </div>
-          </div>
-        </div>
+        <DeleteConfirmDialog
+          title="删除会话"
+          targetName={conversations.find((conversation) => conversation.id === deleteTarget)?.title || '新会话'}
+          consequence="消息和审批记录会一起删除，无法恢复。"
+          pending={deleteMutation.isPending}
+          error={deleteMutation.error}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => deleteMutation.mutate(deleteTarget)}
+        />
       ) : null}
     </div>
   )

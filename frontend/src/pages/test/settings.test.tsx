@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -10,7 +10,7 @@ afterEach(() => {
 })
 
 /** 按路径分流三个接口，返回真实的成功响应。 */
-function stubSuccessFetch() {
+function stubSuccessFetch(getModels = () => [chatModelFixture()]) {
   const fetchMock = vi.fn(async (input: string) => {
     if (input.endsWith('/system/status')) {
       return jsonResponse(envelope(systemStatusFixture()))
@@ -19,7 +19,7 @@ function stubSuccessFetch() {
       return jsonResponse(envelope(settingsFixture()))
     }
     if (input.endsWith('/chat-models')) {
-      return jsonResponse(envelope({ items: [chatModelFixture()] }))
+      return jsonResponse(envelope({ items: getModels() }))
     }
     throw new Error(`unexpected url: ${input}`)
   })
@@ -28,6 +28,39 @@ function stubSuccessFetch() {
 }
 
 describe('设置页', () => {
+  it('选择另一个模型时，确认弹框删除新的目标', async () => {
+    const user = userEvent.setup()
+    const primary = chatModelFixture()
+    const target = chatModelFixture({ id: primary.id + 1, name: '试用模型', is_default: false })
+    let models = [primary, target]
+    const get = stubSuccessFetch(() => models).getMockImplementation()
+    const remove = vi.fn((url: string) => {
+      const id = Number(url.split('/').at(-1))
+      models = models.filter((model) => model.id !== id)
+      return jsonResponse(envelope({ id }))
+    })
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      return init?.method === 'DELETE' ? remove(url) : get?.(url)
+    }))
+    renderApp('/settings')
+
+    await user.click(await screen.findByRole('button', { name: `删除 ${primary.name}` }))
+    const first = screen.getByRole('dialog', { name: '删除对话模型' })
+    expect(first).toHaveTextContent(primary.name)
+    await user.click(within(first).getByRole('button', { name: '取消' }))
+    expect(remove).not.toHaveBeenCalled()
+
+    const row = screen.getByRole('button', { name: `删除 ${target.name}` })
+    await user.click(row)
+    const dialog = screen.getByRole('dialog', { name: '删除对话模型' })
+    expect(dialog).toHaveTextContent(target.name)
+    await user.click(within(dialog).getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(row).not.toBeInTheDocument())
+    expect(remove).toHaveBeenCalledExactlyOnceWith(`/api/v1/chat-models/${target.id}`)
+    expect(screen.getByRole('button', { name: `删除 ${primary.name}` })).toBeVisible()
+  })
+
   it('加载中显示骨架而不是空白', () => {
     // 永不 resolve：停在 pending 态才能断言加载态
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})))

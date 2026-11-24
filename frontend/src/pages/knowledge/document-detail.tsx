@@ -1,10 +1,15 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Pencil, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 
+import { deleteDocument, documentKeys, updateDocument } from '@/api/documents'
+import { describeError } from '@/api/errors'
 import type { ChunkView, DocumentPatch, DocumentView, EmbedStatus } from '@/api/types'
+import { DeleteConfirmDialog } from '@/components/delete-confirm-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Modal } from '@/components/ui/modal'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Markdown } from '@/components/markdown'
 import { StatusPill } from '@/components/status-pill'
@@ -26,12 +31,8 @@ type DetailProps = {
   chunks: ChunkView[]
   chunkTotal: number
   chunksLoading: boolean
-  /** 编辑态由页面持有：保存成功后页面才需要把它关掉，组件自己关不了。 */
-  editing: boolean
-  savingMeta: boolean
   reindexing: boolean
   cancelling: boolean
-  deleting: boolean
   /** 向量化受理请求是否在飞行中（只影响按钮 loading，不影响状态展示） */
   embedding: boolean
   /**
@@ -41,13 +42,10 @@ type DetailProps = {
    * 为 null 表示不是深链进入，不高亮也不滚动。
    */
   highlightSeq: number | null
-  onStartEdit: () => void
-  onCancelEdit: () => void
-  onSaveMeta: (patch: DocumentPatch) => void
   onReindex: () => void
   onEmbed: () => void
   onCancelProcessing: () => void
-  onDelete: () => void
+  onDeleted: (id: number) => void
 }
 
 /**
@@ -61,20 +59,14 @@ export function DocumentDetail({
   chunks,
   chunkTotal,
   chunksLoading,
-  editing,
-  savingMeta,
   reindexing,
   cancelling,
-  deleting,
   embedding,
   highlightSeq,
-  onStartEdit,
-  onCancelEdit,
-  onSaveMeta,
   onReindex,
   onEmbed,
   onCancelProcessing,
-  onDelete,
+  onDeleted,
 }: DetailProps) {
   // 深链进入（问答页的引用 chip 跳过来）：等目标分块真的渲染出来再滚动。
   // 依赖 chunks.length 是因为首次渲染时还在加载，元素根本不存在。
@@ -86,7 +78,23 @@ export function DocumentDetail({
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [highlightSeq, chunks.length])
 
-  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const queryClient = useQueryClient()
+  const [dialog, setDialog] = useState<'edit' | 'delete' | null>(null)
+  const updateMutation = useMutation({
+    mutationFn: (patch: DocumentPatch) => updateDocument(doc.id, patch),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(documentKeys.detail(updated.id), updated)
+      setDialog(null)
+      void queryClient.invalidateQueries({ queryKey: documentKeys.all })
+    },
+  })
+  const deleteMutation = useMutation({
+    mutationFn: deleteDocument,
+    onSuccess: (_result, id) => {
+      setDialog(null)
+      onDeleted(id)
+    },
+  })
   const embed = doc.embedding
   const embedLabel = embedMeta[embed.status]
   // 忙碌 = 受理请求在飞，或后端已把它标成进行中（受理成功后立刻变 pending）。
@@ -124,67 +132,39 @@ export function DocumentDetail({
         <div className="space-y-3">
           <MetadataRow doc={doc} />
 
-          {editing ? (
-            <MetadataForm
-              doc={doc}
-              saving={savingMeta}
-              onCancel={onCancelEdit}
-              onSubmit={onSaveMeta}
-            />
-          ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={onStartEdit}>
-                <Pencil aria-hidden="true" />
-                编辑分类与标签
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => {
+              updateMutation.reset()
+              setDialog('edit')
+            }}>
+              <Pencil aria-hidden="true" />
+              编辑分类与标签
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onReindex} disabled={reindexing}>
+              {reindexing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+              {reindexing ? '重新切分中' : '重新切分'}
+            </Button>
+            {/* 向量化与切分是两条独立动作：换模型只该重算向量，不该重切。
+                文档还没 ready 时没有分块可算，直接禁用而不是让用户点出一个 409。 */}
+            <Button variant="ghost" size="sm" onClick={onEmbed} disabled={embedBusy || doc.status !== 'ready'}>
+              {embedBusy ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
+              {embedActionLabel(embed.status)}
+            </Button>
+            {/* 只在后台处理中才给取消入口：其他状态下按了也只会拿到 409。 */}
+            {isInFlight(doc.status) ? (
+              <Button variant="outline" size="sm" onClick={onCancelProcessing} disabled={cancelling}>
+                {cancelling ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
+                {cancelling ? '取消中' : '取消处理'}
               </Button>
-              <Button variant="ghost" size="sm" onClick={onReindex} disabled={reindexing}>
-                {reindexing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-                {reindexing ? '重新切分中' : '重新切分'}
-              </Button>
-              {/* 向量化与切分是两条独立动作：换模型只该重算向量，不该重切。
-                  文档还没 ready 时没有分块可算，直接禁用而不是让用户点出一个 409。 */}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onEmbed}
-                disabled={embedBusy || doc.status !== 'ready'}
-              >
-                {embedBusy ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
-                {embedActionLabel(embed.status)}
-              </Button>
-              {/* 只在后台处理中才给取消入口：其他状态下按了也只会拿到 409。 */}
-              {isInFlight(doc.status) ? (
-                <Button variant="outline" size="sm" onClick={onCancelProcessing} disabled={cancelling}>
-                  {cancelling ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
-                  {cancelling ? '取消中' : '取消处理'}
-                </Button>
-              ) : null}
-              <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(true)} disabled={deleting}>
-                <Trash2 aria-hidden="true" />
-                删除
-              </Button>
-            </div>
-          )}
-
-          {confirmingDelete ? (
-            // 二次确认做成内联区块而不是 window.confirm：
-            // 后者在测试环境要 mock，也无法把"会删掉什么"说清楚。
-            <div role="alertdialog" aria-label="确认删除文档" className="border-destructive/40 bg-destructive/5 space-y-2 rounded-lg border p-3">
-              <p className="text-sm font-medium">确定删除《{doc.title}》？</p>
-              <p className="text-muted-foreground text-xs">
-                文档、{doc.chunk_count} 个分块与原始文件会一并移除，无法恢复。
-              </p>
-              <div className="flex items-center gap-2">
-                <Button variant="destructive" size="sm" onClick={onDelete} disabled={deleting}>
-                  {deleting ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
-                  确认删除
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(false)} disabled={deleting}>
-                  取消
-                </Button>
-              </div>
-            </div>
-          ) : null}
+            ) : null}
+            <Button variant="ghost" size="sm" onClick={() => {
+              deleteMutation.reset()
+              setDialog('delete')
+            }}>
+              <Trash2 aria-hidden="true" />
+              删除
+            </Button>
+          </div>
         </div>
 
         <details className="text-muted-foreground text-xs">
@@ -216,6 +196,26 @@ export function DocumentDetail({
           markdown={isMarkdownDocument(doc)}
         />
       )}
+      {dialog === 'edit' ? (
+        <MetadataDialog
+          doc={doc}
+          saving={updateMutation.isPending}
+          error={updateMutation.error}
+          onCancel={() => setDialog(null)}
+          onSubmit={updateMutation.mutate}
+        />
+      ) : null}
+      {dialog === 'delete' ? (
+        <DeleteConfirmDialog
+          title="删除文档"
+          targetName={doc.title}
+          consequence={`文档、${doc.chunk_count} 个分块与原始文件会一并移除，无法恢复。`}
+          pending={deleteMutation.isPending}
+          error={deleteMutation.error}
+          onCancel={() => setDialog(null)}
+          onConfirm={() => deleteMutation.mutate(doc.id)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -256,14 +256,16 @@ function MetadataRow({ doc }: { doc: DocumentView }) {
   )
 }
 
-function MetadataForm({
+function MetadataDialog({
   doc,
   saving,
+  error,
   onSubmit,
   onCancel,
 }: {
   doc: DocumentView
   saving: boolean
+  error: Error | null
   onSubmit: (patch: DocumentPatch) => void
   onCancel: () => void
 }) {
@@ -274,6 +276,9 @@ function MetadataForm({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (saving) {
+      return
+    }
     // 只传真正发生变化的字段：PATCH 的语义是"改我传的"，
     // 全量提交会把用户没动过的字段也用当前值覆盖一遍，徒增误改风险。
     const patch: DocumentPatch = {}
@@ -295,33 +300,32 @@ function MetadataForm({
   }
 
   return (
-    <form className="space-y-3" onSubmit={submit}>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Input value={title} onChange={(e) => setTitle(e.target.value)} aria-label="文档标题" maxLength={200} />
-        <Input
-          value={collection}
-          onChange={(e) => setCollection(e.target.value)}
-          placeholder="分类（留空表示未分类）"
-          aria-label="文档分类"
-          maxLength={64}
-        />
-      </div>
-      <Input
-        value={tags}
-        onChange={(e) => setTags(e.target.value)}
-        placeholder="标签（逗号分隔，留空表示清空）"
-        aria-label="文档标签"
-      />
-      <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" disabled={saving}>
-          {saving ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
-          保存
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving}>
-          取消
-        </Button>
-      </div>
-    </form>
+    <Modal open title="编辑分类与标签" onClose={onCancel} dismissible={!saving}>
+      <form className="space-y-4" onSubmit={submit}>
+        <fieldset className="space-y-3" disabled={saving}>
+          <label className="grid gap-1.5 text-sm font-medium">
+            文档标题
+            <Input data-initial-focus value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} />
+          </label>
+          <label className="grid gap-1.5 text-sm font-medium">
+            文档分类
+            <Input value={collection} onChange={(event) => setCollection(event.target.value)} placeholder="留空表示未分类" maxLength={64} />
+          </label>
+          <label className="grid gap-1.5 text-sm font-medium">
+            文档标签
+            <Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="用逗号分隔，留空表示清空" />
+          </label>
+        </fieldset>
+        {error ? <p role="alert" className="text-destructive text-sm break-words">{describeError(error)}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving}>取消</Button>
+          <Button type="submit" size="sm" disabled={saving}>
+            {saving ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
+            {saving ? '保存中…' : '保存'}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
