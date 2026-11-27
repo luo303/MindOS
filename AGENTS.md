@@ -15,7 +15,7 @@
 4. 先搜索现有实现（`grep` / `glob`）再新建。禁止重复造 Button、Modal、Drawer、Markdown、流式状态 store。
 5. 一次只做一个主题，最小改动；跨层行为变更必须同时补测试和文档。
 6. 收尾门禁：后端 `go build ./...` + `go vet ./...` + `go test -race -count=1 ./...`；前端 `npm run lint` + `test` + `build`。未跑必须说明原因。
-7. 提交遵循第 9 节：一次提交一个主题，说明改了什么、为什么、验证结果。
+7. 文档同步完成、验证通过后，按第 9 节自主规划并完成本地提交，不等用户另下提交指令。
 8. 行为、配置、命令、组件约定变化时，同步更新本文件、`frontend/README.md`、`CONVENTIONS.md` 或 `docs/design/`。文档与代码冲突时，当次改动内解决。
 9. 危险操作（`git push`、改 remote、`reset --hard`、删除数据）先问，不擅自执行。
 
@@ -234,7 +234,15 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 
 **信息**：格式 `type: 中文描述`，type 保留英文关键字，subject 与 body 全部中文；禁写 `update`、`fix bug`。
 
-**提交前自检**：① `git status` 有无意外文件 ② `git diff --staged` 有无敏感信息与调试代码 ③ `go build ./...`，涉及代码再跑 `go test -race ./...`。
+### 9.1 自动本地提交 SOP
+
+**本仓库默认授权**：修改完成且适用的收尾门禁通过后，由执行者自主拆分并创建本地提交，不用逐次征求同意。只问答、只评审或用户明确要求不提交时不创建提交。默认留在当前分支，不推送、不合并。
+
+1. 开工前用 `git status --short --branch` 和 `git diff --staged` 记录已有更改；只提交本次任务的改动，不覆盖或带入他人的改动和暂存内容。无法安全分离时先说明，不动用户的暂存区。
+2. 按主题规划提交：实现、配套测试和同步说明可同提；独立的重构或规范更新另提。
+3. 跑第 0 节的适用门禁。失败先修复再复验；必需验证无法执行时说明原因并保留未提交改动，不能把未验证当作通过。
+4. 明确选择文件或补丁暂存，避免用 `git add -A` 把整个工作区带入。提交前用 `git status --short`、`git diff --staged --check` 和 `git diff --staged` 检查范围、格式、敏感信息和临时调试代码。
+5. 用中文说明改了什么、为什么、如何验证。提交后用 `git log` 和 `git status --short --branch` 核对提交及剩余改动，交付时报告提交哈希、验证结果和未跑的检查。
 
 **禁止**：`git push`、改 remote、`--force`、`--amend` 已推送提交、`reset --hard`；危险操作先问。
 
