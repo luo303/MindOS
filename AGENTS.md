@@ -44,6 +44,8 @@
 
 ## 2. 仓库结构与命令
 
+长期记忆首版独立于 `chat.ConversationMemory`：`internal/memory` 只管理已确认偏好、版本和待确认候选。显式提议通过 `memory.extract` outbox 异步处理，SSE 不等待它；确认必须校验基础版本，不得把候选、归档或旧版本注入模型。细节见 `docs/design/long-term-memory.md`。
+
 ```text
 mindos/
 ├── backend/        Go 服务（独立 module：github.com/luo303/mindos/backend）

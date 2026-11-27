@@ -1,11 +1,12 @@
-import type { UseQueryResult } from '@tanstack/react-query'
+import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { Menu, MessageSquare, Plus, Trash2 } from 'lucide-react'
-import { useRef } from 'react'
-import { Link } from 'react-router'
+import { useEffect, useRef } from 'react'
+import { Link, useSearchParams } from 'react-router'
 
 import type { Approval } from '@/api/approvals'
 import type { Conversation } from '@/api/conversations'
 import { describeError } from '@/api/errors'
+import { fetchMemoryCandidates, fetchPreferences, memoryKeys } from '@/api/memory'
 import type { ChatModel } from '@/api/types'
 import { DeleteConfirmDialog } from '@/components/delete-confirm-dialog'
 import { ErrorState } from '@/components/error-state'
@@ -13,6 +14,7 @@ import { SlidingPill } from '@/components/sliding-pill'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 
+import { MemoryCandidateCard } from '../memory/candidate-card'
 import { ApprovalPanel } from './approval-panel'
 import { ChatComposer } from './chat-composer'
 import type { Turn } from './format'
@@ -65,6 +67,28 @@ export function ChatWorkspace({
   contextMenu, setContextMenu, deleteTarget, setDeleteTarget, deleteMutation,
 }: Props) {
   const conversationListRef = useRef<HTMLUListElement | null>(null)
+  const [params] = useSearchParams()
+  const sourceId = Number(params.get('conversation')) === activeId ? Number(params.get('message')) : 0
+  const sourceVisible = sourceId > 0 && turns.some((turn) => turn.messageId === sourceId)
+  useEffect(() => {
+    if (!sourceVisible) return
+    const frame = requestAnimationFrame(() => document.getElementById(`chat-message-${sourceId}`)?.scrollIntoView?.({ block: 'center' }))
+    return () => cancelAnimationFrame(frame)
+  }, [sourceId, sourceVisible])
+
+  // 不给普通对话轮询；只有对应的用户消息有明确触发词时才查询候选。
+  const mayHaveSuggestion = turns.some((turn) => /^(请记住|帮我记住|记住|please remember|remember)/i.test(turn.question.trim()))
+  const candidates = useQuery({
+    queryKey: memoryKeys.conversation(activeId ?? 0),
+    queryFn: ({ signal }) => fetchMemoryCandidates(signal, activeId ?? 0),
+    enabled: activeId !== null && mayHaveSuggestion,
+    refetchInterval: 5_000,
+  })
+  const preferences = useQuery({
+    queryKey: memoryKeys.preferences,
+    queryFn: ({ signal }) => fetchPreferences(signal),
+    enabled: (candidates.data?.length ?? 0) > 0,
+  })
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden">
@@ -234,9 +258,15 @@ export function ChatWorkspace({
                 ) : null}
 
                 <div className="space-y-6">
-                  {turns.map((turn) => (
-                    <TurnCard key={turn.id} turn={turn} onStop={stop} />
-                  ))}
+                  {turns.map((turn) => {
+                    const candidate = candidates.data?.find((item) => item.message_id === turn.messageId)
+                    const currentValue = candidate && preferences.data?.find((item) => item.key === candidate.key && item.status === 'active')?.value
+                    return (
+                      <TurnCard key={turn.id} turn={turn} onStop={stop}>
+                        {candidate ? <MemoryCandidateCard key={candidate.id} item={candidate} currentValue={currentValue} inChat /> : null}
+                      </TurnCard>
+                    )
+                  })}
                 </div>
               </div>
             </MessageViewport>

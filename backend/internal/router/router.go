@@ -19,6 +19,7 @@ import (
 	"github.com/luo303/mindos/backend/internal/handler"
 	"github.com/luo303/mindos/backend/internal/httpx"
 	"github.com/luo303/mindos/backend/internal/knowledge"
+	"github.com/luo303/mindos/backend/internal/memory"
 	"github.com/luo303/mindos/backend/internal/todo"
 )
 
@@ -48,6 +49,8 @@ type Deps struct {
 
 	// Todos 是用户待办。
 	Todos *todo.Handler
+	// Memories 管理按账号隔离的长期偏好。
+	Memories *memory.Handler
 
 	// 后续模块在这里扩展，例如：
 	//   Chat *chat.Handler
@@ -151,4 +154,11 @@ func Register(e *gin.Engine, deps Deps) {
 	authed.POST("/todos/batch-delete", deps.Todos.BatchDelete)
 	authed.PATCH("/todos/:id", deps.Todos.Update)
 	authed.DELETE("/todos/:id", deps.Todos.Delete)
+
+	authed.GET("/memories", deps.Memories.List)
+	authed.POST("/memories", deps.Memories.Create)
+	authed.PATCH("/memories/:id", deps.Memories.Update)
+	authed.GET("/memories/:id/versions", deps.Memories.Versions)
+	authed.GET("/memory-candidates", deps.Memories.Candidates)
+	authed.POST("/memory-candidates/:id/decision", deps.Memories.Decide)
 }

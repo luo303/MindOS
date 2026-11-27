@@ -29,12 +29,12 @@ describe('应用布局与路由', () => {
     const user = userEvent.setup()
     renderApp('/')
 
-    // 用「记忆」而不是「知识」：知识页会真的发请求，这个用例只关心路由与高亮。
+    // 只检验路由和导航高亮，不依赖记忆接口是否返回数据。
     await user.click(screen.getByRole('link', { name: '记忆' }))
 
     expect(screen.getByRole('heading', { name: '记忆' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '记忆' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByText('尚未接入')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '已保存的偏好' })).toBeInTheDocument()
   })
 
   it('未知路径渲染 404 且保留导航外壳', async () => {

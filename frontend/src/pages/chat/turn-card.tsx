@@ -1,4 +1,5 @@
 import { AlertTriangle, StopCircle } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 
 import type { AskCitationItem, AskRetrievalItem } from '@/api/types'
@@ -18,16 +19,18 @@ import { useTypewriter } from './use-typewriter'
 type Props = {
   turn: Turn
   onStop: () => void
+  children?: ReactNode
 }
 
-export function TurnCard({ turn, onStop }: Props) {
+export function TurnCard({ turn, onStop, children }: Props) {
   const streaming = turn.phase === 'streaming'
 
   return (
-    <article className="space-y-3">
+    <article id={turn.messageId ? `chat-message-${turn.messageId}` : undefined} className="space-y-3">
       <h2 className="bg-muted ml-auto w-fit max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
         {turn.question}
       </h2>
+      {children}
       <div className="space-y-3 break-words">
         <AnswerBody turn={turn} />
 

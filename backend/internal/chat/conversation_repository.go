@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/luo303/mindos/backend/internal/memory"
 	"github.com/luo303/mindos/backend/internal/outbox"
 )
 
@@ -106,7 +107,7 @@ func (r *ConversationRepository) AppendMessage(
 	ctx context.Context, ownerID, conversationID int64,
 	role, content string, citations RawJSON,
 ) (*Message, error) {
-	return r.appendMessage(ctx, ownerID, conversationID, role, content, citations, nil, nil)
+	return r.appendMessage(ctx, ownerID, conversationID, role, content, citations, nil, nil, 0)
 }
 
 // AppendErrorMessage 追加一条失败的 assistant 消息。
@@ -117,12 +118,26 @@ func (r *ConversationRepository) AppendErrorMessage(
 	ctx context.Context, ownerID, conversationID int64,
 	content string, citations RawJSON, code, message string,
 ) (*Message, error) {
-	return r.appendMessage(ctx, ownerID, conversationID, RoleAssistant, content, citations, &code, &message)
+	return r.appendMessage(ctx, ownerID, conversationID, RoleAssistant, content, citations, &code, &message, 0)
+}
+
+func (r *ConversationRepository) memorySource(ctx context.Context, ownerID, conversationID, messageID int64) (Message, error) {
+	var source Message
+	err := r.db.WithContext(ctx).Select("content", "created_at").
+		Where("owner_id = ? AND conversation_id = ? AND id = ? AND role = ?", ownerID, conversationID, messageID, RoleUser).
+		Take(&source).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Message{}, nil
+	}
+	if err != nil {
+		return Message{}, fmt.Errorf("read memory source: %w", err)
+	}
+	return source, nil
 }
 
 func (r *ConversationRepository) appendMessage(
 	ctx context.Context, ownerID, conversationID int64,
-	role, content string, citations RawJSON, errorCode, errorMessage *string,
+	role, content string, citations RawJSON, errorCode, errorMessage *string, extractModelID int64,
 ) (*Message, error) {
 	var msg Message
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -181,6 +196,13 @@ func (r *ConversationRepository) appendMessage(
 		msgKey := strconv.FormatInt(msg.ID, 10)
 		if err := outbox.AppendTx(ctx, tx, outbox.New(SearchMessageUpsert, msgKey, payload)); err != nil {
 			return err
+		}
+		if role == RoleUser && extractModelID > 0 && memory.ExplicitRequest(content) {
+			if err := outbox.AppendTx(ctx, tx, outbox.New(memory.ExtractTopic, msgKey, map[string]any{
+				"owner_id": ownerID, "conversation_id": conversationID, "message_id": msg.ID, "model_id": extractModelID,
+			})); err != nil {
+				return err
+			}
 		}
 		return outbox.AppendTx(ctx, tx, outbox.New(SearchMessageEmbed, msgKey, payload))
 	})

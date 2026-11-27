@@ -30,6 +30,7 @@ import (
 	"github.com/luo303/mindos/backend/internal/handler"
 	"github.com/luo303/mindos/backend/internal/knowledge"
 	"github.com/luo303/mindos/backend/internal/logging"
+	"github.com/luo303/mindos/backend/internal/memory"
 	"github.com/luo303/mindos/backend/internal/middleware"
 	"github.com/luo303/mindos/backend/internal/migrate"
 	"github.com/luo303/mindos/backend/internal/outbox"
@@ -358,6 +359,7 @@ func run() error {
 		messageIndexer = chat.NewMessageIndexer(db, esClient, cfg.Elastic.IndexPrefix, embedding, log.Named("search"))
 	}
 
+	preferences := memory.NewService(memory.NewRepository(db))
 	chatSvc := chat.NewService(
 		chatModelSvc,
 		chat.NewRepository(db),
@@ -367,7 +369,7 @@ func run() error {
 		approvalSvc,
 		todoSvc,
 		log.Named("chat"),
-	)
+	).WithPreferences(preferences)
 
 	// 任务表在业务层之前创建：knowledge 需要它判断"取消时任务排着队还是在跑"，
 	// 消费端需要它写进度，两者共用同一个对象。
@@ -587,6 +589,7 @@ func run() error {
 		}
 		return chatSvc.SummarizeConversation(ctx, payload.OwnerID, payload.ConversationID)
 	})
+	consumer.Register(memory.ExtractTopic, memoryExtractHandler(memory.NewExtractor(chatSvc, chatModelSvc, preferences)))
 
 	relay := outbox.NewRelay(outboxRepo, relayPublisher{rabbit: rabbit}, log.Named("relay"), outbox.RelayOptions{})
 
@@ -648,6 +651,7 @@ func run() error {
 		ChatModels:  chatmodel.NewHandler(chatModelSvc),
 		Ask:         chat.NewHandler(chatSvc),
 		Todos:       todo.NewHandler(todoSvc),
+		Memories:    memory.NewHandler(preferences),
 	})
 
 	// 【为什么不用 router.Run()】

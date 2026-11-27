@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useSearchParams } from 'react-router'
 
 import { approvalKeys, fetchConversationApprovals, streamApprovalDecision } from '@/api/approvals'
 import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
@@ -13,6 +14,7 @@ import {
   type Conversation,
 } from '@/api/conversations'
 import { ApiError, describeError } from '@/api/errors'
+import { memoryKeys } from '@/api/memory'
 
 import { ChatWorkspace, type ConversationMenu } from './chat/chat-workspace'
 import {
@@ -42,6 +44,7 @@ import { STOPPED_TEXT, type Turn } from './chat/format'
  */
 export function ChatPage() {
   const queryClient = useQueryClient()
+  const [searchParams] = useSearchParams()
   const modelsQuery = useQuery({
     queryKey: chatModelKeys.all,
     queryFn: ({ signal }) => fetchChatModels(signal),
@@ -50,7 +53,10 @@ export function ChatPage() {
   const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data])
 
   const [selectedId, setSelectedId] = useState<number | null>(() => readStoredModelId())
-  const [activeId, setActiveId] = useState<number | null>(() => readStoredConversationId())
+  const [activeId, setActiveId] = useState<number | null>(() => {
+    const sourceId = Number(searchParams.get('conversation'))
+    return Number.isSafeInteger(sourceId) && sourceId > 0 ? sourceId : readStoredConversationId()
+  })
   const [turns, setTurns] = useState<Turn[]>([])
   const [creating, setCreating] = useState(false)
   const liveTurn = useSyncExternalStore(
@@ -77,6 +83,8 @@ export function ChatPage() {
     mutationFn: (conversationId: number) => deleteConversation(conversationId),
     onSuccess: (_result, conversationId) => {
       queryClient.removeQueries({ queryKey: conversationKeys.messages(conversationId) })
+      void queryClient.invalidateQueries({ queryKey: memoryKeys.candidates })
+      void queryClient.invalidateQueries({ queryKey: memoryKeys.preferences })
       // 先把它从列表缓存里移除，避免 activeId 置空后自动选回刚删掉的会话。
       queryClient.setQueryData<Conversation[]>(conversationKeys.all, (old) =>
         old?.filter((conv) => conv.id !== conversationId),

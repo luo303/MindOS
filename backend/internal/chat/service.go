@@ -23,6 +23,7 @@ import (
 	"github.com/luo303/mindos/backend/internal/approval"
 	"github.com/luo303/mindos/backend/internal/chatmodel"
 	"github.com/luo303/mindos/backend/internal/knowledge"
+	"github.com/luo303/mindos/backend/internal/memory"
 	"github.com/luo303/mindos/backend/internal/middleware"
 	"github.com/luo303/mindos/backend/internal/todo"
 )
@@ -141,14 +142,27 @@ type RunStore interface {
 
 // Service 编排一次问答。
 type Service struct {
-	models    ModelResolver
-	runs      RunStore
-	builder   AnswererBuilder
-	convs     *ConversationRepository
-	memory    *ConversationMemory
-	approvals *approval.Service
-	todos     *todo.Service
-	log       *zap.Logger
+	models      ModelResolver
+	runs        RunStore
+	builder     AnswererBuilder
+	convs       *ConversationRepository
+	memory      *ConversationMemory
+	approvals   *approval.Service
+	todos       *todo.Service
+	log         *zap.Logger
+	preferences *memory.Service
+}
+
+// WithPreferences 在启动装配时接入长期偏好；必须在启用 HTTP 和消费者前调用。
+func (s *Service) WithPreferences(preferences *memory.Service) *Service {
+	s.preferences = preferences
+	return s
+}
+
+// ReadMemorySource 仅供后台提炼读取同账号同会话内的用户原文。
+func (s *Service) ReadMemorySource(ctx context.Context, ownerID, conversationID, messageID int64) (string, time.Time, error) {
+	source, err := s.convs.memorySource(ctx, ownerID, conversationID, messageID)
+	return source.Content, source.CreatedAt, err
 }
 
 // NewService 组装编排层。依赖全部由 cmd/server 注入；memory 允许为 nil。
@@ -210,7 +224,11 @@ func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID
 		return err
 	}
 
-	userMsg, err := s.convs.AppendMessage(ctx, ownerID, conversationID, RoleUser, strings.TrimSpace(in.Question), RawJSON("[]"))
+	var extractModelID int64
+	if s.preferences != nil {
+		extractModelID = resolved.ID
+	}
+	userMsg, err := s.convs.appendMessage(ctx, ownerID, conversationID, RoleUser, strings.TrimSpace(in.Question), RawJSON("[]"), nil, nil, extractModelID)
 	if err != nil {
 		return err
 	}
@@ -233,6 +251,15 @@ func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID
 		if block := s.memory.Context(ctx, ownerID, conversationID, hotStart, strings.TrimSpace(in.Question)); block != "" {
 			history = append([]agent.HistoryMessage{{Role: "system", Content: block}}, history...)
 		}
+	}
+	if s.preferences != nil {
+		memoryGuidance := "长期偏好须由用户在记忆建议或记忆页保存才生效。不要在聊天中声称已经保存，也不要保证会出现建议。"
+		if defaults, prefErr := s.preferences.Context(ctx, ownerID); prefErr != nil {
+			s.log.Warn("load long-term preferences failed", zap.Error(prefErr))
+		} else if defaults != "" {
+			memoryGuidance += "\n" + defaults
+		}
+		history = append([]agent.HistoryMessage{{Role: "system", Content: memoryGuidance}}, history...)
 	}
 
 	return s.execute(ctx, ownerID, in, resolved, history, &conversationID, userMsg.ID, emit)

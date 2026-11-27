@@ -18,7 +18,7 @@ MindOS 是一个多用户、本地优先的 AI 个人工作空间：每个账号
 |---|---|---|
 | 账号 | 注册、登录、登出、改密码；按用户隔离知识、问答与模型配置 | 已实现 |
 | Knowledge | 文档/笔记入库、解析、切分、分块向量化、管理、异步任务链路、混合检索与带引用问答 | 已实现 |
-| Memory | 四类长期记忆（画像/事实/经历/项目）的提炼、去重合并、召回 | 未开始 |
+| Memory | 回复语言、详略、代码示例语言三种跨会话偏好；手动维护、显式提议确认、历史与来源 | 首版已实现 |
 | Agent | Eino ADK 运行时、工具调用、预算闸门、checkpoint、人工审批、事件回放 | 未开始 |
 | Action | 目标 → 计划 → 任务三级结构，依赖与进度，Agent 拆解 + 人工确认 | 未开始 |
 | Context | 分段 token 预算、记忆与知识编排、历史摘要压缩 | 未开始 |
@@ -201,6 +201,7 @@ docker compose --env-file backend/.env -f deployments/docker-compose.yml down -v
 |---|---|
 | [AGENTS.md](AGENTS.md) | 开发准入约定：AI 会话工作流、模块边界、硬约束、日志与流式状态、Git 规范 |
 | [docs/design/overview.md](docs/design/overview.md) | 领域模型、检索与记忆机制、Agent 运行时、API 清单 |
+| [docs/design/long-term-memory.md](docs/design/long-term-memory.md) | 长期偏好首版的接口、提炼与验收 |
 | [docs/design/embedding.md](docs/design/embedding.md) | 向量化链路：两段任务、事务边界、错误分类、接口与已知限制 |
 | [docs/history.md](docs/history.md) | 开发记录：已完成的能力、设计取舍、故障演练结果、已知限制 |
 | [frontend/README.md](frontend/README.md) | 前端开发约定、目录结构、测试写法 |
