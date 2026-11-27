@@ -197,7 +197,7 @@ agent  → 各模块 service（受控读写）      worker → 各模块 service
 - 服务端状态走 TanStack Query；正在生成的回答属于“会话的临时状态”，放模块级 store（当前是 `frontend/src/pages/chat/live.ts`），不能只放在页面组件的 `useState`。
 - **按实体建模**：生成状态按 `conversationId` 判断，禁止用一个全局 `pending` 代表所有会话。A 会话生成中不能让 B 会话历史加载被阻塞。
 - SPA 内切换页面不应 abort 正在进行的 SSE；路由卸载只解除 UI 订阅，后台流继续。只有整页刷新/关闭浏览器才会断开 HTTP 连接。不要在没有产品决策时添加“卸载即 abort”。
-- 历史与 live 流要合并：有 live turn 时保留它；流结束后把 messages 查询标脏（`refetchType: 'none'`），下次进入再从数据库取最终消息。
+- 历史、已结束的 SSE 快照和 live 流按会话合并：结束时先缓存轮次，再清掉 live；把 messages 查询标脏（`refetchType: 'none'`），下次进入用消息 ID 合并回读结果。
 - 多个会话可以各自生成，controller 必须按会话保存；停止按钮只停止当前会话。
 - 写工具审批中断时，审批前已流出的正文必须落 `agent_approvals.partial_answer`；pending 时不要把 live turn 清掉，审批恢复流也必须按会话接入 live，最终 assistant 消息要合并 partial + resumed。
 - 长文本统一使用 `components/markdown.tsx`，不要在页面里重新写一套 Markdown 解析；HTML 默认转义。

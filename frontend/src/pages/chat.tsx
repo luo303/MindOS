@@ -1,8 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { approvalKeys, fetchConversationApprovals, streamApprovalDecision } from '@/api/approvals'
+import { authQueryKeys, type AuthUser } from '@/api/auth'
 import { chatModelKeys, fetchChatModels } from '@/api/chat-models'
 import {
   conversationKeys,
@@ -26,6 +27,7 @@ import {
   rememberModelId,
   turnsFromMessages,
   withLiveTurn,
+  withStreamResults,
 } from './chat/conversation-state'
 import {
   clearLive,
@@ -44,6 +46,7 @@ import { STOPPED_TEXT, type Turn } from './chat/format'
  */
 export function ChatPage() {
   const queryClient = useQueryClient()
+  const ownerId = queryClient.getQueryData<AuthUser | null>(authQueryKeys.me)?.id
   const [searchParams] = useSearchParams()
   const modelsQuery = useQuery({
     queryKey: chatModelKeys.all,
@@ -57,7 +60,6 @@ export function ChatPage() {
     const sourceId = Number(searchParams.get('conversation'))
     return Number.isSafeInteger(sourceId) && sourceId > 0 ? sourceId : readStoredConversationId()
   })
-  const [turns, setTurns] = useState<Turn[]>([])
   const [creating, setCreating] = useState(false)
   const liveTurn = useSyncExternalStore(
     subscribeLive,
@@ -76,13 +78,11 @@ export function ChatPage() {
   const activeIdRef = useRef(activeId)
   // 用户主动点“新对话”后进入空白草稿，不要被自动选择逻辑选回旧会话。
   const draftRef = useRef(false)
-  // 记录已经从后端同步过 turns 的会话，避免流式结束后用旧的空列表覆盖当前内容。
-  const syncedConversationRef = useRef<number | null>(null)
-
   const deleteMutation = useMutation({
     mutationFn: (conversationId: number) => deleteConversation(conversationId),
     onSuccess: (_result, conversationId) => {
       queryClient.removeQueries({ queryKey: conversationKeys.messages(conversationId) })
+      queryClient.removeQueries({ queryKey: conversationKeys.streamResults(conversationId) })
       void queryClient.invalidateQueries({ queryKey: memoryKeys.candidates })
       void queryClient.invalidateQueries({ queryKey: memoryKeys.preferences })
       // 先把它从列表缓存里移除，避免 activeId 置空后自动选回刚删掉的会话。
@@ -90,16 +90,14 @@ export function ChatPage() {
         old?.filter((conv) => conv.id !== conversationId),
       )
       setActiveId((current) => (current === conversationId ? null : current))
-      setTurns((current) => (activeId === conversationId ? [] : current))
       // 删除当前会话后允许自动选下一条；如果删的是别的，不影响当前。
       if (activeId === conversationId) {
         draftRef.current = false
-        syncedConversationRef.current = null
         rememberConversationId(null)
       }
       setDeleteTarget(null)
       setContextMenu(null)
-      void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+      void queryClient.invalidateQueries({ queryKey: conversationKeys.all, exact: true })
     },
   })
 
@@ -132,6 +130,10 @@ export function ChatPage() {
     enabled: activeId !== null,
     staleTime: 5_000,
   })
+  const { data: streamResults } = useQuery<Turn[]>({
+    queryKey: conversationKeys.streamResults(activeId ?? 0),
+    queryFn: skipToken,
+  })
 
   // 审批是会话历史的一部分：按 user_message_id 挂回对应轮次。
   const approvalsQuery = useQuery({
@@ -142,6 +144,31 @@ export function ChatPage() {
   })
   const approvals = useMemo(() => approvalsQuery.data ?? [], [approvalsQuery.data])
   const pendingApproval = approvals.find((item) => item.status === 'pending') ?? null
+  const history = useMemo(
+    () => withStreamResults(turnsFromMessages(messagesQuery.data ?? []), streamResults ?? []),
+    [messagesQuery.data, streamResults],
+  )
+  const partialAnswer = pendingApproval?.partial_answer?.trim()
+  const turns = liveTurn ? withLiveTurn(history, liveTurn) : partialAnswer
+    ? history.map((turn) => turn.messageId === pendingApproval?.user_message_id && turn.answer === ''
+      ? { ...turn, answer: partialAnswer }
+      : turn)
+    : history
+
+  function finishTurn(conversationId: number, turn: Turn, controller: AbortController) {
+    if (liveControllerOf(conversationId) !== controller) return
+    const currentOwner = queryClient.getQueryData<AuthUser | null>(authQueryKeys.me)?.id
+    if (ownerId !== undefined && currentOwner === ownerId) {
+      queryClient.setQueryData<Turn[]>(conversationKeys.streamResults(conversationId), (previous) =>
+        withLiveTurn(previous ?? [], turn).slice(-25),
+      )
+      void queryClient.invalidateQueries({
+        queryKey: conversationKeys.messages(conversationId),
+        refetchType: 'none',
+      })
+    }
+    clearLive(conversationId, controller)
+  }
 
   const decide = async (decision: 'approve' | 'reject') => {
     if (!pendingApproval) {
@@ -185,18 +212,11 @@ export function ChatPage() {
     void queryClient.invalidateQueries({
       queryKey: approvalKeys.conversation(conversationId),
     })
-    const publish = (turn: Turn) => {
-      publishLive(conversationId, turn, controller)
-      // 只更新当前正在看的会话，不能把 A 的审批输出追加到 B。
-      if (activeIdRef.current === conversationId) {
-        setTurns((prev) => withLiveTurn(prev, turn))
-      }
-    }
-    publish(current)
+    publishLive(conversationId, current, controller)
 
     const patch = (next: (turn: Turn) => Turn) => {
       current = next(current)
-      publish(current)
+      publishLive(conversationId, current, controller)
     }
 
     try {
@@ -206,15 +226,16 @@ export function ChatPage() {
         {
           onDelta: (text) => patch((turn) => ({ ...turn, answer: turn.answer + text })),
           onDone: (payload) => {
-            patch((turn) => ({ ...turn, done: payload, phase: 'settled' }))
+            patch((turn) => ({
+              ...turn,
+              messageId: payload.user_message_id ?? turn.messageId,
+              done: payload,
+              phase: 'settled',
+            }))
             void queryClient.invalidateQueries({
               queryKey: approvalKeys.conversation(conversationId),
             })
-            void queryClient.invalidateQueries({
-              queryKey: conversationKeys.messages(conversationId),
-              refetchType: 'none',
-            })
-            void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
+            void queryClient.invalidateQueries({ queryKey: conversationKeys.all, exact: true })
           },
           onError: (code, message, _retryable, detail, requestId) => {
             patch((turn) => ({
@@ -225,10 +246,6 @@ export function ChatPage() {
             if (activeIdRef.current === conversationId) {
               setDecisionError(message)
             }
-            void queryClient.invalidateQueries({
-              queryKey: conversationKeys.messages(conversationId),
-              refetchType: 'none',
-            })
           },
         },
         controller.signal,
@@ -251,12 +268,8 @@ export function ChatPage() {
       if (!aborted && activeIdRef.current === conversationId) {
         setDecisionError(describeError(error))
       }
-      void queryClient.invalidateQueries({
-        queryKey: conversationKeys.messages(conversationId),
-        refetchType: 'none',
-      })
     } finally {
-      clearLive(conversationId, controller)
+      finishTurn(conversationId, current, controller)
       setDecidingId(null)
     }
   }
@@ -294,7 +307,6 @@ export function ChatPage() {
       if (!list.some((conv) => conv.id === activeId)) {
         const fallback = readStoredConversationId()
         const target = fallback && list.some((conv) => conv.id === fallback) ? fallback : list[0].id
-        syncedConversationRef.current = null
         setActiveId(target)
       }
       return
@@ -304,50 +316,8 @@ export function ChatPage() {
     }
     const stored = readStoredConversationId()
     const target = stored && list.some((conv) => conv.id === stored) ? stored : list[0].id
-    syncedConversationRef.current = null
     setActiveId(target)
   }, [activeId, conversationsQuery.isSuccess, conversationsQuery.data, models.length])
-
-  // 历史加载完成后还原 turns；流式过程中不要用缓存覆盖正在生成的内容。
-  useEffect(() => {
-    // 有 liveTurn 时也要合并历史；没有 liveTurn 的会话不能因为
-    // 另一个会话正在生成而被挡在门外。
-    if (activeId === null || !messagesQuery.data) {
-      return
-    }
-    if (syncedConversationRef.current === activeId) {
-      return
-    }
-    syncedConversationRef.current = activeId
-    const restored = turnsFromMessages(messagesQuery.data)
-    setTurns(liveTurn ? withLiveTurn(restored, liveTurn) : restored)
-  }, [activeId, messagesQuery.data, liveTurn])
-
-  // 切页回来时，本地缓存的历史可能还没有正在生成的 assistant 消息；
-  // liveTurn 是模块级的，重新挂载后把它合并回来，流式内容继续可见。
-  useEffect(() => {
-    if (!liveTurn || activeId === null) {
-      return
-    }
-    setTurns((prev) => withLiveTurn(prev, liveTurn))
-  }, [activeId, liveTurn])
-
-  // 刷新或首次进入 pending 审批时，live store 是空的；
-  // 从 approval.partial_answer 把审批前正文补回对应轮次。
-  useEffect(() => {
-    const partial = pendingApproval?.partial_answer?.trim()
-    if (!partial || liveTurn || activeId === null) {
-      return
-    }
-    const messageId = pendingApproval?.user_message_id
-    setTurns((prev) =>
-      prev.map((turn) =>
-        turn.messageId === messageId && turn.answer === ''
-          ? { ...turn, answer: partial, phase: 'settled' }
-          : turn,
-      ),
-    )
-  }, [activeId, liveTurn, pendingApproval, messagesQuery.data])
 
   // 审批也可能在任务页/另一个标签页被处理；当 approval 已不再 pending 时，
   // 清掉聊天页里停留的审批前 live turn，避免回来看到过期的“待审批”正文。
@@ -386,10 +356,8 @@ export function ChatPage() {
       return
     }
     draftRef.current = true
-    syncedConversationRef.current = null
     rememberConversationId(null)
     setActiveId(null)
-    setTurns([])
     setCreateError('')
     setSidebarOpen(false)
   }
@@ -407,7 +375,6 @@ export function ChatPage() {
         const conv = await createConversation()
         conversationId = conv.id
         draftRef.current = false
-        syncedConversationRef.current = null
         setCreateError('')
         setActiveId(conv.id)
         queryClient.setQueryData<Conversation[]>(conversationKeys.all, (old) =>
@@ -423,19 +390,14 @@ export function ChatPage() {
       setCreating(false)
     }
 
-    // 本地已经有一个正在生成的轮次；后续 messages 刷新不要用旧缓存覆盖它。
-    syncedConversationRef.current = conversationId
     const id = newId()
     const controller = new AbortController()
     let current: Turn = { id, question, answer: '', phase: 'streaming', hits: [], citations: [] }
-    setTurns((prev) => [...prev, current])
     publishLive(conversationId, current, controller)
 
     const patch = (next: (turn: Turn) => Turn) => {
       current = next(current)
-      const updated = current
-      setTurns((prev) => prev.map((turn) => (turn.id === id ? updated : turn)))
-      publishLive(conversationId, updated, controller)
+      publishLive(conversationId, current, controller)
     }
 
     let awaitingApproval = false
@@ -477,13 +439,7 @@ export function ChatPage() {
                 queryKey: approvalKeys.conversation(conversationId),
               })
             }
-            // 会话列表立即更新；messages 只标脏、不立刻重拉，
-            // 避免覆盖正在显示的流式内容，但下次回来时会重新取最终消息。
-            void queryClient.invalidateQueries({ queryKey: conversationKeys.all })
-            void queryClient.invalidateQueries({
-              queryKey: conversationKeys.messages(conversationId),
-              refetchType: 'none',
-            })
+            void queryClient.invalidateQueries({ queryKey: conversationKeys.all, exact: true })
           },
         },
         controller.signal,
@@ -508,7 +464,7 @@ export function ChatPage() {
       // 审批暂停不是流结束：保留 live turn，切页/刷新到审批阶段时
       // 还要靠它（以及 approval.partial_answer）恢复审批前正文。
       if (!awaitingApproval) {
-        clearLive(conversationId, controller)
+        finishTurn(conversationId, current, controller)
       }
     }
   }
@@ -529,9 +485,7 @@ export function ChatPage() {
 
   function selectConversation(id: number) {
     draftRef.current = false
-    syncedConversationRef.current = null
     setActiveId(id)
-    setTurns([])
     setSidebarOpen(false)
   }
 

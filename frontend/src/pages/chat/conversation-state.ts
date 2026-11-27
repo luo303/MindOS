@@ -91,12 +91,15 @@ export function turnsFromMessages(messages: ChatMessage[]): Turn[] {
 
 /** 把正在生成的本地轮次合并进历史，避免切页回来后看到旧的用户消息。 */
 export function withLiveTurn(turns: Turn[], live: Turn): Turn[] {
-  let index = -1
-  for (let i = turns.length - 1; i >= 0; i -= 1) {
-    if (turns[i].question === live.question) {
-      index = i
-      break
-    }
+  let index = turns.findIndex((turn) =>
+    turn.id === live.id || (live.messageId !== undefined && turn.messageId === live.messageId),
+  )
+  const last = turns.at(-1)
+  if (
+    index < 0 && live.messageId === undefined && last?.messageId !== undefined &&
+    last.phase === 'settled' && last.answer === '' && last.question === live.question
+  ) {
+    index = turns.length - 1
   }
   if (index < 0) {
     return [...turns, live]
@@ -106,6 +109,21 @@ export function withLiveTurn(turns: Turn[], live: Turn): Turn[] {
     messageId: live.messageId ?? turns[index].messageId,
   }
   return turns.map((turn, i) => (i === index ? merged : turn))
+}
+
+export function withStreamResults(history: Turn[], results: Turn[]): Turn[] {
+  const firstMessageId = history[0]?.messageId
+  const byMessageId = new Map(history.map((turn) => [turn.messageId, turn]))
+  return results.reduce((turns, result) => {
+    if (firstMessageId !== undefined && result.messageId !== undefined && result.messageId < firstMessageId) {
+      return turns
+    }
+    const stored = byMessageId.get(result.messageId)
+    const view = result.phase === 'settled' && stored?.phase === 'settled' && stored.answer
+      ? { ...result, answer: stored.answer, citations: stored.citations }
+      : result
+    return withLiveTurn(turns, view)
+  }, history)
 }
 
 export function rememberModelId(id: number) {

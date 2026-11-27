@@ -7,6 +7,7 @@
 | 状态 | 归属 | 例子 |
 |---|---|---|
 | 服务端事实 | TanStack Query 缓存 | 会话列表、历史消息、文档详情、待审批 |
+| 刚结束的 SSE 轮次 | 按会话缓存于 TanStack Query | 正文、运行信息、客户端错误详情；切页时无需等历史回读 |
 | URL / 本机偏好 | 路由与 localStorage | 当前页面、当前会话 id、选中的模型 |
 | 正在生成的回答 | 模块级 live store | `pages/chat/live.ts` |
 | 纯页面展示态 | 组件 `useState` | 抽屉开关、右键菜单、筛选弹窗 |
@@ -64,12 +65,12 @@ const liveTurn = useSyncExternalStore(
 - messages 查询里的历史（user 已落库，assistant 还没有）；
 - live store 里的正在生成轮次。
 
-`withLiveTurn(turns, live)` 从后往前按 `question` 找同一轮：
+`withLiveTurn(turns, live)` 优先按客户端轮次 ID 或后端用户消息 ID 找同一轮：
 
 - 找到就替换，保住历史里的 `messageId`；
 - 找不到才追加。
 
-历史 effect 不再用全局 `pending` 阻挡加载：切换会话时 B 的历史必须能加载，即使 A 正在生成。
+只有 SSE 尚未给出用户消息 ID、且历史末尾有一个同文本但还未回答的用户轮次时，才用问题文本兜底。已有回答的同文问题不会被覆盖。界面直接从历史、已结束的 SSE 轮次和当前 live 快照合并，不再把三份状态各自复制进页面。
 
 ## 5. 生成状态按会话建模
 
@@ -87,15 +88,15 @@ const generating = creating || liveTurn !== null
 
 其中 `liveTurn` 只取当前 `activeId`。A 生成时切到 B，`generating` 为 false，B 正常显示历史；切回 A 时 live 内容恢复。
 
-多个会话可以同时生成：每个 `run` 有自己的 controller 和 turn id，`setTurns` 只更新当前页面里同 id 的轮次；其他会话由 live store 保存。
+多个会话可以同时生成：每个 `run` 有自己的 controller 和 turn id，只更新对应会话的 live 快照。
 
 ## 6. 结束后的一致性
 
-`onDone` 后：
+流结束且未暂停等待审批时：
 
-- 当前页面已经拿到最终内容；
+- 先把完整轮次写入该会话的 `stream-results` 缓存，再清理 live。结束时即使页面已卸载，切回也能看到最终内容；
 - messages 查询用 `refetchType: 'none'` 标脏，不立即重拉，避免闪烁/覆盖；
-- 下次进入该会话时从数据库取最终 assistant 消息。
+- 下次进入该会话时回读消息，以后端保存的成功正文为准，用 ID 合并而不是再追加一轮。结束快照只保留最近 25 轮，随查询缓存回收，不是另一份持久化历史。
 
 失败同理：assistant 错误消息落库后标脏，失败卡片带 `detail` 和 `request_id`。
 
@@ -156,6 +157,6 @@ SSE `error` 事件：
 - 捕获发起时的 conversationId，不读异步回调里的当前 activeId；
 - 把 signal 传给 `streamApprovalDecision`；
 - 切换会话/页面不 abort；
-- 完成后清 live，并标脏 messages；失败/取消也保存 assistant 错误消息。
+- 完成后先缓存结束快照，再清 live、标脏 messages；后端已保存的失败/取消结果也可从历史恢复。
 
 否则会出现“审批前正文只在当前页面内存里，数据库永远没有”的问题。

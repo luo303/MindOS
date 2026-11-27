@@ -73,5 +73,5 @@ export function useTypewriter(target: string, active: boolean): string {
     }
   }, [active])
 
-  return shown
+  return active ? shown : target
 }

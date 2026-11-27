@@ -28,6 +28,7 @@ export type ChatMessage = {
 export const conversationKeys = {
   all: ['conversations'] as const,
   messages: (id: number) => ['conversations', id, 'messages'] as const,
+  streamResults: (id: number) => ['conversations', id, 'stream-results'] as const,
 }
 
 export async function fetchConversations(signal?: AbortSignal): Promise<Conversation[]> {

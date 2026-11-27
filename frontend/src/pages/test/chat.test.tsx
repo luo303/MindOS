@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { conversationKeys, type ChatMessage } from '@/api/conversations'
 import type { AskEvent } from '@/api/types'
 import { REFUSAL_TEXT, WITHDRAWN_TEXT } from '@/pages/chat/format'
 import { MarkdownAnswer } from '@/pages/chat/markdown-answer'
@@ -83,7 +84,7 @@ const hit = {
 
 const citation = { ...hit, start_offset: 0, end_offset: 12 }
 
-function doneEvent(runId: number): AskEvent {
+function doneEvent(runId: number): Extract<AskEvent, { type: 'done' }> {
   return {
     type: 'done',
     seq: 99,
@@ -238,6 +239,90 @@ describe('问答页', () => {
         sse.close()
       })
     }
+  })
+
+  it.each([
+    ['会话', false],
+    ['页面', false],
+    ['页面', true],
+  ] as const)('切换%s后，结束时已返回=%s，旧历史不能吞掉最新一轮', async (destination, returnBeforeDone) => {
+    const sse = openSseResponse()
+    const otherConversation = { ...conversationFixture, id: 2, title: '另一个会话' }
+    stubChatFetchWithConversations([conversationFixture, otherConversation], sse.response)
+    const user = userEvent.setup()
+    const { router } = renderApp('/chat')
+    const goBack = async () => {
+      if (destination === '会话') {
+        await user.click(screen.getByRole('button', { name: conversationFixture.title }))
+      } else {
+        await act(() => router.navigate('/chat'))
+      }
+    }
+
+    await ask(user, '后台完成的问题')
+    await act(async () => sse.push({ type: 'delta', seq: 1, payload: { text: '正在生成' } }))
+    expect(await screen.findByText('正在生成')).toBeVisible()
+
+    if (destination === '会话') {
+      await user.click(screen.getByRole('button', { name: otherConversation.title }))
+    } else {
+      await act(() => router.navigate('/memory'))
+    }
+    expect(screen.queryByText('后台完成的问题')).not.toBeInTheDocument()
+
+    if (returnBeforeDone) {
+      await goBack()
+      expect(await screen.findByText('正在生成')).toBeVisible()
+    }
+    await act(async () => {
+      sse.push({ type: 'delta', seq: 2, payload: { text: '，已经完成。' } })
+      sse.push(doneEvent(7))
+      sse.close()
+    })
+    if (!returnBeforeDone) await goBack()
+
+    expect(await screen.findByText('正在生成，已经完成。')).toBeVisible()
+    expect(screen.getAllByText('后台完成的问题')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: '发送' })).toBeVisible()
+  })
+
+  it('后台完成的轮次按消息 ID 与回读历史合并，不覆盖历史里的同文问题', async () => {
+    const question = '重复的问题'
+    const message = (id: number, role: ChatMessage['role'], content: string): ChatMessage => ({
+      id, conversation_id: 1, role, content, citations: [], seq: id, created_at: conversationFixture.created_at,
+    })
+    const earlier = [message(1, 'user', question), message(2, 'assistant', '以前的回答')]
+    const sse = openSseResponse()
+    let messages = earlier
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/chat-models')) return jsonResponse(envelope({ items: [chatModelFixture()] }))
+      if (url.endsWith('/conversations')) return jsonResponse(envelope({ items: [conversationFixture] }))
+      if (url.endsWith('/conversations/1/messages') && init?.method === 'POST') return sse.response
+      if (url.includes('/conversations/1/messages?')) return jsonResponse(envelope({ items: messages }))
+      return jsonResponse(envelope({ items: [] }))
+    }))
+    const user = userEvent.setup()
+    const { queryClient, router } = renderApp('/chat')
+    expect(await screen.findByText('以前的回答')).toBeVisible()
+    await ask(user, question)
+    expect(screen.getAllByText(question)).toHaveLength(2)
+    await act(() => router.navigate('/memory'))
+    await act(async () => {
+      sse.push({ type: 'delta', seq: 1, payload: { text: '新回答（流式）' } })
+      const done = doneEvent(8)
+      sse.push({ ...done, payload: { ...done.payload, user_message_id: 3 } })
+      sse.close()
+    })
+    await act(() => router.navigate('/chat'))
+    expect(await screen.findByText('新回答（流式）')).toBeVisible()
+    expect(screen.getAllByText(question)).toHaveLength(2)
+
+    messages = [...earlier, message(3, 'user', question), message(4, 'assistant', '新回答（已保存）')]
+    await act(() => queryClient.invalidateQueries({ queryKey: conversationKeys.messages(1) }))
+    expect(await screen.findByText('新回答（已保存）')).toBeVisible()
+    expect(screen.queryByText('新回答（流式）')).not.toBeInTheDocument()
+    expect(screen.getAllByText(question)).toHaveLength(2)
+    expect(screen.getByText('以前的回答')).toBeVisible()
   })
 
   it('pending 审批能恢复审批前正文，并把批准后的 delta 接在同一轮', async () => {
