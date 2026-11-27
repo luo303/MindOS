@@ -16,8 +16,19 @@ export const preferenceValues: Record<PreferenceKey, { value: string; label: str
   ],
 }
 
-export function preferenceValueLabel(key: PreferenceKey, value: string) {
-  return preferenceValues[key].find((option) => option.value === value)?.label ?? value
+export function preferenceValueLabel(key: string, value: string) {
+  return preferenceValues[key as PreferenceKey]?.find((option) => option.value === value)?.label ?? value
+}
+
+export const memoryCategories = [
+  { value: 'profile', label: '个人画像' }, { value: 'preference', label: '偏好' },
+  { value: 'habit', label: '习惯' }, { value: 'rule', label: '协作规则' },
+  { value: 'project', label: '项目' }, { value: 'goal', label: '目标' },
+  { value: 'state', label: '近期状态' }, { value: 'other', label: '其他' },
+]
+
+export function categoryLabel(category: string) {
+  return memoryCategories.find((option) => option.value === category)?.label ?? category ?? '偏好'
 }
 
 export function memorySourceLink(conversationId: number, messageId: number) {

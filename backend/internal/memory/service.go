@@ -28,14 +28,18 @@ func (service *Service) List(ctx context.Context, ownerID int64) ([]Memory, erro
 }
 
 // Context 将最多三个已生效项转为固定模板，不把原文作为指令注入。
-func (service *Service) Context(ctx context.Context, ownerID int64) (string, error) {
+func (service *Service) Context(ctx context.Context, ownerID int64, question ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
-	items, err := service.List(ctx, ownerID)
+	query := ""
+	if len(question) > 0 {
+		query = question[0]
+	}
+	items, err := service.repo.related(ctx, ownerID, query, 8)
 	if err != nil {
 		return "", fmt.Errorf("load preference context: %w", err)
 	}
-	return preferenceContext(items), nil
+	return relevantContext(items, query, time.Now().UTC()), nil
 }
 
 // Create 手动创建尚不存在的偏好键。
@@ -46,12 +50,24 @@ func (service *Service) Create(ctx context.Context, ownerID int64, key, value st
 	return service.repo.manual(ctx, ownerID, mutation{key: key, value: &value})
 }
 
-// Update 在给定版本上编辑、归档或恢复，不允许改键。
-func (service *Service) Update(ctx context.Context, ownerID, id int64, expected int, value *string, status string) (Memory, error) {
-	if id <= 0 || expected <= 0 || (status == "" && value == nil) || (status != "" && status != archived && status != active) {
+// CreateEntry 保存用户手动创建的开放记忆条目。
+func (service *Service) CreateEntry(ctx context.Context, ownerID int64, value string, meta Metadata) (Memory, error) {
+	if !validMetadata(meta) || !validValue(value) {
 		return Memory{}, ErrInvalid
 	}
-	return service.repo.manual(ctx, ownerID, mutation{id: id, value: value, status: status, expected: expected})
+	return service.repo.manual(ctx, ownerID, mutation{key: entryKey(meta.Scope, value), value: &value, meta: &meta})
+}
+
+// Update 在给定版本上编辑、归档或恢复，不允许改键。
+func (service *Service) Update(ctx context.Context, ownerID, id int64, expected int, value *string, status string, metadata ...*Metadata) (Memory, error) {
+	var meta *Metadata
+	if len(metadata) > 0 {
+		meta = metadata[0]
+	}
+	if id <= 0 || expected <= 0 || (status == "" && value == nil && meta == nil) || (status != "" && status != archived && status != active) || (meta != nil && !validMetadata(*meta)) || (value != nil && !validValue(*value)) {
+		return Memory{}, ErrInvalid
+	}
+	return service.repo.manual(ctx, ownerID, mutation{id: id, value: value, status: status, expected: expected, meta: meta})
 }
 
 // Versions 分页返回修订快照，before=0 时从最新开始。

@@ -160,9 +160,20 @@ func (s *Service) WithPreferences(preferences *memory.Service) *Service {
 }
 
 // ReadMemorySource 仅供后台提炼读取同账号同会话内的用户原文。
-func (s *Service) ReadMemorySource(ctx context.Context, ownerID, conversationID, messageID int64) (string, time.Time, error) {
+func (s *Service) ReadMemorySource(ctx context.Context, ownerID, conversationID, messageID int64) (memory.Source, error) {
 	source, err := s.convs.memorySource(ctx, ownerID, conversationID, messageID)
-	return source.Content, source.CreatedAt, err
+	if err != nil || source.Content == "" {
+		return memory.Source{}, err
+	}
+	result := memory.Source{Content: source.Content, CreatedAt: source.CreatedAt}
+	messages, err := s.convs.MessagesBefore(ctx, ownerID, conversationID, source.Seq, 4)
+	if err != nil {
+		return memory.Source{}, err
+	}
+	for _, message := range messages {
+		result.Previous = append(result.Previous, memory.SourceMessage{Role: message.Role, Content: message.Content})
+	}
+	return result, nil
 }
 
 // NewService 组装编排层。依赖全部由 cmd/server 注入；memory 允许为 nil。
@@ -225,8 +236,17 @@ func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID
 	}
 
 	var extractModelID int64
+	var usePreferences bool
 	if s.preferences != nil {
-		extractModelID = resolved.ID
+		settingsCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		settings, settingsErr := s.preferences.Settings(settingsCtx, ownerID, conversationID)
+		cancel()
+		if settingsErr != nil {
+			s.log.Warn("load memory settings failed", zap.Error(settingsErr))
+		} else if settings.Mode != "off" && !settings.ConversationOff {
+			extractModelID = resolved.ID
+			usePreferences = true
+		}
 	}
 	userMsg, err := s.convs.appendMessage(ctx, ownerID, conversationID, RoleUser, strings.TrimSpace(in.Question), RawJSON("[]"), nil, nil, extractModelID)
 	if err != nil {
@@ -252,9 +272,9 @@ func (s *Service) AskInConversation(ctx context.Context, ownerID, conversationID
 			history = append([]agent.HistoryMessage{{Role: "system", Content: block}}, history...)
 		}
 	}
-	if s.preferences != nil {
-		memoryGuidance := "长期偏好须由用户在记忆建议或记忆页保存才生效。不要在聊天中声称已经保存，也不要保证会出现建议。"
-		if defaults, prefErr := s.preferences.Context(ctx, ownerID); prefErr != nil {
+	if usePreferences {
+		memoryGuidance := "长期记忆由独立后台流程处理。不要在聊天中声称已经保存，也不要保证会出现建议。"
+		if defaults, prefErr := s.preferences.Context(ctx, ownerID, in.Question); prefErr != nil {
 			s.log.Warn("load long-term preferences failed", zap.Error(prefErr))
 		} else if defaults != "" {
 			memoryGuidance += "\n" + defaults

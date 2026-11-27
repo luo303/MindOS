@@ -159,6 +159,9 @@ func Register(e *gin.Engine, deps Deps) {
 	authed.POST("/memories", deps.Memories.Create)
 	authed.PATCH("/memories/:id", deps.Memories.Update)
 	authed.GET("/memories/:id/versions", deps.Memories.Versions)
+	authed.GET("/memories/:id/evidence", deps.Memories.Evidence)
+	authed.GET("/memory-settings", deps.Memories.Settings)
+	authed.PATCH("/memory-settings", deps.Memories.SetSettings)
 	authed.GET("/memory-candidates", deps.Memories.Candidates)
 	authed.POST("/memory-candidates/:id/decision", deps.Memories.Decide)
 }

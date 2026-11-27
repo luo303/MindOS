@@ -123,7 +123,7 @@ func (r *ConversationRepository) AppendErrorMessage(
 
 func (r *ConversationRepository) memorySource(ctx context.Context, ownerID, conversationID, messageID int64) (Message, error) {
 	var source Message
-	err := r.db.WithContext(ctx).Select("content", "created_at").
+	err := r.db.WithContext(ctx).Select("content", "created_at", "seq").
 		Where("owner_id = ? AND conversation_id = ? AND id = ? AND role = ?", ownerID, conversationID, messageID, RoleUser).
 		Take(&source).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -197,7 +197,7 @@ func (r *ConversationRepository) appendMessage(
 		if err := outbox.AppendTx(ctx, tx, outbox.New(SearchMessageUpsert, msgKey, payload)); err != nil {
 			return err
 		}
-		if role == RoleUser && extractModelID > 0 && memory.ExplicitRequest(content) {
+		if role == RoleUser && extractModelID > 0 {
 			if err := outbox.AppendTx(ctx, tx, outbox.New(memory.ExtractTopic, msgKey, map[string]any{
 				"owner_id": ownerID, "conversation_id": conversationID, "message_id": msg.ID, "model_id": extractModelID,
 			})); err != nil {

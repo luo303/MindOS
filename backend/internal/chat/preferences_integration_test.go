@@ -40,7 +40,7 @@ func TestAskPreferencesAndOutboxIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int64
-	if err := db.Model(&outbox.Message{}).Where("topic = ?", memory.ExtractTopic).Count(&count).Error; err != nil || count != 1 {
+	if err := db.Model(&outbox.Message{}).Where("topic = ?", memory.ExtractTopic).Count(&count).Error; err != nil || count != 2 {
 		t.Fatalf("extraction jobs = %d %v", count, err)
 	}
 }

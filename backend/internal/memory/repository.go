@@ -16,12 +16,13 @@ type Repository struct{ db *gorm.DB }
 // NewRepository 创建偏好仓储。
 func NewRepository(db *gorm.DB) *Repository { return &Repository{db: db} }
 
-const memoryColumns = "id, owner_id, key, value, status, version, updated_at"
-const candidateColumns = "id, owner_id, conversation_id, message_id, key, value, evidence, base_version, status, created_at"
+const metadataColumns = "category, scope, expires_at, pinned"
+const memoryColumns = "id, owner_id, key, value, status, version, updated_at, " + metadataColumns
+const candidateColumns = "id, owner_id, conversation_id, message_id, key, value, evidence, base_version, status, created_at, action, target_id, " + metadataColumns
 
 func (repo *Repository) list(ctx context.Context, ownerID int64) ([]Memory, error) {
 	items := make([]Memory, 0, 3)
-	err := repo.db.WithContext(ctx).Select(memoryColumns).Where("owner_id = ?", ownerID).Order("key").Find(&items).Error
+	err := repo.db.WithContext(ctx).Select(memoryColumns).Where("owner_id = ?", ownerID).Order("updated_at DESC, id DESC").Find(&items).Error
 	return items, err
 }
 
@@ -34,7 +35,7 @@ func (repo *Repository) versions(ctx context.Context, ownerID, id int64, before 
 		return nil, ErrNotFound
 	}
 	rows := make([]Version, 0)
-	query := repo.db.WithContext(ctx).Select("memory_id, version, value, status, source, message_id, conversation_id, created_at").
+	query := repo.db.WithContext(ctx).Select("memory_id, version, value, status, source, message_id, conversation_id, created_at, automatic, "+metadataColumns).
 		Where("owner_id = ? AND memory_id = ?", ownerID, id)
 	if before > 0 {
 		query = query.Where("version < ?", before)
@@ -54,6 +55,9 @@ func (repo *Repository) candidates(ctx context.Context, ownerID, conversationID 
 }
 
 func (repo *Repository) addCandidate(ctx context.Context, candidate Candidate, sourceAt time.Time) error {
+	// 兼容旧偏好候选（已经排队的 v1 来源与迁移测试）。
+	candidate.Metadata = Metadata{Category: "preference", Pinned: true}
+	candidate.Action = "create"
 	var current Memory
 	err := repo.db.WithContext(ctx).Select(memoryColumns).
 		Where("owner_id = ? AND key = ?", candidate.OwnerID, candidate.Key).Take(&current).Error
@@ -66,6 +70,8 @@ func (repo *Repository) addCandidate(ctx context.Context, candidate Candidate, s
 			return nil
 		}
 		candidate.BaseVersion = current.Version
+		candidate.TargetID = &current.ID
+		candidate.Action = "update"
 	}
 	err = repo.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&candidate).Error
 	if errors.Is(err, gorm.ErrForeignKeyViolated) {
@@ -76,6 +82,9 @@ func (repo *Repository) addCandidate(ctx context.Context, candidate Candidate, s
 
 func (repo *Repository) accept(ctx context.Context, ownerID, candidateID int64, accept bool, editedValue *string) error {
 	return repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockSettings(tx, ownerID); err != nil {
+			return err
+		}
 		var candidate Candidate
 		err := tx.Select(candidateColumns).Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("owner_id = ? AND id = ?", ownerID, candidateID).Take(&candidate).Error
@@ -91,12 +100,10 @@ func (repo *Repository) accept(ctx context.Context, ownerID, candidateID int64, 
 			if editedValue != nil {
 				value = *editedValue
 			}
-			if aliases(candidate.Key, value) == nil {
+			if !validValue(value) {
 				return ErrInvalid
 			}
-			origin := Version{Source: "chat", MessageID: &candidate.MessageID, ConversationID: &candidate.ConversationID}
-			change := mutation{key: candidate.Key, value: &value, status: active, expected: candidate.BaseVersion}
-			if _, err := changeMemory(tx, ownerID, change, origin); err != nil {
+			if err := applyCandidate(tx, candidate, value, false); err != nil {
 				return err
 			}
 			status = "accepted"
@@ -111,11 +118,15 @@ type mutation struct {
 	value    *string
 	status   string
 	expected int
+	meta     *Metadata
 }
 
 func (repo *Repository) manual(ctx context.Context, ownerID int64, change mutation) (Memory, error) {
 	var item Memory
 	err := repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockSettings(tx, ownerID); err != nil {
+			return err
+		}
 		var err error
 		item, err = changeMemory(tx, ownerID, change, Version{Source: "manual"})
 		return err
@@ -137,7 +148,10 @@ func changeMemory(tx *gorm.DB, ownerID int64, change mutation, origin Version) (
 	var item Memory
 	err := query.Take(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) && change.id == 0 && change.expected == 0 && change.value != nil {
-		item = Memory{OwnerID: ownerID, Key: change.key, Value: *change.value, Status: active, Version: 1, UpdatedAt: time.Now().UTC()}
+		item = Memory{OwnerID: ownerID, Key: change.key, Value: *change.value, Status: active, Version: 1, UpdatedAt: time.Now().UTC(), Metadata: Metadata{Category: "preference", Pinned: true}}
+		if change.meta != nil {
+			item.Metadata = *change.meta
+		}
 		insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
 		if insert.Error != nil {
 			return Memory{}, insert.Error
@@ -161,20 +175,26 @@ func changeMemory(tx *gorm.DB, ownerID int64, change mutation, origin Version) (
 		if change.status != "" {
 			status = change.status
 		}
-		if aliases(item.Key, value) == nil {
+		if !validValue(value) {
 			return Memory{}, ErrInvalid
 		}
-		if item.Value == value && item.Status == status {
+		meta := item.Metadata
+		if change.meta != nil {
+			meta = *change.meta
+		}
+		if item.Value == value && item.Status == status && sameMetadata(item.Metadata, meta) {
 			return item, nil
 		}
+		item.Metadata = meta
 		item.Value, item.Status, item.Version, item.UpdatedAt = value, status, item.Version+1, time.Now().UTC()
 		if err := tx.Model(&Memory{}).Where("owner_id = ? AND id = ?", ownerID, item.ID).
-			Updates(map[string]any{"value": value, "status": status, "version": item.Version, "updated_at": item.UpdatedAt}).Error; err != nil {
+			Updates(map[string]any{"value": value, "status": status, "version": item.Version, "updated_at": item.UpdatedAt, "category": meta.Category, "scope": meta.Scope, "expires_at": meta.ExpiresAt, "pinned": meta.Pinned}).Error; err != nil {
 			return Memory{}, err
 		}
 	}
 	origin.OwnerID, origin.MemoryID, origin.Version = ownerID, item.ID, item.Version
 	origin.Value, origin.Status, origin.CreatedAt = item.Value, item.Status, item.UpdatedAt
+	origin.Metadata = item.Metadata
 	if err := tx.Create(&origin).Error; err != nil {
 		return Memory{}, fmt.Errorf("append memory version: %w", err)
 	}

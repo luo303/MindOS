@@ -34,7 +34,7 @@ describe('应用布局与路由', () => {
 
     expect(screen.getByRole('heading', { name: '记忆' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '记忆' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('heading', { name: '已保存的偏好' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '个人画像' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('未知路径渲染 404 且保留导航外壳', async () => {

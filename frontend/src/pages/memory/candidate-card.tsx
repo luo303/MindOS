@@ -5,9 +5,9 @@ import { Link } from 'react-router'
 import { describeError } from '@/api/errors'
 import { decideMemoryCandidate, memoryKeys, type MemoryCandidate } from '@/api/memory'
 import { Button } from '@/components/ui/button'
-import { Select } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
 
-import { memorySourceLink, preferenceLabels, preferenceValueLabel, preferenceValues } from './preferences'
+import { categoryLabel, memorySourceLink, preferenceValueLabel } from './preferences'
 
 export function MemoryCandidateCard({ item, currentValue, inChat = false }: {
   item: MemoryCandidate
@@ -31,12 +31,13 @@ export function MemoryCandidateCard({ item, currentValue, inChat = false }: {
   return (
     <article className="bg-card border-border space-y-3 rounded-xl border p-4" aria-label="记忆建议">
       <div>
-        <p className="text-muted-foreground text-xs">记忆建议 · 确认后才生效</p>
+        <p className="text-muted-foreground text-xs">{categoryLabel(item.category)} · {item.action === 'update' ? '更新记忆' : '新增记忆'}</p>
         <p className="mt-1 text-sm font-medium">
-          {preferenceLabels[item.key]}：{currentValue ? `${preferenceValueLabel(item.key, currentValue)} → ` : ''}
+          {currentValue ? `${preferenceValueLabel(item.key, currentValue)} → ` : ''}
           {preferenceValueLabel(item.key, item.value)}
         </p>
       </div>
+      {item.scope || item.expires_at ? <p className="text-muted-foreground text-xs">{item.scope || '全局'}{item.expires_at ? ` · 至 ${new Date(item.expires_at).toLocaleDateString()}` : ''}</p> : null}
       {!inChat ? (
         <blockquote className="text-muted-foreground border-border border-l-2 pl-3 text-sm break-words">
           {item.evidence}
@@ -46,11 +47,11 @@ export function MemoryCandidateCard({ item, currentValue, inChat = false }: {
         </blockquote>
       ) : null}
       {editing ? (
-        <Select ariaLabel="建议值" value={value} onChange={setValue} options={preferenceValues[item.key]} align="left" disabled={decision.isPending} />
+        <Textarea aria-label="建议值" value={value} maxLength={500} onChange={(event) => setValue(event.target.value)} disabled={decision.isPending} />
       ) : null}
       {decision.error ? <p role="alert" className="text-destructive text-sm">{describeError(decision.error)}</p> : null}
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" disabled={decision.isPending} onClick={() => decision.mutate({ action: 'accept', value: editing ? value : undefined })}>
+        <Button size="sm" disabled={decision.isPending || (editing && !value.trim())} onClick={() => decision.mutate({ action: 'accept', value: editing ? value : undefined })}>
           {editing ? '保存修改' : '保存为记忆'}
         </Button>
         <Button size="sm" variant="outline" disabled={decision.isPending} onClick={() => setEditing(!editing)}>
